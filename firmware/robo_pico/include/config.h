@@ -2,11 +2,12 @@
 #define CONFIG_H
 
 // ====================== WIFI CONFIG ======================
-#define WIFI_SSID      "Brandon" //"Glenn"
-#define WIFI_PASSWORD  "cocomelon" //"glennlim"
+#define WIFI_SSID      "Brandon" // !! to be updated with hotspot SSID
+#define WIFI_PASSWORD  "cocomelon" //!! to be updated with hotspot password
+//!! hotspot must be 2.4 GHz + WPA2 (iPhone: turn on "Maximize Compatibility") for the Pico W to connect
 
 // ====================== MQTT CONFIG ======================
-#define MQTT_BROKER_IP    "172.20.10.2"  // Flyingpigs Wifi IP is 192.168.50.200, Brandon Hotspot is 172.20.10.2
+#define MQTT_BROKER_IP    "172.20.10.2"  // !! to be updated with actual broker IP address
 #define MQTT_BROKER_PORT  1883
 #define MQTT_CLIENT_ID    "robot_pico_w"
 
