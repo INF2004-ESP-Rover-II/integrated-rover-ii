@@ -29,6 +29,12 @@ TOPIC_COMMAND = "robot/command"
 TOPIC_STATUS = "robot/status"
 TOPIC_TELEMETRY = "robot/telemetry"
 
+TOPIC_HEARTBEAT = "robot/heartbeat"
+LINK_HEARTBEAT_MS = 500
+
+ROBOT_LOST_S = 2.0
+WATCHDOG_CHECK_MS = 250
+
 ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
             'w':'FORWARD',
@@ -77,6 +83,15 @@ class RobotGUI:
         self.heartbeat_job = None
         self.pressed_keys = set()
         self.release_jobs = {}
+
+        # Link heartbeat state
+        self.link_heartbeat_job = None
+        self.link_heartbeat_seq = 0
+
+        # Watchdog state
+        self.last_telemetry_rx = None
+        self.connect_time = 0.0
+        self.robot_link = "unknown"
         
         # E-Stop state
         self.estop_active = False
@@ -282,6 +297,9 @@ class RobotGUI:
 
         self.log("Dashboard ready. Enter broker IP and click Connect.")
 
+        # Start watchdog timer
+        self.root.after(WATCHDOG_CHECK_MS, self.watchdog_tick)
+
     def update_odometry(self, command, dt):
         """Update robot position based on movement command"""
         with self.odometry_lock:
@@ -434,6 +452,23 @@ class RobotGUI:
             self.root.after_cancel(self.heartbeat_job)
             self.heartbeat_job = None
 
+    def start_link_heartbeat(self):
+        self.stop_link_heartbeat()
+        self.link_heartbeat_tick()
+
+    def stop_link_heartbeat(self):
+        if self.link_heartbeat_job:
+            self.root.after_cancel(self.link_heartbeat_job)
+            self.link_heartbeat_job = None
+
+    def link_heartbeat_tick(self):
+        self.link_heartbeat_job = None
+        if not self.connected or not self.mqtt_client:
+            return
+        self.link_heartbeat_seq = (self.link_heartbeat_seq + 1) % 256
+        self.mqtt_client.publish(TOPIC_HEARTBEAT, str(self.link_heartbeat_seq), qos=0)
+        self.link_heartbeat_job = self.root.after(LINK_HEARTBEAT_MS, self.link_heartbeat_tick)
+
     # Removed reset_all_buttons (no on-screen movement buttons to manage)
 
     def on_key_press(self, event):
@@ -470,6 +505,13 @@ class RobotGUI:
                 self.estop_active = False
                 self.update_estop_ui()
                 self.log("E-Stop lockout expired - movement enabled")
+
+        # Block movement commands if robot is not connected or telemetry not received
+        if ch in KEYMAP and self.connected and self.robot_link != "live":
+            self.pressed_keys.add(ch)
+            reason = "Robot: Lost" if self.robot_link == "lost" else "no telemetry yet"
+            self.log(f"Movement blocked - {reason}")
+            return "break"
         
         # Block all other keys when autonomous mode is active
         if self.auto_mode.get():
@@ -508,6 +550,42 @@ class RobotGUI:
 
         self.stop_hold()
 
+    def watchdog_tick(self):
+        if self.connected:
+            # Time since the last telemetry. If none yet, count from connect.
+            ref = self.last_telemetry_rx or self.connect_time
+            age = time.time() - ref
+            if age > ROBOT_LOST_S and self.robot_link != "lost":
+                self.set_robot_link("lost", age)
+            elif (age <= ROBOT_LOST_S and self.last_telemetry_rx
+                  and self.robot_link != "live"):
+                self.set_robot_link("live")
+        self.root.after(WATCHDOG_CHECK_MS, self.watchdog_tick)
+
+    def set_robot_link(self, state, age=0.0):
+        """Update the Robot: label and react to the link changing"""
+        prev = self.robot_link
+        self.robot_link = state
+        ts = datetime.now().strftime("%H:%M:%S")
+        if state == "live":
+            self.robot_connected.set("Connected")
+            self.robot_conn_label.config(fg='#27ae60')
+            if prev == "lost":
+                self.log(f"[{ts}] Robot link restored - movement enabled")
+        elif state == "lost":
+            self.robot_connected.set("Lost")
+            self.robot_conn_label.config(fg='#e74c3c')
+            if self.last_telemetry_rx is None:
+                self.log(f"[{ts}] ⚠ Robot: Lost - no telemetry since connecting. Movement blocked.")
+            else:
+                self.log(f"[{ts}] ⚠ Robot: Lost - no telemetry for {age:.1f}s. Movement blocked.")
+            # Stop any held key (STOP is still sent in case only one direction is broken)
+            if self.active_command:
+                self.stop_hold()
+        else:  # "unknown"
+            self.robot_connected.set("Unknown")
+            self.robot_conn_label.config(fg='#95a5a6')
+
     def toggle_connection(self):
         if self.connected:
             self.disconnect()
@@ -530,6 +608,11 @@ class RobotGUI:
             self.mqtt_client.loop_start()
             
             self.connected = True
+            self.connect_time = time.time()
+            self.last_telemetry_rx = None
+            self.robot_link = "unknown"
+            self.robot_connected.set("Waiting...")
+
             self.connect_btn.config(text="Disconnect", bg='#e74c3c')
             self.root.focus_set()
             
@@ -539,16 +622,19 @@ class RobotGUI:
             self.connected = False
 
     def disconnect(self):
+        if self.active_command:
+            self.stop_hold()
+        self.stop_link_heartbeat()
         self.cancel_heartbeat()
         if self.mqtt_client:
-            self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
+            self.mqtt_client.loop_stop()
             self.mqtt_client = None
         self.connected = False
         self.broker_connected.set("Not Connected")
         self.broker_status_label.config(fg='#e74c3c')
-        self.robot_connected.set("Unknown")
-        self.robot_conn_label.config(fg='#95a5a6')
+        self.last_telemetry_rx = None
+        self.set_robot_link("unknown")
         self.robot_status.set("Unknown")
         self.robot_status_label.config(fg='#95a5a6')
         self.robot_ip.set("N/A")
@@ -557,27 +643,33 @@ class RobotGUI:
 
     def on_mqtt_connect(self, client, userdata, flags, rc):
         if rc == 0:
+            client.subscribe(TOPIC_STATUS)
+            client.subscribe(TOPIC_TELEMETRY)
+        self.root.after(0, self.handle_mqtt_connect, rc)
+
+    def handle_mqtt_connect(self, rc):
+        if rc == 0:
             self.broker_connected.set("Connected")
             self.broker_status_label.config(fg='#27ae60')
             self.log("Connected to MQTT broker")
-            client.subscribe(TOPIC_STATUS)
-            client.subscribe(TOPIC_TELEMETRY)
             self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}")
+            self.start_link_heartbeat()
         else:
             self.log(f"MQTT connection failed (code {rc})")
             self.broker_connected.set("Failed")
             self.broker_status_label.config(fg='#e74c3c')
 
     def on_mqtt_message(self, client, userdata, msg):
-        payload = msg.payload.decode()
+        payload = msg.payload.decode(errors="replace")
+        self.root.after(0, self.handle_mqtt_message, msg.topic, payload)
+
+    def handle_mqtt_message(self, topic, payload):
         ts = datetime.now().strftime("%H:%M:%S")
         self.last_msg_time.set(ts)
         self.msg_count += 1
-        
-        if msg.topic == TOPIC_STATUS:
+
+        if topic == TOPIC_STATUS:
             self.robot_status.set(payload)
-            self.robot_connected.set("Connected")
-            self.robot_conn_label.config(fg='#27ae60')
             
             if payload == "READY":
                 self.robot_status_label.config(fg='#27ae60')
@@ -599,7 +691,7 @@ class RobotGUI:
                 self.robot_status_label.config(fg='#f39c12')
                 self.log(f"[{ts}] {payload}")
                 
-        elif msg.topic == TOPIC_TELEMETRY:
+        elif topic == TOPIC_TELEMETRY:
             try:
                 data = json.loads(payload)
                 imu = data.get("imu", {})
@@ -639,19 +731,19 @@ class RobotGUI:
                 self.ultrasonic_label.config(
                     text=f"Front:{front_str} Back:{back_str}")
 
-                self.robot_connected.set("Connected")
-                self.robot_conn_label.config(fg="#27ae60")
+                self.last_telemetry_rx = time.time()
 
             except json.JSONDecodeError:
                 pass
-                
+
     def on_mqtt_disconnect(self, client, userdata, rc):
         if rc != 0:
-            self.log(f"MQTT disconnected (code {rc})")
-            self.broker_connected.set("Disconnected")
-            self.broker_status_label.config(fg='#e74c3c')
-            self.robot_connected.set("Unknown")
-            self.robot_conn_label.config(fg='#95a5a6')
+            self.root.after(0, self.handle_mqtt_disconnect, rc)
+            
+    def handle_mqtt_disconnect(self, rc):
+        self.log(f"MQTT disconnected (code {rc})")
+        self.broker_connected.set("Disconnected")
+        self.broker_status_label.config(fg='#e74c3c')
 
     def send_command(self, command, quiet=False):
         if not self.connected or not self.mqtt_client:
