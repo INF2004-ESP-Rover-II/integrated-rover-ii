@@ -15,6 +15,8 @@
 #define MQTT_TOPIC_COMMAND    "robot/command"
 #define MQTT_TOPIC_STATUS     "robot/status"
 #define MQTT_TOPIC_TELEMETRY  "robot/telemetry"
+#define MQTT_TOPIC_HEARTBEAT  "robot/heartbeat"
+#define LINK_TIMEOUT_MS       1500 //!!Assumption A11: tune this by testing on the real WiFi link.
 
 // ====================== MOTOR CONFIG =====================
 // Front L298N pins

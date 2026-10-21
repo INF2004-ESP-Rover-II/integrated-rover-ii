@@ -61,6 +61,9 @@ static bool forward_boost_active = false;     // whether boost is active
 // Track latest control command time to adapt LIDAR publish load
 static uint32_t last_command_time_ms = 0;
 
+// MQTT link state
+static bool link_lost = true;
+
 // Proximity buzzer state
 static uint32_t last_beep_time = 0;
 static bool beep_state = false;
@@ -900,6 +903,29 @@ int main() {
 
             printf(" | LIDAR points recv: %lu\n", lidar_points_received);
             last_stats_print = now;
+        }
+
+        // FR-08: stop on our own if the laptop goes quiet
+        {
+            uint32_t last_rx = mqtt_last_link_rx_ms();
+            // Signed difference so a message that lands just after 'now'
+            // was read does not wrap to a huge number
+            bool link_ok = (last_rx != 0) &&
+                           ((int32_t)(now - last_rx) <= LINK_TIMEOUT_MS);
+
+            if (!link_ok && !link_lost) {
+                link_lost = true;
+                autonomous_mode = false;
+                autonomous_state = AUTO_STATE_IDLE;
+                motor_emergency_stop();
+                printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
+                       (unsigned long)now, (unsigned long)last_rx);
+                // Probably will not reach the laptop, but harmless to try
+                mqtt_publish_status("STOPPED: LINK LOST");
+            } else if (link_ok && link_lost) {
+                link_lost = false;
+                printf("[LINK] Laptop link up\n");
+            }
         }
 
         motor_check_timeout();

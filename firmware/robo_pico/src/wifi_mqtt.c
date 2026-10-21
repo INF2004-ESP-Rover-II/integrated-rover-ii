@@ -21,6 +21,21 @@ static bool wifi_connected_flag = false;
 static bool mqtt_connected_flag = false;
 static mqtt_command_callback_t command_callback = NULL;
 
+// Buffer for incoming MQTT messages
+typedef enum {
+    IN_TOPIC_OTHER = 0,
+    IN_TOPIC_COMMAND,
+    IN_TOPIC_HEARTBEAT
+} in_topic_t;
+static in_topic_t current_in_topic = IN_TOPIC_OTHER;
+
+static char message_buffer[256];
+static size_t buffer_pos = 0;
+
+// Time of the last message from the laptop (command or heartbeat).
+// 0 = nothing received yet. Read by main.c for the FR-08 link timeout.
+static volatile uint32_t last_link_rx_ms = 0;
+
 // =================== MQTT CALLBACKS ==================
 
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
@@ -58,10 +73,6 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
 }
 
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
-    // Accumulate message data
-    static char message_buffer[256];
-    static size_t buffer_pos = 0;
-
     // Copy incoming data to buffer
     if (buffer_pos + len < sizeof(message_buffer)) {
         memcpy(message_buffer + buffer_pos, data, len);
@@ -72,10 +83,24 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
     if (flags & MQTT_DATA_FLAG_LAST) {
         message_buffer[buffer_pos] = '\0';
         
-        // Process command
-        if (command_callback != NULL) {
-            printf("[MQTT] Received command: %s\n", message_buffer);
-            command_callback(message_buffer);
+        // 
+        switch (current_in_topic) {
+            case IN_TOPIC_COMMAND:
+                last_link_rx_ms = to_ms_since_boot(get_absolute_time());
+                if (command_callback != NULL) {
+                    printf("[MQTT] Received command: %s\n", message_buffer);
+                    command_callback(message_buffer);
+                }
+                break;
+            case IN_TOPIC_HEARTBEAT:
+                // Payload is just a counter; arriving at all is what counts.
+                // Not printed: it comes twice a second.
+                last_link_rx_ms = to_ms_since_boot(get_absolute_time());
+                break;
+            default:
+                // A topic we did not ask for: never treat it as a command
+                printf("[MQTT] Ignoring message on unexpected topic\n");
+                break;
         }
         
         // Reset buffer
@@ -84,7 +109,19 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
 }
 
 static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
-    printf("[MQTT] Incoming publish on topic: %s (length: %lu)\n", topic, tot_len);
+    // New message starts: work out where it should go and reset the buffer
+    if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0) {
+        current_in_topic = IN_TOPIC_COMMAND;
+    } else if (strcmp(topic, MQTT_TOPIC_HEARTBEAT) == 0) {
+        current_in_topic = IN_TOPIC_HEARTBEAT;
+    } else {
+        current_in_topic = IN_TOPIC_OTHER;
+    }
+    buffer_pos = 0;
+
+    if (current_in_topic != IN_TOPIC_HEARTBEAT) {
+        printf("[MQTT] Incoming publish on topic: %s (length: %lu)\n", topic, tot_len);
+    }
 }
 
 static void mqtt_subscribe_cb(void *arg, err_t result) {
@@ -267,7 +304,25 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
         return MQTT_ERR_SUBSCRIBE_FAILED;
     }
 
+    // Subscribe to the laptop heartbeat (FR-08 link timeout)
+    err = mqtt_subscribe(
+        mqtt_client,
+        MQTT_TOPIC_HEARTBEAT,
+        0,  // QoS 0
+        mqtt_subscribe_cb,
+        NULL
+    );
+
+    if (err != ERR_OK) {
+        printf("[MQTT] Heartbeat subscribe failed (error: %d)\n", err);
+        return MQTT_ERR_SUBSCRIBE_FAILED;
+    }
+
     return WIFI_OK;
+}
+
+uint32_t mqtt_last_link_rx_ms(void) {
+    return last_link_rx_ms;
 }
 
 wifi_mqtt_error_t mqtt_publish_status(const char *status) {
