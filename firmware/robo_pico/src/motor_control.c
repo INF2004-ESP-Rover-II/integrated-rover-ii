@@ -16,7 +16,7 @@
 static int8_t k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;   /* adjustable on the bench */
 static int     k_kick_pct = MC_KICK_PCT;                  /* adjustable on the bench */
 static int     k_kick_ms  = (int)MC_KICK_MS;
-static int8_t       k_trim[MC_WHEELS]     = MC_TRIM_PCT;    /* adjustable (dashboard wheel %) */
+static const int8_t k_trim[MC_WHEELS]     = MC_TRIM_PCT;
 static const int8_t k_invert[MC_WHEELS]   = MC_INVERT;
 
 /* ============================== helpers ============================== */
@@ -175,12 +175,6 @@ void mc_set_deadband(int wheel, int pct) {
     for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) k_deadband[i] = (int8_t)pct;
 }
 int mc_get_deadband(int wheel) { return k_deadband[clampi(wheel, 0, MC_WHEELS - 1)]; }
-
-void mc_set_trim(int wheel, int pct) {
-    pct = clampi(pct, 0, 100);
-    for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) k_trim[i] = (int8_t)pct;
-}
-int mc_get_trim(int wheel) { return k_trim[clampi(wheel, 0, MC_WHEELS - 1)]; }
 
 void mc_set_kick(int pct, int ms) { k_kick_pct = clampi(pct, 0, 100); k_kick_ms = clampi(ms, 0, 1000); }
 int  mc_get_kick_pct(void) { return k_kick_pct; }

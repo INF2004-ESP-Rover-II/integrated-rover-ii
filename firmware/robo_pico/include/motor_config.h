@@ -53,6 +53,16 @@
 #define MC_PARK_PCT             60    /* parallel park strafe effort (35 too weak on the floor) */
 #define MC_PARK_DURATION_MS     1500u /* parallel park strafe time               */
 
+/* ---------------- Dashboard key speeds (motor_driver.c) ----------------
+ * Power for each dashboard key, 0..100 %. Starting values from the bench
+ * tests: strafe and diagonal need more (only 2 wheels push on a diagonal,
+ * and mecanum rollers slip sideways). Forward also gets the team's pitch
+ * boost on a slope. Tune on the floor, then rebuild. */
+#define MC_DASH_STRAIGHT_PCT    60    /* W / S      forward, backward  */
+#define MC_DASH_STRAFE_PCT      100   /* A / D      strafe left, right */
+#define MC_DASH_DIAGONAL_PCT    100   /* R T F G    diagonals          */
+#define MC_DASH_ROTATE_PCT      60    /* Q / E      rotate on the spot */
+
 /* ---------------- Start boost ----------------
  * Motors need more power to START turning than to keep turning (static
  * friction, mecanum rollers sliding sideways). When a wheel starts from 0 or
