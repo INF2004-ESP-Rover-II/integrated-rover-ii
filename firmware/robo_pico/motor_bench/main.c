@@ -27,6 +27,7 @@
  *   pwm              shows the PWM frequency (fixed per build: 1 kHz or 10 kHz)
  *   kick PCT MS      start boost: PCT power for MS ms when a wheel starts
  *                    (default kick 90 150; 'kick 0 0' turns it off)
+ *   zz MS            zigzag strafe: switch diagonal every MS ms (0 = off)
  *   q                print status now
  *
  * The held command is refreshed every 100 ms, like the dashboard / Exploration
@@ -136,6 +137,10 @@ static void bench_task(void *arg) {
                     w = mc_pack_manual_park(seq, (int8_t)(a < 0 ? -b : b));
                 }
                 else if (sscanf(line, "park %d", &a) == 1) w = mc_pack_manual_park(seq, (int8_t)(a < 0 ? -MC_PARK_PCT : MC_PARK_PCT));
+                else if (sscanf(line, "zz %d", &a) == 1) {
+                    mc_set_zigzag(a);
+                    printf("[bench] zigzag strafe = %d ms%s\n", mc_get_zigzag(), mc_get_zigzag() ? "" : " (off)");
+                }
                 else if (sscanf(line, "kick %d %d", &a, &b) == 2) {
                     mc_set_kick(a, b);
                     printf("[bench] start boost = %d%% for %d ms\n", mc_get_kick_pct(), mc_get_kick_ms());

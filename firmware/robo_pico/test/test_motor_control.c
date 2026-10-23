@@ -358,7 +358,31 @@ static void test_park(void) {
     CHECK(mc_state(&s.mc) == MS_IDLE && s.results[MR_DONE] == 1, "park -> RAMP DOWN -> IDLE + DONE");
 }
 
+static void test_zigzag_strafe(void) {
+    puts("zigzag strafe: diagonals in turn, 2 wheels at full, no forward drift on average");
+    mc_set_zigzag(200);
+    sim_t s; sim_init(&s, 0); sim_tick(&s); mc_set_system_ready(&s.mc, true);
+    uint32_t w = mc_pack_manual_drive(1, 0, 100, 0);          /* strafe right */
+    sim_cmd(&s, w);
+    int fr_phase = 0, br_phase = 0, other = 0;
+    for (int i = 0; i < 100; i++) {                           /* 2 s */
+        sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, w);
+        int8_t *d = s.mc.duty;
+        if (d[0] == 100 && d[3] == 100 && d[1] == 0 && d[2] == 0) fr_phase++;
+        else if (d[1] == -100 && d[2] == -100 && d[0] == 0 && d[3] == 0) br_phase++;
+        else other++;
+    }
+    CHECK(fr_phase > 30 && br_phase > 30, "both diagonals used (front-right %d, back-right %d ticks)", fr_phase, br_phase);
+    CHECK(other == 0, "always exactly 2 wheels at full (other %d)", other);
+    CHECK(abs(fr_phase - br_phase) <= 10, "about equal time each way, so no net forward drift");
+    sim_cmd(&s, mc_pack_simple(MC_STOP, MC_SRC_MANUAL, 2));
+    for (int i = 0; i < 40; i++) sim_tick(&s);
+    CHECK(mc_state(&s.mc) == MS_IDLE, "normal stop still ramps down to IDLE");
+    mc_set_zigzag(0);
+}
+
 int main(void) {
+    mc_set_zigzag(0);   /* the older tests check the normal 4-wheel strafe */
     test_packing();
     test_helpers();
     test_zero_gyro_and_ready_gate();
@@ -373,6 +397,7 @@ int main(void) {
     test_direction_byte();
     test_start_boost();
     test_park();
+    test_zigzag_strafe();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
