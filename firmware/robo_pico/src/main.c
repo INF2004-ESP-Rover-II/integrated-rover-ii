@@ -8,7 +8,6 @@
 #include "motor_driver.h"
 #include "wifi_mqtt.h"
 #include "uart_protocol.h"
-#include "dfs_test_mode.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
 
@@ -73,27 +72,10 @@ static int last_turn_direction = 0;  // Remember last turn to bias against rever
 static uint32_t last_successful_forward_time = 0;  // Track when we last moved forward successfully
 static uint32_t entered_moving_forward_time = 0;  // When we entered MOVING_FORWARD state
 static bool safety_lock_reported = false;
-static dfs_test_mode_t dfs_test_mode;
 
 static void dfs_test_output(const char *message) {
     printf("%s\n", message);
     mqtt_publish_status(message);
-}
-
-// Called before legacy COMMAND:SPEED parsing so DFS arguments are not truncated.
-static bool handle_dfs_test_command(const char *command) {
-    if (!dfs_test_is_command(command) && !dfs_test_mode.active) return false;
-    autonomous_mode = false;
-    autonomous_state = AUTO_STATE_IDLE;
-    forward_boost_active = false;
-    motor_safety_receive(true, to_ms_since_boot(get_absolute_time()));
-    if (dfs_test_is_command(command)) {
-        dfs_test_command(&dfs_test_mode, command,
-            to_ms_since_boot(get_absolute_time()), dfs_test_output);
-    } else {
-        dfs_test_output("DFS_TEST LOCKED motors disabled; send DFS_TEST_EXIT before RESET_SAFETY");
-    }
-    return true;
 }
 
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms) {
@@ -614,7 +596,6 @@ int main() {
         cyw43_arch_poll();
         service_safety_stop();
         uint32_t now = to_ms_since_boot(get_absolute_time());
-        dfs_test_tick(&dfs_test_mode, now, dfs_test_output);
 
         if (now - last_timeout_check >= 100) {
             sys_check_timeouts();
