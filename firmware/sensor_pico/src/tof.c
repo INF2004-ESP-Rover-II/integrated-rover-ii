@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
@@ -56,6 +57,7 @@ uint8_t tof_init(const uint8_t xshut_pins[TOF_SENSOR_COUNT]) {
                 continue;
             }
             platform_ready = true;
+
         }
 
         if (!configure_sensor(sensor_addresses[i])) {
@@ -63,6 +65,8 @@ uint8_t tof_init(const uint8_t xshut_pins[TOF_SENSOR_COUNT]) {
             gpio_put(sensor_xshut_pins[i], 0);
             continue;
         }
+    printf("ToF sensor initialised 1!\n");
+    printf("online_mask = 0x%02X\n", online_mask);
 
         online_mask |= (uint8_t)(1u << i);
     }
@@ -96,6 +100,13 @@ void tof_poll(tof_readings_t *readings) {
         if (result.status == 0) {
             readings->valid_mask |= bit;
             readings->distance_mm[i] = result.distance;
+        } else if (result.status == 2 || result.status == 4) {
+            // Project policy: a fresh weak-signal/no-target (2) or out-of-bounds
+            // (4) result is no detected obstacle, not a failed sensor. These
+            // statuses do not guarantee empty space (e.g. weak target returns).
+            // Other range errors and I2C failures remain unavailable readings.
+            readings->valid_mask |= bit;
+            readings->distance_mm[i] = TOF_NO_TARGET_MM;
         }
     }
 }

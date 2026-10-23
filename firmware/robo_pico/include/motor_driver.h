@@ -10,7 +10,8 @@ typedef enum {
     MOTOR_ERR_INIT = -1,
     MOTOR_ERR_PIN = -2,
     MOTOR_ERR_TIMEOUT = -3,
-    MOTOR_ERR_OVERCURRENT = -4
+    MOTOR_ERR_OVERCURRENT = -4,
+    MOTOR_ERR_SAFETY = -5
 } motor_error_t;
 
 // Motor movement directions
@@ -90,6 +91,13 @@ motor_error_t claw_set_direction(claw_direction_t direction);
  * @return MOTOR_OK on success, error code otherwise
  */
 motor_error_t motor_emergency_stop(void);
+
+// IRQ-safe safety path: latch and cut outputs without reverse thrust or logging.
+void motor_safety_receive(bool stop_requested, uint32_t receive_ms);
+void motor_safety_poll(void);
+bool motor_safety_is_latched(void);
+// Only succeeds with a recent healthy UART frame. Does not start any motor.
+bool motor_safety_reset(void);
 
 /**
  * @brief Check if motors are currently active

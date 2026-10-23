@@ -1,2 +1,7 @@
 /build
 /.vscode
+/firmware/robo_pico/include/config.h
+/.venv
+OBSTACLE_TELEMETRY.md
+B1_TASK_CHECKLIST.md
+/tests

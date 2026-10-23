@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
+#include "hardware/sync.h"
+#include "safety_interlock.h"
 
 // =================== PRIVATE STATE ===================
 static uint16_t wrapFA, wrapFB, wrapBA, wrapBB;
@@ -18,6 +20,7 @@ static uint16_t wrapClawB = 0;
 static bool braking_active = false;
 static uint32_t brake_start_time = 0;
 static const uint32_t BRAKE_DURATION_MS = 300; // Brake for 300ms
+static safety_interlock_t safety = {.latched = true, .stop_requested = true};
 
 // =================== PRIVATE FUNCTION DECLARATIONS ====================
 static void arm_off(void);
@@ -132,7 +135,7 @@ static void apply_emergency_brake(void) {
     braking_active = true;
     brake_start_time = to_ms_since_boot(get_absolute_time());
     
-    printf("[MOTOR] Emergency brake applied: reverse thrust braking\n");
+    // Logging is done after restoring interrupts in motor_emergency_stop().
 }
 
 static void stop_all_motors_final(void) {
@@ -182,12 +185,18 @@ static void arm_off(void) {
 }
 
 void arm_set_pwm_duty(float duty_up, float duty_down) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    if (safety.latched) {
+        restore_interrupts(irq_state);
+        return;
+    }
     if (duty_up < 0) duty_up = 0;
     if (duty_up > 100) duty_up = 100;
     if (duty_down < 0) duty_down = 0;
     if (duty_down > 100) duty_down = 100;
     pwm_set_duty_percent(ARM_M1A_PIN, wrapArmA, duty_up);
     pwm_set_duty_percent(ARM_M1B_PIN, wrapArmB, duty_down);
+    restore_interrupts(irq_state);
 }
 
 // ================== CLAW CONTROL ======================
@@ -263,6 +272,7 @@ motor_error_t motor_init(void) {
     motors_active = false;
     braking_active = false;
     last_error = MOTOR_OK;
+    safety_interlock_init(&safety);
     
     printf("[MOTOR] Initialization complete (with reverse thrust braking)\n");
     return MOTOR_OK;
@@ -274,13 +284,14 @@ void motor_update_activity(void) {
 }
 
 void motor_check_brake_timeout(void) {
-    if (!braking_active) return;
-    
+    uint32_t irq_state = save_and_disable_interrupts();
     uint32_t now = to_ms_since_boot(get_absolute_time());
-    if ((now - brake_start_time) > BRAKE_DURATION_MS) {
+    bool completed = braking_active && (now - brake_start_time) > BRAKE_DURATION_MS;
+    if (completed) {
         stop_all_motors_final();
-        printf("[MOTOR] Braking period completed - all motors stopped\n");
     }
+    restore_interrupts(irq_state);
+    if (completed) printf("[MOTOR] Braking period completed - all motors stopped\n");
 }
 
 motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent) {
@@ -288,7 +299,7 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
     return motor_set_direction_individual(direction, speed_percent, 100, 100, 100, 100);
 }
 
-motor_error_t motor_set_direction_individual(motor_direction_t direction, int speed_percent,
+static motor_error_t set_direction_unlocked(motor_direction_t direction, int speed_percent,
                                              int speed_fl, int speed_fr, int speed_bl, int speed_br) {
     if (speed_percent < 0 || speed_percent > 100) {
         last_error = MOTOR_ERR_PIN;
@@ -377,9 +388,6 @@ motor_error_t motor_set_direction_individual(motor_direction_t direction, int sp
             backB_set(0, wrapBB);
             break;
 
-        case DIRECTION_STOP:
-            return motor_emergency_stop();
-
         default:
             last_error = MOTOR_ERR_PIN;
             return MOTOR_ERR_PIN;
@@ -390,7 +398,21 @@ motor_error_t motor_set_direction_individual(motor_direction_t direction, int sp
     return MOTOR_OK;
 }
 
-motor_error_t arm_set_direction(arm_direction_t direction) {
+motor_error_t motor_set_direction_individual(motor_direction_t direction, int speed_percent,
+                                             int speed_fl, int speed_fr, int speed_bl, int speed_br) {
+    if (direction == DIRECTION_STOP) return motor_emergency_stop();
+    uint32_t irq_state = save_and_disable_interrupts();
+    motor_error_t result = MOTOR_ERR_SAFETY;
+    if (!safety.latched) {
+        result = set_direction_unlocked(direction, speed_percent,
+                                        speed_fl, speed_fr, speed_bl, speed_br);
+    }
+    last_error = result;
+    restore_interrupts(irq_state);
+    return result;
+}
+
+static motor_error_t set_arm_unlocked(arm_direction_t direction) {
     switch (direction) {
         case ARM_UP:
             arm_up_on();
@@ -412,7 +434,16 @@ motor_error_t arm_set_direction(arm_direction_t direction) {
     return MOTOR_OK;
 }
 
-motor_error_t claw_set_direction(claw_direction_t direction) {
+motor_error_t arm_set_direction(arm_direction_t direction) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    motor_error_t result = MOTOR_ERR_SAFETY;
+    if (!safety.latched || direction == ARM_STOP) result = set_arm_unlocked(direction);
+    last_error = result;
+    restore_interrupts(irq_state);
+    return result;
+}
+
+static motor_error_t set_claw_unlocked(claw_direction_t direction) {
     switch (direction) {
         case CLAW_OPEN:
             claw_open_on();
@@ -434,13 +465,59 @@ motor_error_t claw_set_direction(claw_direction_t direction) {
     return MOTOR_OK;
 }
 
+motor_error_t claw_set_direction(claw_direction_t direction) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    motor_error_t result = MOTOR_ERR_SAFETY;
+    if (!safety.latched || direction == CLAW_STOP) result = set_claw_unlocked(direction);
+    last_error = result;
+    restore_interrupts(irq_state);
+    return result;
+}
+
+void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    safety_interlock_receive(&safety, stop_requested, receive_ms);
+    if (safety.latched) stop_all_motors_final();
+    restore_interrupts(irq_state);
+}
+
+void motor_safety_poll(void) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    safety_interlock_poll(&safety, to_ms_since_boot(get_absolute_time()));
+    if (safety.latched) stop_all_motors_final();
+    restore_interrupts(irq_state);
+}
+
+bool motor_safety_is_latched(void) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    bool latched = safety.latched;
+    restore_interrupts(irq_state);
+    return latched;
+}
+
+bool motor_safety_reset(void) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    bool ready = safety_interlock_reset(&safety, to_ms_since_boot(get_absolute_time()));
+    // Reset itself cannot energize outputs or resume a previous command.
+    stop_all_motors_final();
+    restore_interrupts(irq_state);
+    return ready;
+}
+
 motor_error_t motor_emergency_stop(void) {
-    // Instead of immediately stopping, apply reverse thrust braking
-    if (!braking_active) {
-        apply_emergency_brake();
+    uint32_t irq_state = save_and_disable_interrupts();
+    bool started_braking = false;
+    if (safety.latched) {
+        stop_all_motors_final();
     }
-    
+    // Instead of immediately stopping, apply reverse thrust braking
+    else if (!braking_active) {
+        apply_emergency_brake();
+        started_braking = true;
+    }
     last_error = MOTOR_OK;
+    restore_interrupts(irq_state);
+    if (started_braking) printf("[MOTOR] Emergency brake applied: reverse thrust braking\n");
     return MOTOR_OK;
 }
 

@@ -5,6 +5,10 @@
 
 #define TOF_SENSOR_COUNT 3
 
+// A responding sensor with no detected target. Not a measured distance; mapping
+// must skip it. Reserved on UART too, so the packet layout remains unchanged.
+#define TOF_NO_TARGET_MM UINT16_MAX
+
 typedef enum {
     TOF_LEFT = 0,
     TOF_FRONT = 1,
@@ -15,7 +19,7 @@ typedef struct {
     uint16_t distance_mm[TOF_SENSOR_COUNT];
     uint32_t timestamp_ms[TOF_SENSOR_COUNT];
     uint8_t fresh_mask;  // Bit i: a new result was read for sensor i.
-    uint8_t valid_mask;  // Bit i: the new result has a valid range status.
+    uint8_t valid_mask;  // Bit i: usable distance OR fresh no-target sentinel.
 } tof_readings_t;
 
 // Configure the three VL53L1X sensors in LEFT, FRONT, RIGHT order.

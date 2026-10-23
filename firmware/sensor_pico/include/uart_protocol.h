@@ -45,6 +45,14 @@ typedef struct {
     uint8_t imu_status;         // 0=OK, 1=ERROR
     uint8_t ultrasonic_status;  // Bitmask: bit0=front, bit1=back, bit2=left, bit3=right
 
+    // ToF obstacle snapshot. Direction bits: left=1, front=2, right=4.
+    // Skip 0 (unavailable) and 65535 (no target) when using numerical distances.
+    uint16_t tof_mm[3];         // Left/front/right mm; 0 unavailable, 65535 no target.
+    uint8_t blocked_mask;
+    uint8_t urgent_mask;
+    uint8_t fault_mask;         // Reserved; Sensor Pico sends zero.
+    uint8_t stop_required;      // 0 or 1; a status flag, not a motor command.
+
     // LiDAR data
     uint8_t lidar_count;  // Number of LiDAR points (<= MAX_LIDAR_POINTS)
     struct {

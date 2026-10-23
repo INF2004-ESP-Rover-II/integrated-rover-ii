@@ -26,6 +26,7 @@ add_executable(sensor_pico
     src/sd_config.c
     src/rplidar.c
     src/tof.c
+    src/obstacle.c
 )
 
 target_include_directories(sensor_pico PRIVATE

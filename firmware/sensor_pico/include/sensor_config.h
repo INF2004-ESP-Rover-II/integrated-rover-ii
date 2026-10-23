@@ -31,6 +31,13 @@
 #define TOF_FRONT_XSHUT_PIN  19
 #define TOF_RIGHT_XSHUT_PIN  20
 
+// Provisional obstacle thresholds. Validate against measured stopping distance.
+// A blocked exit is a navigation event; only front urgency requests a proximity stop.
+#define OBSTACLE_URGENT_MM      150u
+#define OBSTACLE_BLOCKED_MM     400u
+#define OBSTACLE_HYSTERESIS_MM   50u
+#define OBSTACLE_STALE_MS       300u
+
 // ====================== ULTRASONIC SENSOR CONFIG ======================
 // Front Sensor
 #define ULTRA_FRONT_TRIG_PIN    26

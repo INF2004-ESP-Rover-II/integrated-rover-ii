@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -14,6 +15,7 @@ static uart_inst_t* uart_instance = NULL;
 static uart_rx_state_t rx_state = UART_SYNC1;
 static uint8_t rx_buffer[sizeof(sensor_packet_t)];
 static size_t rx_index = 0;
+static uart_packet_callback_t packet_callback = NULL;
 
 // Double buffer for thread-safe packet access
 static sensor_packet_t packet_buffer[2];
@@ -45,6 +47,12 @@ bool validate_packet_checksum(const sensor_packet_t* packet) {
     return (calculate_packet_checksum(packet) == packet->checksum);
 }
 
+void uart_set_packet_callback(uart_packet_callback_t callback) {
+    uint32_t irq_state = save_and_disable_interrupts();
+    packet_callback = callback;
+    restore_interrupts(irq_state);
+}
+
 void uart_receiver_init(uart_inst_t* uart_id, uint32_t baud_rate, int rx_pin, int tx_pin) {
     uart_instance = uart_id;
     
@@ -61,7 +69,12 @@ void uart_receiver_init(uart_inst_t* uart_id, uint32_t baud_rate, int rx_pin, in
     
     // Configure UART
     uart_set_format(uart_instance, 8, 1, UART_PARITY_NONE);
-    uart_set_fifo_enabled(uart_instance, false);
+    uart_set_fifo_enabled(uart_instance, true);
+
+    // Initialize the mailbox and parser before enabling reception interrupts.
+    rx_state = UART_SYNC1;
+    rx_index = 0;
+    new_packet_available = false;
     
     // Set up interrupt
     int uart_irq = (uart_instance == uart0) ? UART0_IRQ : UART1_IRQ;
@@ -70,11 +83,6 @@ void uart_receiver_init(uart_inst_t* uart_id, uint32_t baud_rate, int rx_pin, in
     
     // Enable RX interrupt
     uart_set_irq_enables(uart_instance, true, false);
-    
-    // Initialize state
-    rx_state = UART_SYNC1;
-    rx_index = 0;
-    new_packet_available = false;
     
     printf("[UART] Receiver initialized at %d baud (RX=GP%d)\n", baud_rate, rx_pin);
 }
@@ -114,6 +122,9 @@ static void uart_rx_interrupt_handler(void) {
                     // Validate checksum
                     sensor_packet_t* packet = (sensor_packet_t*)rx_buffer;
                     if (validate_packet_checksum(packet)) {
+                        if (packet_callback != NULL) {
+                            packet_callback(packet, to_ms_since_boot(get_absolute_time()));
+                        }
                         // Copy to write buffer
                         memcpy(&packet_buffer[write_buffer], packet, sizeof(sensor_packet_t));
                         
@@ -141,7 +152,9 @@ bool uart_packet_available(void) {
 }
 
 bool uart_get_packet(sensor_packet_t* packet) {
+    uint32_t irq_state = save_and_disable_interrupts();
     if (!new_packet_available) {
+        restore_interrupts(irq_state);
         return false;
     }
     
@@ -149,6 +162,7 @@ bool uart_get_packet(sensor_packet_t* packet) {
     memcpy(packet, &packet_buffer[read_buffer], sizeof(sensor_packet_t));
     
     new_packet_available = false;
+    restore_interrupts(irq_state);
     return true;
 }
 
