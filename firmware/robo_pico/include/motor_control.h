@@ -100,6 +100,10 @@ void mc_set_kick(int pct, int ms);
 int  mc_get_kick_pct(void);
 int  mc_get_kick_ms(void);
 
+/** Zigzag strafe: switch diagonal every ms (0 = normal 4-wheel strafe). */
+void mc_set_zigzag(int ms);
+int  mc_get_zigzag(void);
+
 /* ---- helpers, exposed for unit tests ---- */
 int16_t mc_heading_error(uint16_t target_tenths, uint16_t current_tenths); /* -1800..1799 */
 void    mc_mix(int vx, int vy, int w, int out[MC_WHEELS]);                 /* inverse kinematics */
