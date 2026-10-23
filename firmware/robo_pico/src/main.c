@@ -29,15 +29,6 @@ static sensor_packet_t latest_sensors;
 static bool sensor_data_valid = false;
 static uint32_t last_sensor_packet_ms = 0;  // Local receive time, not Sensor Pico time.
 
-// Current speed setting
-static int current_speed = 90;
-
-// Individual wheel speed adjustments (0-100%)
-static int wheel_speed_fl = 100;
-static int wheel_speed_fr = 100;
-static int wheel_speed_bl = 100;
-static int wheel_speed_br = 100;
-
 // LIDAR parsing state
 static uint32_t lidar_points_received = 0;
 
@@ -164,61 +155,16 @@ static void process_command(const char *command) {
     if (handle_dfs_test_command(command)) return;
 
     motor_error_t result = MOTOR_OK;
-    
+
+    // Dashboard keys: one word per move (e.g. "FORWARD"). Anything after a
+    // ':' (old speed / wheel values) is ignored; each move has its own speed
+    // in motor_config.h (MC_DASH_*_PCT).
     char cmd_buffer[32];
-    int speed = current_speed;
-    
     strncpy(cmd_buffer, command, sizeof(cmd_buffer) - 1);
     cmd_buffer[sizeof(cmd_buffer) - 1] = '\0';
-    
-    // Parse format: COMMAND:SPEED:FL:FR:BL:BR
     char *colon = strchr(cmd_buffer, ':');
-    if (colon != NULL) {
-        *colon = '\0';
-        speed = atoi(colon + 1);
-        
-        if (speed < 20) speed = 20;
-        if (speed > 100) speed = 100;
-        
-        current_speed = speed;
-        
-        // Parse wheel speed adjustments if present
-        char *colon2 = strchr(colon + 1, ':');
-        if (colon2 != NULL) {
-            wheel_speed_fl = atoi(colon2 + 1);
-            
-            char *colon3 = strchr(colon2 + 1, ':');
-            if (colon3 != NULL) {
-                wheel_speed_fr = atoi(colon3 + 1);
-                
-                char *colon4 = strchr(colon3 + 1, ':');
-                if (colon4 != NULL) {
-                    wheel_speed_bl = atoi(colon4 + 1);
-                    
-                    char *colon5 = strchr(colon4 + 1, ':');
-                    if (colon5 != NULL) {
-                        wheel_speed_br = atoi(colon5 + 1);
-                    }
-                }
-            }
-            
-            // Clamp values
-            if (wheel_speed_fl < 0) wheel_speed_fl = 0;
-            if (wheel_speed_fl > 100) wheel_speed_fl = 100;
-            if (wheel_speed_fr < 0) wheel_speed_fr = 0;
-            if (wheel_speed_fr > 100) wheel_speed_fr = 100;
-            if (wheel_speed_bl < 0) wheel_speed_bl = 0;
-            if (wheel_speed_bl > 100) wheel_speed_bl = 100;
-            if (wheel_speed_br < 0) wheel_speed_br = 0;
-            if (wheel_speed_br > 100) wheel_speed_br = 100;
-            
-            printf("[CMD] Wheel speeds: FL=%d%% FR=%d%% BL=%d%% BR=%d%%\n",
-                   wheel_speed_fl, wheel_speed_fr, wheel_speed_bl, wheel_speed_br);
-        }
-        
-        printf("[CMD] Speed set to: %d%%\n", speed);
-    }
-    
+    if (colon != NULL) *colon = '\0';
+
     service_safety_stop();
     if (strcmp(cmd_buffer, "RESET_SAFETY") == 0) {
         autonomous_mode = false;
@@ -253,6 +199,7 @@ static void process_command(const char *command) {
 
     if (strncmp(cmd_buffer, "FORWARD", 7) == 0) {
         // Apply pitch compensation for upslope
+        int speed = motor_move_speed(DIRECTION_FORWARD);
         int compensated_speed = apply_pitch_compensation(speed, latest_sensors.pitch);
         if (compensated_speed != speed) {
             char msg[128];
@@ -261,54 +208,34 @@ static void process_command(const char *command) {
             printf("[%s]\n", msg);
             mqtt_publish_status(msg);
         }
-        result = motor_set_direction_individual(DIRECTION_FORWARD, compensated_speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_FORWARD, compensated_speed);
     }
     else if (strncmp(cmd_buffer, "BACKWARD", 8) == 0) {
-        result = motor_set_direction_individual(DIRECTION_BACKWARD, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_BACKWARD, motor_move_speed(DIRECTION_BACKWARD));
     }
     else if (strncmp(cmd_buffer, "LEFT", 4) == 0) {
-        result = motor_set_direction_individual(DIRECTION_LEFT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_LEFT, motor_move_speed(DIRECTION_LEFT));
     }
     else if (strncmp(cmd_buffer, "RIGHT", 5) == 0) {
-        result = motor_set_direction_individual(DIRECTION_RIGHT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_RIGHT, motor_move_speed(DIRECTION_RIGHT));
     }
     else if (strncmp(cmd_buffer, "ROTATE_LEFT", 11) == 0) {
-        result = motor_set_direction_individual(DIRECTION_ROTATE_LEFT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_ROTATE_LEFT, motor_move_speed(DIRECTION_ROTATE_LEFT));
     }
     else if (strncmp(cmd_buffer, "ROTATE_RIGHT", 12) == 0) {
-        result = motor_set_direction_individual(DIRECTION_ROTATE_RIGHT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_ROTATE_RIGHT, motor_move_speed(DIRECTION_ROTATE_RIGHT));
     }
     else if (strncmp(cmd_buffer, "FRONT_LEFT", 10) == 0) {
-        result = motor_set_direction_individual(DIRECTION_FRONT_LEFT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_FRONT_LEFT, motor_move_speed(DIRECTION_FRONT_LEFT));
     }
     else if (strncmp(cmd_buffer, "FRONT_RIGHT", 11) == 0) {
-        result = motor_set_direction_individual(DIRECTION_FRONT_RIGHT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_FRONT_RIGHT, motor_move_speed(DIRECTION_FRONT_RIGHT));
     }
     else if (strncmp(cmd_buffer, "BACK_LEFT", 9) == 0) {
-        result = motor_set_direction_individual(DIRECTION_BACK_LEFT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_BACK_LEFT, motor_move_speed(DIRECTION_BACK_LEFT));
     }
     else if (strncmp(cmd_buffer, "BACK_RIGHT", 10) == 0) {
-        result = motor_set_direction_individual(DIRECTION_BACK_RIGHT, speed,
-                                                wheel_speed_fl, wheel_speed_fr,
-                                                wheel_speed_bl, wheel_speed_br);
+        result = motor_set_direction(DIRECTION_BACK_RIGHT, motor_move_speed(DIRECTION_BACK_RIGHT));
     }
     else if (strncmp(cmd_buffer, "ARM_UP", 6) == 0) {
         // Direct mapping per corrected wiring
@@ -603,7 +530,6 @@ int main() {
             last_timeout_check = now;
         }
         
-        motor_check_brake_timeout();
     
         // check_for_lidar_data();
 
@@ -988,7 +914,6 @@ int main() {
             last_stats_print = now;
         }
 
-        motor_check_timeout();
         sleep_ms(100);
     }
 
