@@ -1,540 +1,339 @@
+/**
+ * @file motor_driver.c
+ * @brief Old motor_driver.h API, now running on the Subsystem 6 Motion
+ *        Control module (motor_control.c + motor_hw.c).
+ *
+ * main.c keeps calling motor_set_direction(), motor_emergency_stop(), etc.
+ * exactly as before. Underneath, every call becomes a packed command word
+ * for the Motion Control state machine (Week 6 Section 6.6), which adds:
+ *   - one fixed 20 ms update (repeating timer) for ramping + heading hold
+ *   - inverse kinematics for all omni moves (FR-38)
+ *   - ramp up / ramp down, start boost, deadband (FR-42)
+ *   - heading hold from the Sensor Pico heading (FR-41)
+ *   - active brake (IN1 = IN2, EN on) instead of reverse thrust
+ *   - the arm and claw as plain on/off GPIO, so they no longer share
+ *     PWM slice 5 with the back wheels (prof feedback)
+ *
+ * This build has no FreeRTOS, so motor_task.c is NOT used here (it is used
+ * by motor_bench/). Shared state is protected the same way the old driver
+ * did it: interrupts off around every access.
+ *
+ * Owner: Buddy 4 (Lim Zi Ying)
+ */
 #include "motor_driver.h"
 #include "config.h"
-#include <stdio.h>
-#include "pico/stdlib.h"
-#include "hardware/pwm.h"
-#include "hardware/sync.h"
 #include "safety_interlock.h"
 
-// =================== PRIVATE STATE ===================
-static uint16_t wrapFA, wrapFB, wrapBA, wrapBB;
-static volatile uint32_t last_command_time = 0;
-static volatile bool motors_active = false;
-static motor_error_t last_error = MOTOR_OK;
-static uint16_t wrapArmA = 0;
-static uint16_t wrapArmB = 0;
-static uint16_t wrapClawA = 0;
-static uint16_t wrapClawB = 0;
+#include "motor_control.h"
+#include "motor_config.h"
+#include "motor_hw.h"
+#include "motor_types.h"
 
-// Braking state variables
-static bool braking_active = false;
-static uint32_t brake_start_time = 0;
-static const uint32_t BRAKE_DURATION_MS = 300; // Brake for 300ms
-static safety_interlock_t safety = {.latched = true, .stop_requested = true};
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include "hardware/sync.h"
 
-// =================== PRIVATE FUNCTION DECLARATIONS ====================
-static void arm_off(void);
-static void claw_off(void);
-static void stop_all_motors_final(void);
-static void apply_emergency_brake(void);
-static void arm_up_on(void);
-static void arm_down_on(void);
-static void claw_open_on(void);
-static void claw_close_on(void);
-
-// =================== PWM HELPERS ====================
-static uint16_t pwm_wrap_for_freq(uint32_t sys_hz, float clkdiv, uint32_t freq_hz) {
-    float fwrap = (float)sys_hz / (clkdiv * (float)freq_hz) - 1.0f;
-    if (fwrap < 1) fwrap = 1;
-    if (fwrap > 65535) fwrap = 65535;
-    return (uint16_t)(fwrap + 0.5f);
-}
-
-static void pwm_setup_pin(uint pin, uint32_t freq_hz, float clkdiv, uint16_t *out_wrap) {
-    gpio_set_function(pin, GPIO_FUNC_PWM);
-    uint slice = pwm_gpio_to_slice_num(pin);
-    uint channel = pwm_gpio_to_channel(pin);
-    uint16_t wrap = pwm_wrap_for_freq(125000000u, clkdiv, freq_hz);
-
-    pwm_config cfg = pwm_get_default_config();
-    pwm_config_set_clkdiv(&cfg, clkdiv);
-    pwm_config_set_wrap(&cfg, wrap);
-    pwm_init(slice, &cfg, true);
-    pwm_set_chan_level(slice, channel, 0);
-
-    if (out_wrap) *out_wrap = wrap;
-}
-
-static void pwm_set_duty_percent(uint pin, uint16_t wrap, float duty_percent) {
-    if (duty_percent < 0) duty_percent = 0;
-    if (duty_percent > 100) duty_percent = 100;
-    uint slice = pwm_gpio_to_slice_num(pin);
-    uint channel = pwm_gpio_to_channel(pin);
-    uint16_t level = (uint16_t)((duty_percent / 100.0f) * wrap);
-    pwm_set_chan_level(slice, channel, level);
-}
-
-// ================== MOTOR PRIMITIVES =================
-static void frontA_set(int speed_percent, uint16_t wrap) {
-    if (speed_percent > 0) {
-        gpio_put(F_IN1_PIN, 1);
-        gpio_put(F_IN2_PIN, 0);
-        pwm_set_duty_percent(F_ENA_PIN, wrap, speed_percent);
-    } else if (speed_percent < 0) {
-        gpio_put(F_IN1_PIN, 0);
-        gpio_put(F_IN2_PIN, 1);
-        pwm_set_duty_percent(F_ENA_PIN, wrap, -speed_percent);
-    } else {
-        pwm_set_duty_percent(F_ENA_PIN, wrap, 0);
-    }
-}
-
-static void frontB_set(int speed_percent, uint16_t wrap) {
-    if (speed_percent > 0) {
-        gpio_put(F_IN3_PIN, 1);
-        gpio_put(F_IN4_PIN, 0);
-        pwm_set_duty_percent(F_ENB_PIN, wrap, speed_percent);
-    } else if (speed_percent < 0) {
-        gpio_put(F_IN3_PIN, 0);
-        gpio_put(F_IN4_PIN, 1);
-        pwm_set_duty_percent(F_ENB_PIN, wrap, -speed_percent);
-    } else {
-        pwm_set_duty_percent(F_ENB_PIN, wrap, 0);
-    }
-}
-
-static void backA_set(int speed_percent, uint16_t wrap) {
-    if (speed_percent > 0) {
-        gpio_put(B_IN1_PIN, 1);
-        gpio_put(B_IN2_PIN, 0);
-        pwm_set_duty_percent(B_ENA_PIN, wrap, speed_percent);
-    } else if (speed_percent < 0) {
-        gpio_put(B_IN1_PIN, 0);
-        gpio_put(B_IN2_PIN, 1);
-        pwm_set_duty_percent(B_ENA_PIN, wrap, -speed_percent);
-    } else {
-        pwm_set_duty_percent(B_ENA_PIN, wrap, 0);
-    }
-}
-
-static void backB_set(int speed_percent, uint16_t wrap) {
-    if (speed_percent > 0) {
-        gpio_put(B_IN3_PIN, 1);
-        gpio_put(B_IN4_PIN, 0);
-        pwm_set_duty_percent(B_ENB_PIN, wrap, speed_percent);
-    } else if (speed_percent < 0) {
-        gpio_put(B_IN3_PIN, 0);
-        gpio_put(B_IN4_PIN, 1);
-        pwm_set_duty_percent(B_ENB_PIN, wrap, -speed_percent);
-    } else {
-        pwm_set_duty_percent(B_ENB_PIN, wrap, 0);
-    }
-}
-
-// ================== BRAKING FUNCTIONS =================
-static void apply_emergency_brake(void) {
-    // Apply reverse thrust to all wheels
-    // Front wheels: spin backward, Back wheels: spin forward
-    int brake_power = 100; // 60% power for braking
-    
-    frontA_set(-brake_power, wrapFA);  // Front left: backward
-    frontB_set(-brake_power, wrapFB);  // Front right: backward  
-    backA_set(brake_power, wrapBA);    // Back left: forward
-    backB_set(brake_power, wrapBB);    // Back right: forward
-    
-    braking_active = true;
-    brake_start_time = to_ms_since_boot(get_absolute_time());
-    
-    // Logging is done after restoring interrupts in motor_emergency_stop().
-}
-
-static void stop_all_motors_final(void) {
-    // Completely stop all motors
-    frontA_set(0, wrapFA);
-    frontB_set(0, wrapFB);
-    backA_set(0, wrapBA);
-    backB_set(0, wrapBB);
-    arm_off();
-    claw_off();
-    
-    braking_active = false;
-    motors_active = false;
-}
-
-// ================== ARM CONTROL ======================
-static void arm_down_on(void) {
-    gpio_set_function(ARM_M1B_PIN, GPIO_FUNC_SIO);
-    gpio_put(ARM_M1B_PIN, 0);
-    pwm_set_duty_percent(ARM_M1B_PIN, wrapArmB, 0);
-
-    gpio_set_function(ARM_M1A_PIN, GPIO_FUNC_PWM);
-    pwm_set_duty_percent(ARM_M1A_PIN, wrapArmA, 80.0f);
-}
-
-static void arm_up_on(void) {
-    gpio_set_function(ARM_M1A_PIN, GPIO_FUNC_SIO);
-    gpio_put(ARM_M1A_PIN, 0);
-    pwm_set_duty_percent(ARM_M1A_PIN, wrapArmA, 0);
-
-    gpio_set_function(ARM_M1B_PIN, GPIO_FUNC_PWM);
-    pwm_set_duty_percent(ARM_M1B_PIN, wrapArmB, 100.0f);
-}
-
-static void arm_off(void) {
-    gpio_set_function(ARM_M1A_PIN, GPIO_FUNC_SIO);
-    gpio_set_function(ARM_M1B_PIN, GPIO_FUNC_SIO);
-    pwm_set_duty_percent(ARM_M1A_PIN, wrapArmA, 0);
-    pwm_set_duty_percent(ARM_M1B_PIN, wrapArmB, 0);
-#if ARM_BRAKE_ON_STOP
-    gpio_put(ARM_M1A_PIN, 1);
-    gpio_put(ARM_M1B_PIN, 1);
-#else
-    gpio_put(ARM_M1A_PIN, 0);
-    gpio_put(ARM_M1B_PIN, 0);
+/* Send the movement-direction byte to the Sensor Pico (GP12 -> GP17).
+ * Off until the Sensor Pico side reads it (agree with the Collision
+ * Detection owner first), so nothing unexpected arrives on that line. */
+#ifndef MOTOR_SEND_DIR_BYTE
+#define MOTOR_SEND_DIR_BYTE 0
 #endif
-}
 
-void arm_set_pwm_duty(float duty_up, float duty_down) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    if (safety.latched) {
-        restore_interrupts(irq_state);
-        return;
-    }
-    if (duty_up < 0) duty_up = 0;
-    if (duty_up > 100) duty_up = 100;
-    if (duty_down < 0) duty_down = 0;
-    if (duty_down > 100) duty_down = 100;
-    pwm_set_duty_percent(ARM_M1A_PIN, wrapArmA, duty_up);
-    pwm_set_duty_percent(ARM_M1B_PIN, wrapArmB, duty_down);
-    restore_interrupts(irq_state);
-}
+/* main.c and the dashboard resend a held move every 200-400 ms, but Motion
+ * Control times out after MC_CMD_TIMEOUT_MS (300 ms). Until they resend
+ * every 100 ms, this driver keeps refreshing the last move itself for
+ * REFRESH_WINDOW_MS after each call, so the total timeout stays at the
+ * team's TIMEOUT_MS (800 ms, config.h), the same as the old driver. */
+#define REFRESH_WINDOW_MS (TIMEOUT_MS - MC_CMD_TIMEOUT_MS)
 
-// ================== CLAW CONTROL ======================
-static void claw_open_on(void) {
-    // Per wiring: CLAW_M1B (PIN9) opens
-    gpio_set_function(CLAW_M1A_PIN, GPIO_FUNC_SIO);
-    gpio_put(CLAW_M1A_PIN, 0);
-    pwm_set_duty_percent(CLAW_M1A_PIN, wrapClawA, 0);
+static mc_t               s_mc;
+static safety_interlock_t s_safety = {.latched = true, .stop_requested = true};
+static struct repeating_timer s_timer;
+static volatile uint32_t  s_heading_word;   /* one 32-bit store / load */
+static uint8_t            s_hdg_seq;
+static uint32_t           s_word;           /* move being held (0 = none) */
+static uint32_t           s_last_call_ms;
+static uint8_t            s_seq;
+static motor_error_t      s_last_error = MOTOR_OK;
 
-    gpio_set_function(CLAW_M1B_PIN, GPIO_FUNC_PWM);
-    pwm_set_duty_percent(CLAW_M1B_PIN, wrapClawB, 80.0f);
-}
+static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
-static void claw_close_on(void) {
-    // Per wiring: CLAW_M1A (PIN8) closes
-    gpio_set_function(CLAW_M1B_PIN, GPIO_FUNC_SIO);
-    gpio_put(CLAW_M1B_PIN, 0);
-    pwm_set_duty_percent(CLAW_M1B_PIN, wrapClawB, 0);
-
-    gpio_set_function(CLAW_M1A_PIN, GPIO_FUNC_PWM);
-    pwm_set_duty_percent(CLAW_M1A_PIN, wrapClawA, 80.0f);
-}
-
-static void claw_off(void) {
-    gpio_set_function(CLAW_M1A_PIN, GPIO_FUNC_SIO);
-    gpio_set_function(CLAW_M1B_PIN, GPIO_FUNC_SIO);
-    pwm_set_duty_percent(CLAW_M1A_PIN, wrapClawA, 0);
-    pwm_set_duty_percent(CLAW_M1B_PIN, wrapClawB, 0);
-#if CLAW_BRAKE_ON_STOP
-    gpio_put(CLAW_M1A_PIN, 1);
-    gpio_put(CLAW_M1B_PIN, 1);
-#else
-    gpio_put(CLAW_M1A_PIN, 0);
-    gpio_put(CLAW_M1B_PIN, 0);
+static void apply(const mc_out_t *o) {
+#if MOTOR_SEND_DIR_BYTE
+    if (o->dir_send) motor_hw_send_dir(o->dir_byte);   /* direction before motion */
 #endif
+    motor_hw_apply(o);
 }
 
-// ================= PUBLIC API IMPLEMENTATION =========
-motor_error_t motor_init(void) {
-    // Initialize wheel direction pins
-    gpio_init(F_IN1_PIN); gpio_set_dir(F_IN1_PIN, GPIO_OUT); gpio_put(F_IN1_PIN, 0);
-    gpio_init(F_IN2_PIN); gpio_set_dir(F_IN2_PIN, GPIO_OUT); gpio_put(F_IN2_PIN, 0);
-    gpio_init(F_IN3_PIN); gpio_set_dir(F_IN3_PIN, GPIO_OUT); gpio_put(F_IN3_PIN, 0);
-    gpio_init(F_IN4_PIN); gpio_set_dir(F_IN4_PIN, GPIO_OUT); gpio_put(F_IN4_PIN, 0);
+/* ---------------- fixed 20 ms update (timer interrupt) ---------------- */
 
-    gpio_init(B_IN1_PIN); gpio_set_dir(B_IN1_PIN, GPIO_OUT); gpio_put(B_IN1_PIN, 0);
-    gpio_init(B_IN2_PIN); gpio_set_dir(B_IN2_PIN, GPIO_OUT); gpio_put(B_IN2_PIN, 0);
-    gpio_init(B_IN3_PIN); gpio_set_dir(B_IN3_PIN, GPIO_OUT); gpio_put(B_IN3_PIN, 0);
-    gpio_init(B_IN4_PIN); gpio_set_dir(B_IN4_PIN, GPIO_OUT); gpio_put(B_IN4_PIN, 0);
+static bool motion_tick(struct repeating_timer *t) {
+    (void)t;
+    uint32_t irq = save_and_disable_interrupts();
+    uint32_t nm = now_ms();
+    uint32_t hw = s_heading_word;
+    mc_out_t out;
 
-    // Initialize arm pins
-    gpio_init(ARM_M1A_PIN); gpio_set_dir(ARM_M1A_PIN, GPIO_OUT); gpio_put(ARM_M1A_PIN, 0);
-    gpio_init(ARM_M1B_PIN); gpio_set_dir(ARM_M1B_PIN, GPIO_OUT); gpio_put(ARM_M1B_PIN, 0);
-    
-    // Initialize claw pins
-    gpio_init(CLAW_M1A_PIN); gpio_set_dir(CLAW_M1A_PIN, GPIO_OUT); gpio_put(CLAW_M1A_PIN, 0);
-    gpio_init(CLAW_M1B_PIN); gpio_set_dir(CLAW_M1B_PIN, GPIO_OUT); gpio_put(CLAW_M1B_PIN, 0);
+    if (s_word) {
+        if ((uint32_t)(nm - s_last_call_ms) <= REFRESH_WINDOW_MS) {
+            mc_out_clear(&out);
+            mc_command(&s_mc, s_word, nm, hw, &out);   /* same word = refresh */
+        } else {
+            s_word = 0;   /* caller went quiet: Motion Control times out (FR-42) */
+        }
+    }
+    mc_out_clear(&out);
+    mc_step(&s_mc, nm, hw, &out);
+    apply(&out);
+    restore_interrupts(irq);
+    return true;
+}
 
-    // Setup PWM for wheel enable pins
-    pwm_setup_pin(F_ENA_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapFA);
-    pwm_setup_pin(F_ENB_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapFB);
-    pwm_setup_pin(B_ENA_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapBA);
-    pwm_setup_pin(B_ENB_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapBB);
+/* ---------------- helpers (call with interrupts off) ---------------- */
 
-    // Arm PWM setup
-    pwm_setup_pin(ARM_M1A_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapArmA);
-    pwm_setup_pin(ARM_M1B_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapArmB);
+static uint8_t next_seq(void) { s_seq = (uint8_t)((s_seq + 1u) & 0xFu); return s_seq; }
 
-    // Claw PWM setup
-    pwm_setup_pin(CLAW_M1A_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapClawA);
-    pwm_setup_pin(CLAW_M1B_PIN, PWM_FREQ_HZ, PWM_CLKDIV, &wrapClawB);
-
-    motors_active = false;
-    braking_active = false;
-    last_error = MOTOR_OK;
-    safety_interlock_init(&safety);
-    
-    printf("[MOTOR] Initialization complete (with reverse thrust braking)\n");
+static motor_error_t submit(uint32_t word) {
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_command(&s_mc, word, now_ms(), s_heading_word, &out);
+    if (out.result_valid && (out.result_byte & 0x3u) == MR_REJECTED) return MOTOR_ERR_SAFETY;
     return MOTOR_OK;
 }
 
-void motor_update_activity(void) {
-    motors_active = true;
-    last_command_time = to_ms_since_boot(get_absolute_time());
+static void hard_stop(mc_stop_kind_t kind) {
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_immediate_stop(&s_mc, kind, now_ms(), &out);
+    motor_hw_apply(&out);
+    s_word = 0;
 }
 
-void motor_check_brake_timeout(void) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    uint32_t now = to_ms_since_boot(get_absolute_time());
-    bool completed = braking_active && (now - brake_start_time) > BRAKE_DURATION_MS;
-    if (completed) {
-        stop_all_motors_final();
+static int clamp100(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
+
+/* Old direction names -> body motion (vx forward, vy right, w clockwise).
+ * Diagonals use half on each axis, so the two pushing wheels get 'speed'
+ * and the other two stop, the same as the old driver. */
+static bool dir_to_motion(motor_direction_t d, int s, int *vx, int *vy, int *w) {
+    int h = s / 2;
+    *vx = *vy = *w = 0;
+    switch (d) {
+    case DIRECTION_FORWARD:      *vx =  s; break;
+    case DIRECTION_BACKWARD:     *vx = -s; break;
+    case DIRECTION_LEFT:         *vy = -s; break;
+    case DIRECTION_RIGHT:        *vy =  s; break;
+    case DIRECTION_ROTATE_LEFT:  *w  = -s; break;
+    case DIRECTION_ROTATE_RIGHT: *w  =  s; break;
+    case DIRECTION_FRONT_LEFT:   *vx =  h; *vy = -h; break;
+    case DIRECTION_FRONT_RIGHT:  *vx =  h; *vy =  h; break;
+    case DIRECTION_BACK_LEFT:    *vx = -h; *vy = -h; break;
+    case DIRECTION_BACK_RIGHT:   *vx = -h; *vy =  h; break;
+    default: return false;
     }
-    restore_interrupts(irq_state);
-    if (completed) printf("[MOTOR] Braking period completed - all motors stopped\n");
+    return true;
+}
+
+/* ============================== public API ============================== */
+
+motor_error_t motor_init(void) {
+    motor_hw_safe_boot();              /* claw, arm and wheels low first */
+    motor_hw_init();
+#if MOTOR_SEND_DIR_BYTE
+    motor_hw_dir_uart_init();
+#endif
+    mc_init(&s_mc);
+    mc_set_system_ready(&s_mc, false); /* locked until the safety interlock is ready */
+    safety_interlock_init(&s_safety);
+    s_word = 0;
+
+    if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer)) {
+        s_last_error = MOTOR_ERR_INIT;
+        return MOTOR_ERR_INIT;
+    }
+    printf("[MOTOR] Motion Control ready (%u ms update, active brake)\n", (unsigned)MC_PERIOD_MS);
+    s_last_error = MOTOR_OK;
+    return MOTOR_OK;
+}
+
+void motor_heading_update(float heading_deg, bool valid) {
+    if (!valid) return;                /* no new frame -> heading goes stale by itself */
+    while (heading_deg < 0.0f)    heading_deg += 360.0f;
+    while (heading_deg >= 360.0f) heading_deg -= 360.0f;
+    uint16_t tenths = (uint16_t)(heading_deg * 10.0f + 0.5f);
+    if (tenths >= 3600u) tenths = 0;
+    s_hdg_seq = (uint8_t)((s_hdg_seq + 1u) & 0xFu);
+    s_heading_word = heading_word_pack(tenths, s_hdg_seq, now_ms());   /* one store */
 }
 
 motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent) {
-    // Call individual function with 100% for all wheels (no adjustment)
     return motor_set_direction_individual(direction, speed_percent, 100, 100, 100, 100);
-}
-
-static motor_error_t set_direction_unlocked(motor_direction_t direction, int speed_percent,
-                                             int speed_fl, int speed_fr, int speed_bl, int speed_br) {
-    if (speed_percent < 0 || speed_percent > 100) {
-        last_error = MOTOR_ERR_PIN;
-        return MOTOR_ERR_PIN;
-    }
-
-    // If we're currently braking, cancel it for new movement commands
-    if (braking_active) {
-        stop_all_motors_final();
-    }
-
-    // Apply individual wheel adjustments to base speed
-    int sFL = (speed_percent * speed_fl) / 100;
-    int sFR = (speed_percent * speed_fr) / 100;
-    int sBL = (speed_percent * speed_bl) / 100;
-    int sBR = (speed_percent * speed_br) / 100;
-
-    switch (direction) {
-        case DIRECTION_FORWARD:
-            frontA_set(sFL, wrapFA);
-            frontB_set(sFR, wrapFB);
-            backA_set(sBL, wrapBA);
-            backB_set(sBR, wrapBB);
-            break;
-
-        case DIRECTION_BACKWARD:
-            frontA_set(-sFL, wrapFA);
-            frontB_set(-sFR, wrapFB);
-            backA_set(-sBL, wrapBA);
-            backB_set(-sBR, wrapBB);
-            break;
-
-        case DIRECTION_LEFT:
-            frontA_set(-sFL, wrapFA);
-            frontB_set(sFR, wrapFB);
-            backA_set(sBL, wrapBA);
-            backB_set(-sBR, wrapBB);
-            break;
-
-        case DIRECTION_RIGHT:
-            frontA_set(sFL, wrapFA);
-            frontB_set(-sFR, wrapFB);
-            backA_set(-sBL, wrapBA);
-            backB_set(sBR, wrapBB);
-            break;
-
-        case DIRECTION_ROTATE_LEFT:
-            frontA_set(-sFL, wrapFA);
-            frontB_set(sFR, wrapFB);
-            backA_set(-sBL, wrapBA);
-            backB_set(sBR, wrapBB);
-            break;
-
-        case DIRECTION_ROTATE_RIGHT:
-            frontA_set(sFL, wrapFA);
-            frontB_set(-sFR, wrapFB);
-            backA_set(sBL, wrapBA);
-            backB_set(-sBR, wrapBB);
-            break;
-
-        case DIRECTION_FRONT_LEFT:
-            frontA_set(0, wrapFA);
-            frontB_set(sFR, wrapFB);
-            backA_set(sBL, wrapBA);
-            backB_set(0, wrapBB);
-            break;
-
-        case DIRECTION_FRONT_RIGHT:
-            frontA_set(sFL, wrapFA);
-            frontB_set(0, wrapFB);
-            backA_set(0, wrapBA);
-            backB_set(sBR, wrapBB);
-            break;
-
-        case DIRECTION_BACK_LEFT:
-            frontA_set(-sFL, wrapFA);
-            frontB_set(0, wrapFB);
-            backA_set(0, wrapBA);
-            backB_set(-sBR, wrapBB);
-            break;
-
-        case DIRECTION_BACK_RIGHT:
-            frontA_set(0, wrapFA);
-            frontB_set(-sFR, wrapFB);
-            backA_set(-sBL, wrapBA);
-            backB_set(0, wrapBB);
-            break;
-
-        default:
-            last_error = MOTOR_ERR_PIN;
-            return MOTOR_ERR_PIN;
-    }
-
-    motor_update_activity();
-    last_error = MOTOR_OK;
-    return MOTOR_OK;
 }
 
 motor_error_t motor_set_direction_individual(motor_direction_t direction, int speed_percent,
                                              int speed_fl, int speed_fr, int speed_bl, int speed_br) {
     if (direction == DIRECTION_STOP) return motor_emergency_stop();
-    uint32_t irq_state = save_and_disable_interrupts();
-    motor_error_t result = MOTOR_ERR_SAFETY;
-    if (!safety.latched) {
-        result = set_direction_unlocked(direction, speed_percent,
-                                        speed_fl, speed_fr, speed_bl, speed_br);
-    }
-    last_error = result;
-    restore_interrupts(irq_state);
-    return result;
-}
+    if (speed_percent < 0 || speed_percent > 100) { s_last_error = MOTOR_ERR_PIN; return MOTOR_ERR_PIN; }
 
-static motor_error_t set_arm_unlocked(arm_direction_t direction) {
-    switch (direction) {
-        case ARM_UP:
-            arm_up_on();
-            break;
-        case ARM_DOWN:
-            arm_down_on();
-            break;
-        case ARM_STOP:
-            arm_off();
-            motors_active = false;
-            return MOTOR_OK;
-        default:
-            last_error = MOTOR_ERR_PIN;
-            return MOTOR_ERR_PIN;
+    int vx, vy, w;
+    if (!dir_to_motion(direction, speed_percent, &vx, &vy, &w)) {
+        s_last_error = MOTOR_ERR_PIN;
+        return MOTOR_ERR_PIN;
     }
 
-    motor_update_activity();
-    last_error = MOTOR_OK;
-    return MOTOR_OK;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = MOTOR_ERR_SAFETY;
+    if (!s_safety.latched) {
+        mc_set_trim(0, clamp100(speed_fl));
+        mc_set_trim(1, clamp100(speed_fr));
+        mc_set_trim(2, clamp100(speed_bl));
+        mc_set_trim(3, clamp100(speed_br));
+
+        /* Same move again = refresh (same word). A different move gets a
+         * new sequence number. */
+        uint32_t word = 0;
+        if (s_word && mc_state(&s_mc) == MS_MANUAL)
+            word = mc_pack_manual_drive(mc_seq(s_word), (int8_t)vx, (int8_t)vy, (int8_t)w);
+        if (word == 0 || word != s_word)
+            word = mc_pack_manual_drive(next_seq(), (int8_t)vx, (int8_t)vy, (int8_t)w);
+        r = submit(word);
+        if (r == MOTOR_OK) {
+            s_word = word;
+            s_last_call_ms = now_ms();
+        }
+    }
+    s_last_error = r;
+    restore_interrupts(irq);
+    return r;
 }
+
+/* Parallel park (strafe for MC_PARK_DURATION_MS, then stops by itself).
+ * direction: -1 = left, +1 = right. power 10..100, 0 = default. */
+motor_error_t motor_parallel_park(int direction, int power_percent) {
+    int p = power_percent > 0 ? clamp100(power_percent) : MC_PARK_PCT;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = MOTOR_ERR_SAFETY;
+    if (!s_safety.latched) {
+        uint32_t word = mc_pack_manual_park(next_seq(), (int8_t)(direction < 0 ? -p : p));
+        r = submit(word);
+        s_word = 0;                    /* park ends by itself: no auto refresh */
+    }
+    s_last_error = r;
+    restore_interrupts(irq);
+    return r;
+}
+
+/* ---------------- arm / claw: plain on/off GPIO ---------------- */
 
 motor_error_t arm_set_direction(arm_direction_t direction) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    motor_error_t result = MOTOR_ERR_SAFETY;
-    if (!safety.latched || direction == ARM_STOP) result = set_arm_unlocked(direction);
-    last_error = result;
-    restore_interrupts(irq_state);
-    return result;
-}
-
-static motor_error_t set_claw_unlocked(claw_direction_t direction) {
-    switch (direction) {
-        case CLAW_OPEN:
-            claw_open_on();
-            break;
-        case CLAW_CLOSE:
-            claw_close_on();
-            break;
-        case CLAW_STOP:
-            claw_off();
-            motors_active = false;
-            return MOTOR_OK;
-        default:
-            last_error = MOTOR_ERR_PIN;
-            return MOTOR_ERR_PIN;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = MOTOR_ERR_SAFETY;
+    if (!s_safety.latched || direction == ARM_STOP) {
+        motor_hw_arm(direction == ARM_DOWN ? MH_FWD : direction == ARM_UP ? MH_REV : MH_OFF);
+        r = MOTOR_OK;
     }
-
-    motor_update_activity();
-    last_error = MOTOR_OK;
-    return MOTOR_OK;
+    s_last_error = r;
+    restore_interrupts(irq);
+    return r;
 }
 
 motor_error_t claw_set_direction(claw_direction_t direction) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    motor_error_t result = MOTOR_ERR_SAFETY;
-    if (!safety.latched || direction == CLAW_STOP) result = set_claw_unlocked(direction);
-    last_error = result;
-    restore_interrupts(irq_state);
-    return result;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = MOTOR_ERR_SAFETY;
+    if (!s_safety.latched || direction == CLAW_STOP) {
+        motor_hw_claw(direction == CLAW_CLOSE ? MH_FWD : direction == CLAW_OPEN ? MH_REV : MH_OFF);
+        r = MOTOR_OK;
+    }
+    s_last_error = r;
+    restore_interrupts(irq);
+    return r;
 }
 
-void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    safety_interlock_receive(&safety, stop_requested, receive_ms);
-    if (safety.latched) stop_all_motors_final();
-    restore_interrupts(irq_state);
+/* Kept for compatibility: the arm pins are on/off now (PWM slice 5 belongs
+ * to the back wheels), so any duty above 0 means "on". */
+void arm_set_pwm_duty(float duty_up, float duty_down) {
+    if (duty_up > 0.0f && duty_down <= 0.0f)      arm_set_direction(ARM_UP);
+    else if (duty_down > 0.0f && duty_up <= 0.0f) arm_set_direction(ARM_DOWN);
+    else                                          arm_set_direction(ARM_STOP);
 }
 
-void motor_safety_poll(void) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    safety_interlock_poll(&safety, to_ms_since_boot(get_absolute_time()));
-    if (safety.latched) stop_all_motors_final();
-    restore_interrupts(irq_state);
-}
+/* ---------------- stops ---------------- */
 
-bool motor_safety_is_latched(void) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    bool latched = safety.latched;
-    restore_interrupts(irq_state);
-    return latched;
-}
-
-bool motor_safety_reset(void) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    bool ready = safety_interlock_reset(&safety, to_ms_since_boot(get_absolute_time()));
-    // Reset itself cannot energize outputs or resume a previous command.
-    stop_all_motors_final();
-    restore_interrupts(irq_state);
-    return ready;
-}
-
+/* Dashboard STOP / AUTO_STOP / end of a turn: operator stop.
+ * PWM 0 at once + active brake for MC_BRAKE_HOLD_MS, then IDLE. */
 motor_error_t motor_emergency_stop(void) {
-    uint32_t irq_state = save_and_disable_interrupts();
-    bool started_braking = false;
-    if (safety.latched) {
-        stop_all_motors_final();
-    }
-    // Instead of immediately stopping, apply reverse thrust braking
-    else if (!braking_active) {
-        apply_emergency_brake();
-        started_braking = true;
-    }
-    last_error = MOTOR_OK;
-    restore_interrupts(irq_state);
-    if (started_braking) printf("[MOTOR] Emergency brake applied: reverse thrust braking\n");
+    uint32_t irq = save_and_disable_interrupts();
+    hard_stop(MC_STOP_OPERATOR);
+    motor_hw_arm(MH_OFF);
+    motor_hw_claw(MH_OFF);
+    s_last_error = MOTOR_OK;
+    restore_interrupts(irq);
     return MOTOR_OK;
 }
 
-bool motor_is_active(void) {
-    return motors_active || braking_active;
+static void on_latched(void) {
+    /* Collision Detection STOP or lost sensor link: SAFE STOP, no ramp. */
+    hard_stop(MC_STOP_ESTOP);
+    motor_hw_arm(MH_OFF);
+    motor_hw_claw(MH_OFF);
+    mc_set_system_ready(&s_mc, false);
 }
 
-void motor_check_timeout(void) {
-    if (!motors_active && !braking_active) return;
-    
-    uint32_t now = to_ms_since_boot(get_absolute_time());
-    if ((now - last_command_time) > TIMEOUT_MS) {
-        motor_emergency_stop();
-        printf("[MOTOR] Timeout - emergency braking activated\n");
+/* Called from the UART interrupt: short, no printf. */
+void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool was = s_safety.latched;
+    safety_interlock_receive(&s_safety, stop_requested, receive_ms);
+    if (s_safety.latched && !was) on_latched();
+    restore_interrupts(irq);
+}
+
+void motor_safety_poll(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool was = s_safety.latched;
+    safety_interlock_poll(&s_safety, now_ms());
+    if (s_safety.latched && !was) on_latched();
+    restore_interrupts(irq);
+}
+
+bool motor_safety_is_latched(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool l = s_safety.latched;
+    restore_interrupts(irq);
+    return l;
+}
+
+bool motor_safety_reset(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool ready = safety_interlock_reset(&s_safety, now_ms());
+    hard_stop(MC_STOP_OPERATOR);       /* a reset never restarts an old move */
+    if (ready) {
+        mc_out_t out;
+        mc_out_clear(&out);
+        mc_command(&s_mc, mc_pack_simple(MC_RESET, MC_SRC_MANUAL, next_seq()),
+                   now_ms(), s_heading_word, &out);          /* SAFE STOP -> IDLE */
+        mc_set_system_ready(&s_mc, true);
     }
+    restore_interrupts(irq);
+    return ready;
 }
 
-motor_error_t motor_get_last_error(void) {
-    return last_error;
+/* ---------------- status / compatibility ---------------- */
+
+bool motor_is_active(void) {
+    motor_state_t s = mc_state(&s_mc);
+    return s == MS_MANUAL || s == MS_AUTO_ROTATE || s == MS_AUTO_DRIVE || s == MS_RAMP_DOWN;
 }
+
+/* Timing is handled by the 20 ms update now; these stay so main.c builds. */
+void motor_update_activity(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    s_last_call_ms = now_ms();
+    restore_interrupts(irq);
+}
+void motor_check_timeout(void) {}
+void motor_check_brake_timeout(void) {}
+
+motor_error_t motor_get_last_error(void) { return s_last_error; }
+
+int motor_motion_state(void) { return (int)mc_state(&s_mc); }

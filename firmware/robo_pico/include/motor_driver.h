@@ -132,4 +132,24 @@ void arm_set_pwm_duty(float duty_up, float duty_down);
  */
 motor_error_t motor_get_last_error(void);
 
+/* ---------------- Subsystem 6 additions (Buddy 4) ---------------- */
+
+/**
+ * @brief Give Motion Control the latest heading from the Sensor Pico.
+ * Call once per sensor packet (safe from the UART interrupt).
+ * @param heading_deg 0..360 degrees
+ * @param valid false if the IMU reported an error (heading is then ignored)
+ */
+void motor_heading_update(float heading_deg, bool valid);
+
+/**
+ * @brief Parallel park: strafe for a fixed time, then stop by itself.
+ * @param direction -1 = left, +1 = right
+ * @param power_percent 10..100, or 0 for the default (MC_PARK_PCT)
+ */
+motor_error_t motor_parallel_park(int direction, int power_percent);
+
+/** @brief Motion Control state (motor_state_t in motor_types.h), for telemetry. */
+int motor_motion_state(void);
+
 #endif // MOTOR_DRIVER_H
