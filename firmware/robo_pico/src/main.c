@@ -86,6 +86,7 @@ static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
     bool stop_requested = packet->stop_required != 0 ||
                           (packet->urgent_mask & front_mask) != 0;
     motor_safety_receive(stop_requested, receive_ms);
+    motor_heading_update(packet->heading, packet->imu_status == 0);  // heading hold (FR-41)
 }
 
 static bool safety_watchdog_tick(struct repeating_timer *timer) {
