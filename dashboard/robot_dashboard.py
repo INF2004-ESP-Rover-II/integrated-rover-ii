@@ -99,14 +99,9 @@ class RobotGUI:
         self.estop_time = 0
         self.estop_cooldown = 3.0  # 3 seconds cooldown
 
-        # Speed control
+        # Assumed speed (%) for the odometry estimate only
         self.current_speed = tk.IntVar(value=80)
         
-        # Individual wheel speed adjustments (0-100%)
-        self.speed_fl = tk.IntVar(value=80)  # Front Left
-        self.speed_fr = tk.IntVar(value=80)  # Front Right
-        self.speed_bl = tk.IntVar(value=80)  # Back Left
-        self.speed_br = tk.IntVar(value=80)  # Back Right
 
         # Robot odometry state
         self.robot_x = 0.0  # mm
@@ -878,16 +873,12 @@ class RobotGUI:
         
         try:
             ts = datetime.now().strftime("%H:%M:%S")
-            speed = self.current_speed.get()
-            # Include individual wheel speed adjustments
-            fl = self.speed_fl.get()
-            fr = self.speed_fr.get()
-            bl = self.speed_bl.get()
-            br = self.speed_br.get()
-            payload = f"{command}:{speed}:{fl}:{fr}:{bl}:{br}"
-            
+            # Speed per move is set on the robot (motor_config.h), so only
+            # the command word is sent.
+            payload = command
+
             if not quiet:
-                self.log(f"[{ts}] → {command} @ {speed}% [FL:{fl} FR:{fr} BL:{bl} BR:{br}]")
+                self.log(f"[{ts}] → {command}")
             result = self.mqtt_client.publish(TOPIC_COMMAND, payload, qos=0)
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:

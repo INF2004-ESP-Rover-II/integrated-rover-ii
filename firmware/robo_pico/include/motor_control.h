@@ -95,14 +95,14 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out);
 void mc_set_deadband(int wheel, int pct);
 int  mc_get_deadband(int wheel);
 
-/** Per-wheel trim 0..100 % (wheel -1 = all), e.g. the dashboard's FL:FR:BL:BR. */
-void mc_set_trim(int wheel, int pct);
-int  mc_get_trim(int wheel);
-
 /** Start boost: pct of power for ms when a wheel starts or reverses (0 = off). */
 void mc_set_kick(int pct, int ms);
 int  mc_get_kick_pct(void);
 int  mc_get_kick_ms(void);
+
+/** Zigzag strafe: switch diagonal every ms (0 = normal 4-wheel strafe). */
+void mc_set_zigzag(int ms);
+int  mc_get_zigzag(void);
 
 /* ---- helpers, exposed for unit tests ---- */
 int16_t mc_heading_error(uint16_t target_tenths, uint16_t current_tenths); /* -1800..1799 */

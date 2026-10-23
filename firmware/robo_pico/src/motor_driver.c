@@ -55,7 +55,6 @@ static uint8_t            s_hdg_seq;
 static uint32_t           s_word;           /* move being held (0 = none) */
 static uint32_t           s_last_call_ms;
 static uint8_t            s_seq;
-static motor_error_t      s_last_error = MOTOR_OK;
 
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
@@ -112,9 +111,9 @@ static void hard_stop(mc_stop_kind_t kind) {
 
 static int clamp100(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
 
-/* Old direction names -> body motion (vx forward, vy right, w clockwise).
- * Diagonals use half on each axis, so the two pushing wheels get 'speed'
- * and the other two stop, the same as the old driver. */
+/* Direction -> body motion (vx forward, vy right, w clockwise).
+ * Diagonals use half on each axis, so the two pushing wheels get 's'
+ * and the other two stop. */
 static bool dir_to_motion(motor_direction_t d, int s, int *vx, int *vy, int *w) {
     int h = s / 2;
     *vx = *vy = *w = 0;
@@ -147,12 +146,9 @@ motor_error_t motor_init(void) {
     safety_interlock_init(&s_safety);
     s_word = 0;
 
-    if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer)) {
-        s_last_error = MOTOR_ERR_INIT;
+    if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer))
         return MOTOR_ERR_INIT;
-    }
     printf("[MOTOR] Motion Control ready (%u ms update, active brake)\n", (unsigned)MC_PERIOD_MS);
-    s_last_error = MOTOR_OK;
     return MOTOR_OK;
 }
 
@@ -166,29 +162,25 @@ void motor_heading_update(float heading_deg, bool valid) {
     s_heading_word = heading_word_pack(tenths, s_hdg_seq, now_ms());   /* one store */
 }
 
-motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent) {
-    return motor_set_direction_individual(direction, speed_percent, 100, 100, 100, 100);
+int motor_move_speed(motor_direction_t direction) {
+    switch (direction) {
+    case DIRECTION_FORWARD: case DIRECTION_BACKWARD:          return MC_DASH_STRAIGHT_PCT;
+    case DIRECTION_LEFT:    case DIRECTION_RIGHT:             return MC_DASH_STRAFE_PCT;
+    case DIRECTION_ROTATE_LEFT: case DIRECTION_ROTATE_RIGHT:  return MC_DASH_ROTATE_PCT;
+    default:                                                  return MC_DASH_DIAGONAL_PCT;
+    }
 }
 
-motor_error_t motor_set_direction_individual(motor_direction_t direction, int speed_percent,
-                                             int speed_fl, int speed_fr, int speed_bl, int speed_br) {
+motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent) {
     if (direction == DIRECTION_STOP) return motor_emergency_stop();
-    if (speed_percent < 0 || speed_percent > 100) { s_last_error = MOTOR_ERR_PIN; return MOTOR_ERR_PIN; }
+    if (speed_percent < 0 || speed_percent > 100) return MOTOR_ERR_PIN;
 
     int vx, vy, w;
-    if (!dir_to_motion(direction, speed_percent, &vx, &vy, &w)) {
-        s_last_error = MOTOR_ERR_PIN;
-        return MOTOR_ERR_PIN;
-    }
+    if (!dir_to_motion(direction, speed_percent, &vx, &vy, &w)) return MOTOR_ERR_PIN;
 
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
     if (!s_safety.latched) {
-        mc_set_trim(0, clamp100(speed_fl));
-        mc_set_trim(1, clamp100(speed_fr));
-        mc_set_trim(2, clamp100(speed_bl));
-        mc_set_trim(3, clamp100(speed_br));
-
         /* Same move again = refresh (same word). A different move gets a
          * new sequence number. */
         uint32_t word = 0;
@@ -202,7 +194,6 @@ motor_error_t motor_set_direction_individual(motor_direction_t direction, int sp
             s_last_call_ms = now_ms();
         }
     }
-    s_last_error = r;
     restore_interrupts(irq);
     return r;
 }
@@ -218,7 +209,6 @@ motor_error_t motor_parallel_park(int direction, int power_percent) {
         r = submit(word);
         s_word = 0;                    /* park ends by itself: no auto refresh */
     }
-    s_last_error = r;
     restore_interrupts(irq);
     return r;
 }
@@ -232,7 +222,6 @@ motor_error_t arm_set_direction(arm_direction_t direction) {
         motor_hw_arm(direction == ARM_DOWN ? MH_FWD : direction == ARM_UP ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
-    s_last_error = r;
     restore_interrupts(irq);
     return r;
 }
@@ -244,17 +233,8 @@ motor_error_t claw_set_direction(claw_direction_t direction) {
         motor_hw_claw(direction == CLAW_CLOSE ? MH_FWD : direction == CLAW_OPEN ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
-    s_last_error = r;
     restore_interrupts(irq);
     return r;
-}
-
-/* Kept for compatibility: the arm pins are on/off now (PWM slice 5 belongs
- * to the back wheels), so any duty above 0 means "on". */
-void arm_set_pwm_duty(float duty_up, float duty_down) {
-    if (duty_up > 0.0f && duty_down <= 0.0f)      arm_set_direction(ARM_UP);
-    else if (duty_down > 0.0f && duty_up <= 0.0f) arm_set_direction(ARM_DOWN);
-    else                                          arm_set_direction(ARM_STOP);
 }
 
 /* ---------------- stops ---------------- */
@@ -266,7 +246,6 @@ motor_error_t motor_emergency_stop(void) {
     hard_stop(MC_STOP_OPERATOR);
     motor_hw_arm(MH_OFF);
     motor_hw_claw(MH_OFF);
-    s_last_error = MOTOR_OK;
     restore_interrupts(irq);
     return MOTOR_OK;
 }
@@ -318,22 +297,6 @@ bool motor_safety_reset(void) {
     return ready;
 }
 
-/* ---------------- status / compatibility ---------------- */
-
-bool motor_is_active(void) {
-    motor_state_t s = mc_state(&s_mc);
-    return s == MS_MANUAL || s == MS_AUTO_ROTATE || s == MS_AUTO_DRIVE || s == MS_RAMP_DOWN;
-}
-
-/* Timing is handled by the 20 ms update now; these stay so main.c builds. */
-void motor_update_activity(void) {
-    uint32_t irq = save_and_disable_interrupts();
-    s_last_call_ms = now_ms();
-    restore_interrupts(irq);
-}
-void motor_check_timeout(void) {}
-void motor_check_brake_timeout(void) {}
-
-motor_error_t motor_get_last_error(void) { return s_last_error; }
+/* ---------------- status ---------------- */
 
 int motor_motion_state(void) { return (int)mc_state(&s_mc); }

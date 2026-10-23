@@ -16,7 +16,8 @@
 static int8_t k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;   /* adjustable on the bench */
 static int     k_kick_pct = MC_KICK_PCT;                  /* adjustable on the bench */
 static int     k_kick_ms  = (int)MC_KICK_MS;
-static int8_t       k_trim[MC_WHEELS]     = MC_TRIM_PCT;    /* adjustable (dashboard wheel %) */
+static int     k_zigzag_ms = (int)MC_STRAFE_ZIGZAG_MS;          /* adjustable on the bench */
+static const int8_t k_trim[MC_WHEELS]     = MC_TRIM_PCT;
 static const int8_t k_invert[MC_WHEELS]   = MC_INVERT;
 
 /* ============================== helpers ============================== */
@@ -176,15 +177,12 @@ void mc_set_deadband(int wheel, int pct) {
 }
 int mc_get_deadband(int wheel) { return k_deadband[clampi(wheel, 0, MC_WHEELS - 1)]; }
 
-void mc_set_trim(int wheel, int pct) {
-    pct = clampi(pct, 0, 100);
-    for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) k_trim[i] = (int8_t)pct;
-}
-int mc_get_trim(int wheel) { return k_trim[clampi(wheel, 0, MC_WHEELS - 1)]; }
-
 void mc_set_kick(int pct, int ms) { k_kick_pct = clampi(pct, 0, 100); k_kick_ms = clampi(ms, 0, 1000); }
 int  mc_get_kick_pct(void) { return k_kick_pct; }
 int  mc_get_kick_ms(void)  { return k_kick_ms; }
+
+void mc_set_zigzag(int ms) { k_zigzag_ms = clampi(ms, 0, 2000); }
+int  mc_get_zigzag(void)   { return k_zigzag_ms; }
 
 void mc_set_system_ready(mc_t *m, bool ready) { m->system_ready = ready ? 1u : 0u; }
 
@@ -345,13 +343,26 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
 
     /* ---- requested body motion for this tick ---- */
     int vx = 0, vy = 0, wz = 0;
+    bool zigzag = false;
     switch (s) {
     case MS_MANUAL:
         vx = m->tvx; vy = m->tvy; wz = m->tw;
         if (wz == 0 && heading_ok(m)) wz = hold_trim(m);              /* FR-41 hold      */
         else if (heading_ok(m))       set_hold_target(m, m->heading);  /* turning: re-aim */
+        /* Zigzag strafe: a pure sideways move is done as the two diagonals
+         * in turn (e.g. right = front-right, back-right, front-right ...).
+         * Each half uses 2 wheels at full effort and the forward/back parts
+         * cancel, so the rover still ends up moving sideways. */
+        if (k_zigzag_ms > 0 && vx == 0 && vy != 0 && m->tw == 0) {
+            int half = absi(vy) / 2;
+            bool front = ((now_ms / (uint32_t)k_zigzag_ms) & 1u) != 0u;
+            vx = front ? half : -half;
+            vy = vy > 0 ? half : -half;
+            zigzag = true;
+        }
         if (m->parking && (int32_t)(now_ms - m->park_end_ms) >= 0) {
             begin_ramp_down(m); s = MS_RAMP_DOWN; vx = vy = wz = 0;
+            zigzag = false;                                          /* ease down */
         }
         break;
 
@@ -384,7 +395,8 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
     for (int i = 0; i < MC_WHEELS; i++) {
         int d = m->duty[i];
         int before = d;
-        if      (target[i] > d) d = (target[i] - d > MC_RAMP_STEP_PCT) ? d + MC_RAMP_STEP_PCT : target[i];
+        if (zigzag)                d = target[i];   /* no ramp: each half is short */
+        else if (target[i] > d) d = (target[i] - d > MC_RAMP_STEP_PCT) ? d + MC_RAMP_STEP_PCT : target[i];
         else if (target[i] < d) d = (d - target[i] > MC_RAMP_STEP_PCT) ? d - MC_RAMP_STEP_PCT : target[i];
         m->duty[i] = (int8_t)d;
         /* start boost when the wheel starts from 0 or changes direction */
