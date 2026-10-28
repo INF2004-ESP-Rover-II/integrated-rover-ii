@@ -2,6 +2,6 @@
 /.vscode
 /firmware/robo_pico/include/config.h
 /.venv
-OBSTACLE_TELEMETRY.md
-B1_TASK_CHECKLIST.md
+*.md
 /tests
+/dashboard/__pycache__

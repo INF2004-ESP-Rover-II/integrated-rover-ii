@@ -8,13 +8,6 @@
 #define UART_TX_PIN     16   // GP16 - connects to Robo Pico RX (GP1)
 #define UART_RX_PIN     17   // GP1 - connects to Robo Pico TX (GP0)
 
-// ====================== RPLIDAR CONFIG ======================
-// RPLIDAR A1 UART (uses UART1, separate from Robo Pico)
-#define RPLIDAR_UART_ID     uart1       // UART1 for RPLIDAR
-#define RPLIDAR_TX_PIN      8           // GP8 → RPLIDAR RX (White wire)
-#define RPLIDAR_RX_PIN      9           // GP9 ← RPLIDAR TX (Green wire)
-#define RPLIDAR_BAUD_RATE   115200      // Standard RPLIDAR baud rate
-
 // ====================== ACCELEROMETER CONFIG (LSM303DLHC) ======================
 #define I2C_PORT        i2c0
 #define SDA_PIN         4   // GP4

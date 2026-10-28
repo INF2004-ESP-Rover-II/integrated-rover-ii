@@ -17,7 +17,7 @@
 #define MC_CMD_TIMEOUT_MS       300u  /* FR-42 / A12: no command or refresh -> SAFE STOP   */
 #define MC_HEADING_STALE_MS     150u  /* ~3 missed 20 Hz heading frames -> stop            */
 #define MC_BRAKE_HOLD_MS        300u  /* active brake time after an immediate stop          */
-#define MC_DIR_REFRESH_MS       100u  /* resend movement direction to the Sensor Pico      */
+#define MC_DIR_REFRESH_MS       500u  /* resend movement direction to the Sensor Pico      */
 
 /* Senders (Exploration, dashboard) must refresh the active command faster
  * than MC_CMD_TIMEOUT_MS. Recommended refresh: every 100 ms. */

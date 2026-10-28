@@ -19,8 +19,6 @@ add_executable(mecanum_robot
     src/wifi_mqtt.c
     src/uart_protocol.c
     src/safety_interlock.c
-    src/dfs_explorer.c
-    src/dfs_test_mode.c
 )
 
 target_include_directories(mecanum_robot PRIVATE

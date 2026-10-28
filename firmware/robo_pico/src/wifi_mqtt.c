@@ -8,10 +8,7 @@
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
 
-// MQTT configuration
-// Increased to allow LIDAR + command messages to coexist without blocking
-#define MQTT_VAR_HEADER_BUFFER_LEN 128
-#define MQTT_REQ_MAX_IN_FLIGHT 2
+// MQTT limits belong in lwipopts.h so the application and SDK use the same values.
 
 // =================== PRIVATE STATE ===================
 static mqtt_client_t *mqtt_client = NULL;
@@ -20,10 +17,36 @@ static bool wifi_initialized = false;
 static bool wifi_connected_flag = false;
 static bool mqtt_connected_flag = false;
 static mqtt_command_callback_t command_callback = NULL;
+static unsigned publishes_in_flight = 0;
+static bool telemetry_in_flight = false;
+static uint32_t telemetry_queued_ms = 0;
+static uint32_t last_publish_warning_ms = 0;
+static bool publish_warning_logged = false;
+static bool first_telemetry_queued = false;
+static bool first_telemetry_completed = false;
+
+static void reset_publish_state(void) {
+    publishes_in_flight = 0;
+    telemetry_in_flight = false;
+    publish_warning_logged = false;
+    first_telemetry_queued = false;
+    first_telemetry_completed = false;
+}
+
+static bool publish_warning_due(void) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!publish_warning_logged || (uint32_t)(now - last_publish_warning_ms) >= 1000u) {
+        last_publish_warning_ms = now;
+        publish_warning_logged = true;
+        return true;
+    }
+    return false;
+}
 
 // =================== MQTT CALLBACKS ==================
 
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
+    reset_publish_state();
     printf("[MQTT] ===== CONNECTION CALLBACK FIRED =====\n");
     printf("[MQTT] Status code: %d\n", status);
     
@@ -96,9 +119,66 @@ static void mqtt_subscribe_cb(void *arg, err_t result) {
 }
 
 static void mqtt_publish_cb(void *arg, err_t result) {
+    if (publishes_in_flight != 0) --publishes_in_flight;
+    if (arg == &telemetry_in_flight) {
+        telemetry_in_flight = false;
+        if (result == ERR_OK && !first_telemetry_completed) {
+            first_telemetry_completed = true;
+            printf("[MQTT] First telemetry send completed (TCP acknowledged)\n");
+        }
+    }
     if (result != ERR_OK) {
         printf("[MQTT] Publish failed (error: %d)\n", result);
     }
+}
+
+static wifi_mqtt_error_t publish_message(const char *topic, const char *data, bool telemetry) {
+    if (!mqtt_connected_flag || mqtt_client == NULL || !mqtt_client_is_connected(mqtt_client)) {
+        return MQTT_ERR_CONNECT_FAILED;
+    }
+
+    if (telemetry && (telemetry_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 1u)) {
+        uint32_t age = to_ms_since_boot(get_absolute_time()) - telemetry_queued_ms;
+        if (telemetry_in_flight && age >= 1000u && publish_warning_due()) {
+            printf("[MQTT] Telemetry awaiting TCP completion for %lums; pending=%u/%u\n",
+                   (unsigned long)age, publishes_in_flight, (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
+        }
+        return MQTT_ERR_BUSY;
+    }
+
+    size_t length = strlen(data);
+    // QoS 0 needs topic length + topic + payload + up to five fixed-header bytes.
+    if (length > UINT16_MAX || length + strlen(topic) + 7u > MQTT_OUTPUT_RINGBUF_SIZE) {
+        if (publish_warning_due()) {
+            printf("[MQTT] Payload too large: %u bytes; TX ring=%u\n",
+                   (unsigned)length, (unsigned)MQTT_OUTPUT_RINGBUF_SIZE);
+        }
+        return MQTT_ERR_PUBLISH_FAILED;
+    }
+
+    // Reserve before calling lwIP so a completion callback cannot underflow counts.
+    ++publishes_in_flight;
+    if (telemetry) {
+        telemetry_in_flight = true;
+        telemetry_queued_ms = to_ms_since_boot(get_absolute_time());
+    }
+    err_t err = mqtt_publish(mqtt_client, topic, data, (u16_t)length, 0, 0,
+                            mqtt_publish_cb, telemetry ? &telemetry_in_flight : NULL);
+    if (err != ERR_OK) {
+        if (publishes_in_flight != 0) --publishes_in_flight;
+        if (telemetry) telemetry_in_flight = false;
+        if (publish_warning_due()) {
+            printf("[MQTT] Publish rejected: err=%d payload=%u pending=%u/%u TX ring=%u\n",
+                   (int)err, (unsigned)length, publishes_in_flight,
+                   (unsigned)MQTT_REQ_MAX_IN_FLIGHT, (unsigned)MQTT_OUTPUT_RINGBUF_SIZE);
+        }
+        return err == ERR_MEM ? MQTT_ERR_BUSY : MQTT_ERR_PUBLISH_FAILED;
+    }
+    if (telemetry && !first_telemetry_queued) {
+        first_telemetry_queued = true;
+        printf("[MQTT] First telemetry queued: %u bytes on %s\n", (unsigned)length, topic);
+    }
+    return WIFI_OK;
 }
 
 // ================= PUBLIC FUNCTIONS ==================
@@ -185,6 +265,8 @@ wifi_mqtt_error_t mqtt_init(const char *broker_ip, uint16_t broker_port, const c
     }
 
     printf("[MQTT] Initialized (broker: %s:%d)\n", broker_ip, broker_port);
+    printf("[MQTT] Limits: TX ring=%u bytes; requests=%u; telemetry pending limit=1\n",
+           (unsigned)MQTT_OUTPUT_RINGBUF_SIZE, (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
     return WIFI_OK;
 }
 
@@ -271,51 +353,11 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
 }
 
 wifi_mqtt_error_t mqtt_publish_status(const char *status) {
-    if (!mqtt_connected_flag || mqtt_client == NULL) {
-        return MQTT_ERR_CONNECT_FAILED;
-    }
-
-    err_t err = mqtt_publish(
-        mqtt_client,
-        MQTT_TOPIC_STATUS,
-        status,
-        strlen(status),
-        0,  // QoS 0
-        0,  // Not retained
-        mqtt_publish_cb,
-        NULL
-    );
-
-    return (err == ERR_OK) ? WIFI_OK : MQTT_ERR_PUBLISH_FAILED;
+    return publish_message(MQTT_TOPIC_STATUS, status, false);
 }
 
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
-    if (!mqtt_connected_flag || mqtt_client == NULL) {
-        return MQTT_ERR_CONNECT_FAILED;
-    }
-
-    // Check if MQTT client is ready (not busy)
-    if (!mqtt_client_is_connected(mqtt_client)) {
-        printf("[WARN] MQTT client not ready\n");
-        return MQTT_ERR_PUBLISH_FAILED;
-    }
-
-    err_t err = mqtt_publish(
-        mqtt_client,
-        MQTT_TOPIC_TELEMETRY,
-        data,
-        strlen(data),
-        0,  // QoS 0
-        0,  // Not retained
-        mqtt_publish_cb,
-        NULL
-    );
-
-    if (err != ERR_OK) {
-        printf("[MQTT] Publish failed with lwIP error: %d\n", err);
-    }
-
-    return (err == ERR_OK) ? WIFI_OK : MQTT_ERR_PUBLISH_FAILED;
+    return publish_message(MQTT_TOPIC_TELEMETRY, data, true);
 }
 
 bool mqtt_is_connected(void) {

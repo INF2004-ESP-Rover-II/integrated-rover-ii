@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MQTT Robot Controller Dashboard - With RPLIDAR 2D Visualization
+MQTT Robot Controller Dashboard
 Robot-centered map with odometry tracking
 Requires: pip install paho-mqtt matplotlib numpy
 """
@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import gc
+from laptop_navigation import LaptopNavigator
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -28,6 +29,7 @@ KEY_RELEASE_DEBOUNCE_MS = 50
 TOPIC_COMMAND = "robot/command"
 TOPIC_STATUS = "robot/status"
 TOPIC_TELEMETRY = "robot/telemetry"
+TOPIC_MARKER = "camera/marker"
 
 TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
@@ -122,10 +124,17 @@ class RobotGUI:
         
         # Autonomous mode
         self.auto_mode = tk.BooleanVar(value=False)
+        self.dfs_target = tk.StringVar(value="36")
+        # Set this from measured maze geometry before starting a mission.
+        self.dfs_threshold = tk.StringVar(value="")
+        self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
+        self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
 
         # No on-screen control buttons (keyboard-only controls)
 
         self.setup_ui()
+        self.root.after(100, self.navigation_tick)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def setup_ui(self):
         # Header
@@ -137,7 +146,7 @@ class RobotGUI:
                  font=("Arial", 20, "bold"), fg='white', bg='#2c3e50').grid(row=0, column=0, padx=20, sticky='w')
                 
         # Autonomous mode toggle (top right)
-        self.auto_btn = tk.Checkbutton(header, text="AUTO EXPLORATION", variable=self.auto_mode,
+        self.auto_btn = tk.Checkbutton(header, text="LAPTOP DFS", variable=self.auto_mode,
                       command=self.toggle_auto_mode,
                       bg='#2c3e50', fg='yellow', selectcolor='#1a1a1a',
                       font=("Arial", 12, "bold"))
@@ -247,6 +256,14 @@ class RobotGUI:
             fg='#bdc3c7', bg='#34495e', font=("Arial", 9))
         self.tof_age_label.grid(row=4, column=0, columnspan=3, sticky='w', padx=12, pady=(3, 7))
 
+        dfs_frame = tk.Frame(self.root, bg='#34495e')
+        dfs_frame.pack(padx=20, pady=5, fill='x')
+        tk.Label(dfs_frame, text="DFS target markers (1–36):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
+        tk.Label(dfs_frame, text="Open path ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
+        tk.Label(dfs_frame, textvariable=self.dfs_status, fg='yellow', bg='#34495e').pack(side='left', padx=12)
+
         # Main area with 3 columns
         main = tk.Frame(self.root, bg='#2c3e50')
         main.pack(fill='both', expand=True, padx=20, pady=10)
@@ -344,7 +361,8 @@ class RobotGUI:
         if not isinstance(obstacle, dict) or not isinstance(obstacle.get('distance_mm'), dict):
             self.clear_tof_readings("No ToF data")
             return
-        age_ms = obstacle.get('age_ms')
+        age_ms = obstacle.get('age_ms') or 0
+        
         age_known = (isinstance(age_ms, (int, float)) and not isinstance(age_ms, bool)
                      and math.isfinite(age_ms) and age_ms >= 0)
         if age_known and age_ms > TOF_UART_STALE_MS:
@@ -357,13 +375,16 @@ class RobotGUI:
 
         blocked = mask_value('blocked_mask')
         urgent = mask_value('urgent_mask')
+        faults = mask_value('fault_mask')
         distances = obstacle['distance_mm']
         for direction, bit in (('left', 1), ('front', 2), ('right', 4)):
             distance = distances.get(direction)
-            usable = type(distance) is int and 0 < distance < 65535
-            if not usable:
+            usable = type(distance) is int and 1 <= distance <= 1000
+            if faults is not None and faults & bit:
+                text, state, color = "--", "Sensor fault", '#e74c3c'
+            elif not usable:
                 text = "--"
-                state = "No target" if type(distance) is int and distance == 65535 else "Unavailable"
+                state = "No target" if type(distance) is int and distance in (1023, 65535) else "Unavailable"
                 color = '#95a5a6'
             elif urgent is not None and urgent & bit:
                 text, state, color = f"{distance} mm", "Urgent", '#e74c3c'
@@ -383,7 +404,7 @@ class RobotGUI:
             fg='#e74c3c' if stop is True else '#ecf0f1')
         age_text = f"{age_ms:.0f} ms" if age_known else "unknown"
         self.tof_age_label.config(
-            text=f"UART packet age: {age_text}   |   -- = no target / unavailable; see each label. "
+            text=f"Sensor packet age: {age_text}   |   -- = no target / unavailable; see each label. "
                  "Stop request is separate from the motor lock.")
         self.last_tof_rx = time.time()
 
@@ -438,13 +459,49 @@ class RobotGUI:
                 self.robot_heading = (self.robot_heading - 90 * dt) % 360
 
     def toggle_auto_mode(self):
-        """Toggle autonomous mode on/off"""
+        """The laptop owns exploration; never start the inherited Pico AUTO mode."""
         if self.auto_mode.get():
-            self.send_command("AUTO_START")
-            self.log("Autonomous mode enabled")
+            self.stop_hold()
+            self.cancel_heartbeat()
+            try:
+                self.navigator.start(int(self.dfs_target.get()), int(self.dfs_threshold.get()))
+            except (ValueError, TypeError) as error:
+                self.auto_mode.set(False)
+                self.log("Cannot start laptop DFS: " + str(error))
         else:
-            self.send_command("AUTO_STOP")
-            self.log("Autonomous mode disabled")
+            self.navigator.stop()
+
+    def report_navigation(self, message):
+        self.dfs_status.set(message)
+        self.log(message)
+
+    def send_navigation_command(self, command):
+        if command != "STOP" and (self.estop_active or self.robot_link != "live"):
+            return False
+        return self.send_command(command, quiet=True)
+
+    def navigation_tick(self):
+        self.navigator.tick()
+        if not self.navigator.active:
+            self.auto_mode.set(False)
+        self.root.after(100, self.navigation_tick)
+
+    def submit_vision_observation(self, message):
+        """Queue B3's full schema-1 JSON object from an in-process camera worker."""
+        self.root.after(0, self.navigator.vision_received, message)
+
+    def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
+        """Queue a simple lens-relative observation; an ID alone is not arrival."""
+        if frame_id is None:
+            frame_id = time.monotonic_ns()
+        captured_at = time.monotonic()
+        self.root.after(0, lambda: self.navigator.marker_seen(
+            marker_id, frame_id, int(time.monotonic() - captured_at) * 1000,
+            distance_mm, bearing_deg))
+
+    def close(self):
+        self.disconnect()
+        self.root.destroy()
 
     def reset_odometry(self):
         """Reset robot position to origin"""
@@ -458,6 +515,7 @@ class RobotGUI:
 
     def request_safety_reset(self):
         """Request an unlock without resuming a held movement command."""
+        self.navigator.stop("Safety reset requested")
         self.cancel_heartbeat()
         self.active_command = None
         self.auto_mode.set(False)
@@ -468,6 +526,7 @@ class RobotGUI:
 
     def handle_safety_status(self, status):
         """Require a new key press after every safety response."""
+        self.navigator.stop(status)
         self.cancel_heartbeat()
         self.active_command = None
         self.auto_mode.set(False)
@@ -480,6 +539,7 @@ class RobotGUI:
 
     def trigger_estop(self):
         """Trigger emergency stop with 3-second lockout"""
+        self.navigator.stop("Emergency stop")
         # Immediately send STOP command
         self.send_command("STOP")
         
@@ -684,6 +744,7 @@ class RobotGUI:
             if prev == "lost":
                 self.log(f"[{ts}] Robot link restored - movement enabled")
         elif state == "lost":
+            self.navigator.stop("RoboPico telemetry lost")
             self.clear_tof_readings("Telemetry stale")
             self.robot_connected.set("Lost")
             self.robot_conn_label.config(fg='#e74c3c')
@@ -735,6 +796,7 @@ class RobotGUI:
             self.connected = False
 
     def disconnect(self):
+        self.navigator.stop("Dashboard disconnected")
         if self.active_command:
             self.stop_hold()
         self.stop_link_heartbeat()
@@ -759,6 +821,7 @@ class RobotGUI:
         if rc == 0:
             client.subscribe(TOPIC_STATUS)
             client.subscribe(TOPIC_TELEMETRY)
+            client.subscribe(TOPIC_MARKER)
         self.root.after(0, self.handle_mqtt_connect, rc)
 
     def handle_mqtt_connect(self, rc):
@@ -766,7 +829,7 @@ class RobotGUI:
             self.broker_connected.set("Connected")
             self.broker_status_label.config(fg='#27ae60')
             self.log("Connected to MQTT broker")
-            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}")
+            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}, {TOPIC_MARKER}")
             self.start_link_heartbeat()
         else:
             self.log(f"MQTT connection failed (code {rc})")
@@ -774,6 +837,9 @@ class RobotGUI:
             self.broker_status_label.config(fg='#e74c3c')
 
     def on_mqtt_message(self, client, userdata, msg):
+        # Replayed broker state cannot constitute a live camera/sensor observation.
+        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER):
+            return
         payload = msg.payload.decode(errors="replace")
         self.root.after(0, self.handle_mqtt_message, msg.topic, payload)
 
@@ -790,6 +856,7 @@ class RobotGUI:
                     fg='#27ae60' if payload == "SAFETY_READY" else '#e74c3c')
                 self.handle_safety_status(payload)
             elif payload == "READY":
+                self.navigator.stop("RoboPico restarted")
                 self.robot_status_label.config(fg='#27ae60')
                 self.log(f"[{ts}] Robot ready")
             elif payload == "STOPPED":
@@ -799,6 +866,7 @@ class RobotGUI:
             elif payload == "RUNNING":
                 self.robot_status_label.config(fg='#3498db')
             elif payload == "ERROR":
+                self.navigator.stop("RoboPico command error")
                 self.robot_status_label.config(fg='#e74c3c')
                 self.log(f"[{ts}] ⚠ Robot error")
             elif payload.startswith("AUTO:"):
@@ -809,10 +877,25 @@ class RobotGUI:
                 # Legacy auto status
                 self.robot_status_label.config(fg='#f39c12')
                 self.log(f"[{ts}] {payload}")
-                
+        elif topic == TOPIC_MARKER:
+            try:
+                data = json.loads(payload)
+                if not isinstance(data, dict):
+                    raise ValueError("Expected an object")
+                if "schema" in data or "markers" in data:
+                    self.navigator.vision_received(data)
+                else:
+                    self.navigator.marker_seen(data["marker_id"], data["frame_id"], data.get("age_ms", 0),
+                                               data.get("distance_mm"), data.get("bearing_deg"))
+            except (KeyError, TypeError, ValueError):
+                self.log("Rejected invalid camera marker event")
+
         elif topic == TOPIC_TELEMETRY:
             try:
                 data = json.loads(payload)
+                if not isinstance(data, dict):
+                    return
+                self.navigator.sensor_received(data)
                 self.update_tof_readings(data.get("obstacle"))
                 imu = data.get("imu", {})
                 ultrasonic = data.get("ultrasonic", {})
@@ -853,7 +936,7 @@ class RobotGUI:
 
                 self.last_telemetry_rx = time.time()
 
-            except json.JSONDecodeError:
+            except (KeyError, TypeError, ValueError):
                 pass
 
     def on_mqtt_disconnect(self, client, userdata, rc):
@@ -861,6 +944,7 @@ class RobotGUI:
             self.root.after(0, self.handle_mqtt_disconnect, rc)
             
     def handle_mqtt_disconnect(self, rc):
+        self.navigator.stop("MQTT connection lost")
         self.clear_tof_readings("Disconnected")
         self.log(f"MQTT disconnected (code {rc})")
         self.broker_connected.set("Disconnected")
@@ -869,7 +953,7 @@ class RobotGUI:
     def send_command(self, command, quiet=False):
         if not self.connected or not self.mqtt_client:
             self.log("Not connected to broker")
-            return
+            return False
         
         try:
             ts = datetime.now().strftime("%H:%M:%S")
@@ -883,10 +967,12 @@ class RobotGUI:
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
                 self.log(f"Publish failed (code {result.rc})")
+                return False
+            return True
             
         except Exception as e:
             self.log(f"Send failed: {e}")
-            self.disconnect()
+            return False
 
     # Removed no-op connection monitor
 

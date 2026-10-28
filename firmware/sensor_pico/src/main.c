@@ -7,33 +7,20 @@
 #include "uart_protocol.h"
 #include "ultrasonic.h"
 #include "accelero.h"
-#include "rplidar.h"
 #include "sd_card.h"
 #include "tof.h"
 #include "obstacle.h"
 
 #define M_PI 3.14159265358979323846
 
-static bool lidar_streaming = false;
-static int lidar_point_count = 0;
-#define LIDAR_BUFFER_SIZE 2000
-static rplidar_measurement_t lidar_point_buffer[LIDAR_BUFFER_SIZE];
-
 static bool accel_available = false;
 static bool mag_available = false;
 static bool ultrasonic_available = true;
-
-// LIDAR statistics
-static uint32_t lidar_total_points = 0;
-static uint32_t lidar_valid_points = 0;
-static uint32_t lidar_scans_detected = 0;
-static uint32_t last_lidar_total = 0;
 
 // SD Card logging
 static bool sd_card_available = false;
 static uint32_t log_file_number = 1;
 static char log_filename[32];
-static uint32_t lidar_save_count = 0;
 
 // Diagnostic only: count delivered fresh results, not calls to tof_poll().
 // Both polling sites share this state. A cycle requires a new result from all
@@ -42,7 +29,8 @@ static uint32_t lidar_save_count = 0;
 #define TOF_TEST_MAX_GAP_MS 100u
 #define TOF_TEST_ALL_MASK ((uint8_t)((1u << TOF_SENSOR_COUNT) - 1u))
 
-typedef struct {
+typedef struct 
+{
     uint32_t started_ms;
     uint32_t window_started_ms;
     uint32_t total_cycles;
@@ -56,27 +44,24 @@ typedef struct {
     uint8_t pending_mask;
 } tof_test_stats_t;
 
-// static void tof_test_init(tof_test_stats_t *stats, uint32_t now_ms) {
-//     memset(stats, 0, sizeof(*stats));
-//     stats->started_ms = now_ms;
-//     stats->window_started_ms = now_ms;
-//     for (int i = 0; i < TOF_SENSOR_COUNT; ++i) {
-//         stats->last_fresh_ms[i] = now_ms;
-//     }
-// }
-
-static void tof_test_observe(tof_test_stats_t *stats, const tof_readings_t *readings) {
+static void tof_test_observe(tof_test_stats_t *stats, const tof_readings_t *readings) 
+{
     for (int i = 0; i < TOF_SENSOR_COUNT; ++i) {
         const uint8_t bit = (uint8_t)(1u << i);
         if ((readings->fresh_mask & bit) == 0) continue;
 
         uint32_t gap_ms = readings->timestamp_ms[i] - stats->last_fresh_ms[i];
         stats->last_fresh_ms[i] = readings->timestamp_ms[i];
-        if (gap_ms > stats->max_gap_ms[i]) stats->max_gap_ms[i] = gap_ms;
+        if (gap_ms > stats->max_gap_ms[i]) 
+            stats->max_gap_ms[i] = gap_ms;
+
         stats->fresh[i]++;
-        if ((readings->valid_mask & bit) && readings->distance_mm[i] == TOF_NO_TARGET_MM) {
+        
+        uint16_t distance = tof_distance_get(readings->distance_bits, (tof_sensor_t)i);
+
+        if ((readings->valid_mask & bit) && distance == TOF_NO_TARGET_MM) {
             stats->no_target[i]++;
-        } else if ((readings->valid_mask & bit) && readings->distance_mm[i] > 0) {
+        } else if ((readings->valid_mask & bit) && distance > 0) {
             stats->valid[i]++;
         } else {
             stats->invalid[i]++;
@@ -165,91 +150,6 @@ static uint16_t read_ultrasonic_safe(uint32_t trig_pin, uint32_t echo_pin) {
     }
 }
 
-static void polar_to_cartesian(float angle_deg, float distance_mm, float* x, float* y) {
-    float angle_rad = angle_deg * M_PI / 180.0f;
-    *x = distance_mm * cosf(angle_rad);
-    *y = distance_mm * sinf(angle_rad);
-}
-
-static void print_lidar_stats(void) {
-    uint32_t points_per_scan, valid_pts, invalid_pts;
-    rplidar_get_stats(&points_per_scan, &valid_pts, &invalid_pts);
-    
-    uint32_t available, overflow, total;
-    rplidar_irq_get_buffer_stats(&available, &overflow, &total);
-    
-    printf("[LIDAR IRQ] Points: %lu | Valid: %lu | Scans: %lu\n", 
-           total, valid_pts, lidar_scans_detected);
-    printf("[LIDAR IRQ] Buffer: %lu available | Overflow: %lu | Rate: %lu pts/sec\n",
-           available, overflow, (total - last_lidar_total) / 5);
-    
-    last_lidar_total = total;
-}
-
-// Save LIDAR data to CSV - handles everything internally
-static void save_lidar_data_to_csv(void) {
-    // Set filename first (always)
-    snprintf(log_filename, sizeof(log_filename), "lidar_data.csv");
-    
-    // Initialize SD card if not already done
-    if (!sd_card_available) {
-        printf("[SD] Initializing SD card...\n");
-        sd_init();
-        
-        if (!sd_mount()) {
-            printf("[SD] ❌ Mount failed\n");
-            return;
-        }
-        
-        // Create CSV file with header
-        const char* header = "angle_deg,distance_mm,x_mm,y_mm,quality\n";
-        sd_write_file(log_filename, header);
-        
-        sd_card_available = true;
-        printf("[SD] ✓ SD card initialized, file: %s\n", log_filename);
-    }
-    
-    uint32_t available_points = rplidar_irq_get_available_points();
-    int points_to_save = (available_points < 1999) ? available_points : 1999;
-    
-    printf("[SD] Saving %d points from IRQ buffer to %s...\n", points_to_save, log_filename);
-    
-    if (points_to_save == 0) {
-        printf("[SD] No points available\n");
-        return;
-    }
-    
-    // Build and write CSV data
-    char csv_buffer[16384];
-    char* buffer_ptr = csv_buffer;
-    int buffer_used = 0;
-    int points_processed = 0;
-    
-    for (int i = 0; i < points_to_save && buffer_used < sizeof(csv_buffer) - 128; i++) {
-        rplidar_measurement_t pt;
-        if (rplidar_irq_get_measurement(&pt)) {
-            float x, y;
-            polar_to_cartesian(pt.angle, pt.distance, &x, &y);
-            
-            int line_len = snprintf(buffer_ptr, sizeof(csv_buffer) - buffer_used,
-                                   "%.2f,%.1f,%.1f,%.1f,%d\n",
-                                   pt.angle, pt.distance, x, y, pt.quality);
-            
-            if (line_len > 0) {
-                buffer_ptr += line_len;
-                buffer_used += line_len;
-                points_processed++;
-            }
-        }
-    }
-    
-    // Write to file
-    sd_append_file(log_filename, csv_buffer);
-    
-    lidar_save_count += points_processed;
-    printf("[SD] ✓ Saved %d points to %s (Total: %lu)\n", 
-           points_processed, log_filename, lidar_save_count);
-}
 
 int main() {
     stdio_init_all();
@@ -257,7 +157,6 @@ int main() {
     
     printf("\n========================================\n");
     printf("  Sensor Pico - Full System with IRQ\n");
-    printf("  (UART RX IRQ for LIDAR + LIDAR-only SD Card Logging)\n");
     printf("========================================\n\n");
     
     gpio_init(LED_PIN);
@@ -316,41 +215,17 @@ int main() {
     if (sd_mount()) {
         sd_card_available = true;
         printf("[SD] ✓ SD card ready\n");
-        
-        // Create the CSV file with header
-        snprintf(log_filename, sizeof(log_filename), "lidar_data.csv");
-        const char* header = "angle_deg,distance_mm,x_mm,y_mm,quality\n";
-        sd_write_file(log_filename, header);
-        printf("[SD] ✓ Created file: %s\n", log_filename);
     } else {
         sd_card_available = false;
         printf("[SD] ❌ SD card not available\n");
-        printf("[SD] LIDAR data will be collected but not saved\n");
     }
 
-    // Initialize RPLIDAR with IRQ
-    printf("\n[RPLIDAR] Initializing with UART RX IRQ...\n");
-    if (!rplidar_init()) {
-        printf("[ERROR] Failed to initialize RPLIDAR!\n");
-        blink_error();
-        lidar_streaming = false;
-    } else {
-        printf("[RPLIDAR] ✓ IRQ system initialized\n");
-    }
-    
-    // Start LIDAR scan
-    if (lidar_streaming && !rplidar_start_scan()) {
-        printf("[ERROR] Failed to start LIDAR scan!\n");
-        lidar_streaming = false;
-    }
-    
     printf("\n========================================\n");
     printf("  System Ready - Sensor Status:\n");
     printf("  Ultrasonic: %s\n", ultrasonic_available ? "ONLINE" : "OFFLINE");
     printf("  Accelerometer: %s\n", accel_available ? "ONLINE" : "OFFLINE");
     printf("  Magnetometer: %s\n", mag_available ? "ONLINE" : "OFFLINE");
-    printf("  LIDAR: %s (IRQ Mode)\n", lidar_streaming ? "ONLINE" : "OFFLINE");
-    printf("  SD Card: %s (LIDAR only)\n", sd_card_available ? "ONLINE" : "OFFLINE");
+    printf("  SD Card: %s \n", sd_card_available ? "ONLINE" : "OFFLINE");
     printf("  Update Rate: %d Hz\n", SENSOR_UPDATE_RATE_HZ);
     printf("  SD Save: Every 30 seconds\n");
     printf("========================================\n\n");
@@ -365,19 +240,18 @@ int main() {
     uint32_t last_tof_print_ms = 0;
     const char *tof_names[TOF_SENSOR_COUNT] = {"L", "F", "R"};
     obstacle_state_t obstacles;
-    obstacle_init(&obstacles);
+    obstacle_init(&obstacles, to_ms_since_boot(get_absolute_time()));
     const uint32_t update_interval_ms = 1000 / SENSOR_UPDATE_RATE_HZ;
     const uint32_t stats_interval_ms = 5000; // Console stats report interval (5000ms)
     const uint32_t sd_save_interval_ms = 30000; // SD card write interval (30000ms)
     
     printf("[SYSTEM] Starting main loop...\n");
-    printf("[SD] LIDAR data saving to %s every %d seconds\n", log_filename, sd_save_interval_ms/1000);
-    printf("[SD] Format: angle_deg,distance_mm,x_mm,y_mm,quality\n");
 
     // tof_test_stats_t tof_test;
     // tof_test_init(&tof_test, to_ms_since_boot(get_absolute_time()));
     
-    while (true) {
+    while (true) 
+    {
         tof_readings_t tof_readings;
         tof_poll(&tof_readings);
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
@@ -387,20 +261,23 @@ int main() {
         obstacle_update(&obstacles, &tof_readings, tof_online, now_ms);
         // tof_test_observe(&tof_test, &tof_readings);
 
-        if (now_ms - last_tof_print_ms >= 100) {
+        if (now_ms - last_tof_print_ms >= 100) 
+        {
             last_tof_print_ms = now_ms;
             printf("[TOF] ");
             for (int i = 0; i < TOF_SENSOR_COUNT; ++i) {
                 uint8_t bit = (uint8_t)(1u << i);
-                if ((obstacles.valid_mask & bit) == 0 ||
-                    obstacles.distance_mm[i] == TOF_NO_TARGET_MM) {
+                uint16_t distance = tof_distance_get(obstacles.distance_bits, (tof_sensor_t)i);
+
+                if ((obstacles.valid_mask & bit) == 0 || distance == TOF_NO_TARGET_MM) {
                     printf("%s=-- ", tof_names[i]);
                 } else {
-                    printf("%s=%u mm ", tof_names[i], obstacles.distance_mm[i]);
+                    printf("%s=%u mm ", tof_names[i], distance);
                 }
             }
-            printf("| blocked=0x%02X urgent=0x%02X stop=%s\n",
+            printf("| blocked=0x%02X urgent=0x%02X fault=0x%02X stop=%s\n",
                    obstacles.blocked_mask, obstacles.urgent_mask,
+                   obstacles.fault_mask,
                    obstacles.stop_required ? "YES" : "NO");
         }
         
@@ -497,71 +374,34 @@ int main() {
             packet.ultrasonic_right = read_ultrasonic_safe(ULTRA_RIGHT_TRIG_PIN, ULTRA_RIGHT_ECHO_PIN);
             if (packet.ultrasonic_right >= 400) packet.ultrasonic_status |= (1 << 3);
             
-            // --- IRQ-BASED LIDAR DATA COLLECTION ---
-            // --- IRQ-BASED LIDAR DATA COLLECTION ---
-            if (lidar_streaming) {
-                // Get available points from IRQ buffer
-                uint32_t available_points = rplidar_irq_get_available_points();
-                
-                // Process ALL available points for SD card logging
-                int points_to_copy = (available_points < 1000) ? available_points : 1000;
-                
-                lidar_point_count = 0;
-                
-                for (int i = 0; i < points_to_copy; i++) {
-                    rplidar_measurement_t pt;
-                    if (rplidar_irq_get_measurement(&pt)) {
-                        // Simple filtering - just take every point for now
-                        if (lidar_point_count < MAX_LIDAR_POINTS * 10) {  // Keep many points for SD
-                            // Detect scan boundaries
-                            if (pt.start_flag && lidar_point_count > 10) {
-                                lidar_scans_detected++;
-                            }
-                            
-                            // Store ALL points in buffer (this goes to SD card)
-                            if (lidar_point_count < 2000) {  // Your buffer max
-                                lidar_point_buffer[lidar_point_count] = pt;
-                                lidar_valid_points++;
-                                lidar_point_count++;
-                            }
-                        }
-                        lidar_total_points++;
-                    }
-                }
-                
-                // ==== DECIMATION FOR UART TRANSMISSION ====
-                // Only send every Nth point to keep packet small
-                int decimation_factor = 4;  // Send every 4th point (360°/4 ≈ 90 points)
-                int uart_point_count = 0;
-                
-                for (int i = 0; i < lidar_point_count && uart_point_count < MAX_LIDAR_POINTS; i += decimation_factor) {
-                    packet.lidar_points[uart_point_count].angle    = lidar_point_buffer[i].angle;
-                    packet.lidar_points[uart_point_count].distance = lidar_point_buffer[i].distance;
-                    uart_point_count++;
-                }
-                packet.lidar_count = uart_point_count;
-                
-                // Optional: Print decimation info occasionally
-                if (packet_count % 100 == 0 && uart_point_count > 0) {
-                    printf("[LIDAR] Full scan: %d points | UART preview: %d points (1:%d decimation)\n",
-                        lidar_point_count, uart_point_count, decimation_factor);
-                }
-            }
-            else {
-                packet.lidar_count = 0;
-            }
-            
             // Refresh ToF after the blocking legacy sensor reads and before sending.
             // Recheck age so an expired cached range is not reported as healthy.
             tof_poll(&tof_readings);
             packet.timestamp_ms = to_ms_since_boot(get_absolute_time());
             obstacle_update(&obstacles, &tof_readings, tof_online, packet.timestamp_ms);
             // tof_test_observe(&tof_test, &tof_readings);
-            memcpy(packet.tof_mm, obstacles.distance_mm, sizeof(packet.tof_mm));
-            packet.blocked_mask = obstacles.blocked_mask;
-            packet.urgent_mask = obstacles.urgent_mask;
-            packet.fault_mask = obstacles.fault_mask;
-            packet.stop_required = obstacles.stop_required ? 1u : 0u;
+            // memcpy(packet.tof_mm, obstacles.distance_mm, sizeof(packet.tof_mm));
+            packet.tof_bits = obstacles.distance_bits;
+            // packet.blocked_mask = obstacles.blocked_mask;
+            // packet.urgent_mask = obstacles.urgent_mask;
+            // packet.fault_mask = obstacles.fault_mask;
+            // packet.stop_required = obstacles.stop_required ? 1u : 0u;
+
+            /*
+                Change made for Tribunal 1: pack the obstacle flags into a 2 byte field
+                instead of using 4 separate bytes to represent each mask
+                bit 0-2: blocked
+                bit 3-5: urgent
+                bit 6-8: fault
+                bit 9: STOP
+                bit 10-15: spare
+            */ 
+            packet.obstacle_flags = (uint16_t)(
+                ((uint16_t)obstacles.blocked_mask & 0x07u) |
+                (((uint16_t)obstacles.urgent_mask & 0x07u) << 3u) |
+                (((uint16_t)obstacles.fault_mask & 0x07u) << 6u) |
+                ((obstacles.stop_required ? 1u : 0u) << 9u)
+            );
 
             packet.checksum = calculate_packet_checksum(&packet);
             
@@ -585,10 +425,8 @@ int main() {
                        packet.ultrasonic_front, packet.ultrasonic_back,
                        packet.ultrasonic_left, packet.ultrasonic_right);
                 
-                printf("LIDAR: %d pts", packet.lidar_count);
-                
                 if (sd_card_available) {
-                    printf(" | SD: ✓ (%lu points)", lidar_save_count);
+                    printf(" | SD: ✓");
                 } else {
                     printf(" | SD: ✗");
                 }
@@ -599,38 +437,10 @@ int main() {
                 
                 printf("\n");
                 
-                // Show sample LIDAR data occasionally
-                if (lidar_point_count > 0 && (packet_count % (SENSOR_UPDATE_RATE_HZ * 3) == 0)) {
-                    printf("  [LIDAR] Sample: θ=%.1f° d=%.1fmm Q=%d\n",
-                           lidar_point_buffer[0].angle,
-                           lidar_point_buffer[0].distance,
-                           lidar_point_buffer[0].quality);
-                }
-
                 blink_ok();
             }
         }
         
-        // Save LIDAR data to SD card every 30 seconds
-        if (sd_card_available && (now_ms - last_sd_save_ms >= sd_save_interval_ms)) {
-            last_sd_save_ms = now_ms;
-            
-            uint32_t available_points = rplidar_irq_get_available_points();
-            
-            if (available_points > 0) {
-                printf("[SD] %lu points available in buffer, saving...\n", available_points);
-                save_lidar_data_to_csv();
-            } else {
-                printf("[SD] No LIDAR data in buffer to save\n");
-            }
-        }
-        
-        // Print detailed LIDAR IRQ stats every 5 seconds
-        if (now_ms - last_stats_ms >= stats_interval_ms) {
-            last_stats_ms = now_ms;
-            // print_lidar_stats();
-        }
-
         // Report after normal processing so diagnostics do not precede STOP data.
         // tof_test_report(&tof_test, to_ms_since_boot(get_absolute_time()));
         sleep_ms(1);

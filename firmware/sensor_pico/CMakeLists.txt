@@ -24,7 +24,6 @@ add_executable(sensor_pico
     src/accelero.c
     src/sd_card.c
     src/sd_config.c
-    src/rplidar.c
     src/tof.c
     src/obstacle.c
 )

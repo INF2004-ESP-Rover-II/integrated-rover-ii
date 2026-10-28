@@ -3,11 +3,15 @@
 
 #include <stdint.h>
 
+#define TOF_MAX_DISTANCE_MM 1000u
+#define TOF_DISTANCE_MASK   0x3FFu  // Ten set bits: 1023
 #define TOF_SENSOR_COUNT 3
 
-// A responding sensor with no detected target. Not a measured distance; mapping
-// must skip it. Reserved on UART too, so the packet layout remains unchanged.
-#define TOF_NO_TARGET_MM UINT16_MAX
+// Proposed encoding:
+// 0       = unavailable
+// 1–1000  = measured distance in mm
+// 1023    = no reported target within the supported range
+#define TOF_NO_TARGET_MM    1023u
 
 typedef enum {
     TOF_LEFT = 0,
@@ -16,10 +20,21 @@ typedef enum {
 } tof_sensor_t;
 
 typedef struct {
-    uint16_t distance_mm[TOF_SENSOR_COUNT];
+    // old 16-bit unsigned int in mm
+    // uint16_t distance_mm[TOF_SENSOR_COUNT];
+
+    /*
+    the ToF distance is limited by us to maximum of 1000mm (1 metre)
+    for tribunal 1 change requirement to minimise the number of bits used, this is 10 bits (1024)
+    Change made:
+        Store all three ToF readings in a single 32-bit field
+        | spare (2b) | Right ToF (10b) | Front ToF (10b) | Left ToF (10b) |
+    */
+    uint32_t distance_bits; // Three 10-bit fields; top two bits unused.
     uint32_t timestamp_ms[TOF_SENSOR_COUNT];
-    uint8_t fresh_mask;  // Bit i: a new result was read for sensor i.
-    uint8_t valid_mask;  // Bit i: usable distance OR fresh no-target sentinel.
+    // Within each mask: bit 0 = left, 1 = front, 2 = right.
+    uint8_t fresh_mask : 3; // A new result was read during this poll.
+    uint8_t valid_mask : 3; // Result is usable, including the no-target sentinel.
 } tof_readings_t;
 
 // Configure the three VL53L1X sensors in LEFT, FRONT, RIGHT order.
@@ -28,6 +43,8 @@ typedef struct {
 uint8_t tof_init(const uint8_t xshut_pins[TOF_SENSOR_COUNT]);
 
 uint8_t tof_online_mask(void);
+uint16_t tof_distance_get(uint32_t packed, tof_sensor_t sensor);
+void tof_distance_set(uint32_t *packed, tof_sensor_t sensor, uint16_t distance_mm);
 
 // Poll once without waiting for a measurement. Output is cleared on every call,
 // so an old distance can never be mistaken for a fresh reading.

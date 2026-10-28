@@ -14,7 +14,8 @@ typedef enum {
     WIFI_ERR_NOT_CONNECTED = -4,
     MQTT_ERR_CONNECT_FAILED = -5,
     MQTT_ERR_PUBLISH_FAILED = -6,
-    MQTT_ERR_SUBSCRIBE_FAILED = -7
+    MQTT_ERR_SUBSCRIBE_FAILED = -7,
+    MQTT_ERR_BUSY = -8  // Try the latest telemetry again after network progress.
 } wifi_mqtt_error_t;
 
 // Command callback type
@@ -61,7 +62,8 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback);
 wifi_mqtt_error_t mqtt_publish_status(const char *status);
 
 /**
- * @brief Publish telemetry data
+ * @brief Publish the latest telemetry, or return MQTT_ERR_BUSY without queueing it.
+ * At most one telemetry publish is awaiting completion; poll the network before retrying.
  */
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
 
