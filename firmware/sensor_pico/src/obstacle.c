@@ -68,7 +68,7 @@ void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
         // const uint16_t distance = state->distance_mm[i];
         const uint16_t distance = tof_distance_get(state->distance_bits, sensor);
 
-        // A fresh no-target result is healthy but has no numerical distance.
+        // A successful beyond-1-m result is healthy but has no numerical distance.
         // Clear old proximity flags rather than retaining an earlier close hit.
         if (distance == TOF_NO_TARGET_MM)
         {

@@ -269,8 +269,10 @@ int main() {
                 uint8_t bit = (uint8_t)(1u << i);
                 uint16_t distance = tof_distance_get(obstacles.distance_bits, (tof_sensor_t)i);
 
-                if ((obstacles.valid_mask & bit) == 0 || distance == TOF_NO_TARGET_MM) {
+                if ((obstacles.valid_mask & bit) == 0) {
                     printf("%s=-- ", tof_names[i]);
+                } else if (distance == TOF_NO_TARGET_MM) {
+                    printf("%s=>1000 mm ", tof_names[i]);
                 } else {
                     printf("%s=%u mm ", tof_names[i], distance);
                 }

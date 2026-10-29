@@ -2,12 +2,12 @@
 #define CONFIG_H
 
 // ====================== WIFI CONFIG ======================
-#define WIFI_SSID         "hello"
-#define WIFI_PASSWORD     "2rpxp6hswfyx837"
+#define WIFI_SSID         "RoverII"
+#define WIFI_PASSWORD     "password"
 
 
 // ====================== MQTT CONFIG ======================
-#define MQTT_BROKER_IP    "10.172.112.60"
+#define MQTT_BROKER_IP    "192.168.50.11"
 #define MQTT_BROKER_PORT  1883
 #define MQTT_CLIENT_ID    "robot_pico_w"
 

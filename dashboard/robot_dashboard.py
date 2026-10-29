@@ -382,6 +382,8 @@ class RobotGUI:
             usable = type(distance) is int and 1 <= distance <= 1000
             if faults is not None and faults & bit:
                 text, state, color = "--", "Sensor fault", '#e74c3c'
+            elif type(distance) is int and distance == 1023:
+                text, state, color = ">1000 mm", "No target within 1 m", '#3498db'
             elif not usable:
                 text = "--"
                 state = "No target" if type(distance) is int and distance in (1023, 65535) else "Unavailable"

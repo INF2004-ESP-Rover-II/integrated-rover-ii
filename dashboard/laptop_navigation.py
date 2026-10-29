@@ -48,17 +48,21 @@ class SensorSnapshot:
     def exits(self, heading, threshold_mm):
         """Rotate L/F/R sensor directions into the fixed map frame.
 
-        0/unavailable, faulted sensors and both no-target encodings stay unknown.
+        1023 is confirmed beyond the 1 m reporting range and establishes an open exit.
+        0/unavailable, faulted sensors and legacy ambiguous 65535 stay unknown.
         Rear is unknown until a traversal establishes the entry connection.
         """
         opened = blocked = 0
         for sensor_bit, (name, offset) in enumerate((("left", 3), ("front", 0), ("right", 1))):
             distance = self.distances.get(name)
-            if (self.faults & (1 << sensor_bit) or type(distance) is not int or
-                    not 1 <= distance <= 1000):
+            if self.faults & (1 << sensor_bit) or type(distance) is not int:
                 continue
             bit = 1 << ((heading + offset) % 4)
-            if distance >= threshold_mm:
+            if distance == 1023:
+                opened |= bit
+            elif not 1 <= distance <= 1000:
+                continue
+            elif distance >= threshold_mm:
                 opened |= bit
             else:
                 blocked |= bit

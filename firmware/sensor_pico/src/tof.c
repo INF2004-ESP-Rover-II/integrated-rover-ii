@@ -118,22 +118,23 @@ void tof_poll(tof_readings_t *readings)
 
         readings->fresh_mask |= bit;
         readings->timestamp_ms[i] = to_ms_since_boot(get_absolute_time());
-        if (result.status == 0)
+        uint16_t code = tof_result_code(result.status, result.distance);
+        if (code != 0)
         {
             readings->valid_mask |= bit;
-            tof_distance_set(&readings->distance_bits, (tof_sensor_t)i, result.distance);
-        }
-        else if (result.status == 2 || result.status == 4)
-        {
-            /*
-              A fresh weak-signal/no-target (2) or out-of-bounds (4) result = no detected obstacle,
-              not a failed sensor. These statuses do not guarantee empty space (e.g. weak target returns).
-              Other range errors and I2C failures remain unavailable readings.
-            */
-            readings->valid_mask |= bit;
-            tof_distance_set(&readings->distance_bits, (tof_sensor_t)i, TOF_NO_TARGET_MM);
+            tof_distance_set(&readings->distance_bits, (tof_sensor_t)i, code);
         }
     }
+}
+
+uint16_t tof_result_code(uint8_t range_status, uint16_t distance_mm)
+{
+    if (range_status == 0) {
+        // Keep 1000 as an exact measured value. 1023 is a category, not 1023 mm.
+        return distance_mm > TOF_MAX_DISTANCE_MM ? TOF_NO_TARGET_MM : distance_mm;
+    }
+    // Weak signal/out-of-bounds and other warnings/errors do not prove clearance.
+    return 0;
 }
 
 uint16_t tof_distance_get(uint32_t packed, tof_sensor_t sensor)
@@ -146,7 +147,8 @@ void tof_distance_set(uint32_t *packed, tof_sensor_t sensor, uint16_t distance_m
 {
     unsigned shift = 10u * (unsigned)sensor;
 
-    // Preserve zero as unavailable; map distances beyond 1 m to no-hit.
+    // Only pack ranges whose status has already been checked by tof_result_code().
+    // Preserve zero/unavailable; successful values beyond 1 m use 1023/no-target.
     uint32_t code = distance_mm <= TOF_MAX_DISTANCE_MM ? distance_mm : TOF_NO_TARGET_MM;
 
     // Clear this sensor's field, then insert its new value.
