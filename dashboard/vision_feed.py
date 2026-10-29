@@ -86,3 +86,41 @@ class VisionFeed:
                 continue
             usable.append(MarkerObservation(marker_id, float(distance), float(bearing)))
         return VisionFrame(status, age, usable, restarted)
+
+
+GRID_CELL_MM = 600.0
+GRID_SIZE = 6
+LENS_AHEAD_MM = 120.0  # Camera lens ahead of the rover centre.
+
+
+def grid_cell(position_mm):
+    """Cell (col, row) of a map position in mm, with cell (0, 0) centred on the origin."""
+    return round(position_mm[0] / GRID_CELL_MM), round(position_mm[1] / GRID_CELL_MM)
+
+
+def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0)):
+    """Add first sightings to found {marker_id: (x_mm, y_mm)}; return the new IDs.
+
+    The rover faces +row (up the map) and does not turn. A marker already on
+    the map anchors new ones in the same frame, so driving forward needs no
+    odometry. shortcut: with no mapped marker in view the rover is assumed to
+    still be in start_cell; use odometry once the rover turns or drives blind.
+    """
+    seen = {}
+    for marker in markers:
+        bearing = math.radians(marker.camera_bearing_deg)
+        seen[marker.marker_id] = (marker.camera_distance_mm * math.sin(bearing),
+                                  LENS_AHEAD_MM + marker.camera_distance_mm * math.cos(bearing))
+    anchor = next((marker_id for marker_id in seen if marker_id in found), None)
+    if anchor is None:
+        origin = (start_cell[0] * GRID_CELL_MM, start_cell[1] * GRID_CELL_MM)
+    else:
+        origin = (found[anchor][0] - seen[anchor][0], found[anchor][1] - seen[anchor][1])
+    new = []
+    for marker_id, (x, y) in seen.items():
+        position = (origin[0] + x, origin[1] + y)
+        col, row = grid_cell(position)
+        if marker_id not in found and 0 <= col < GRID_SIZE and 0 <= row < GRID_SIZE:
+            found[marker_id] = position
+            new.append(marker_id)
+    return new

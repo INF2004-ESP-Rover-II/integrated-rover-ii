@@ -16,11 +16,13 @@ import math
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import gc
 from laptop_navigation import LaptopNavigator
+from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -129,6 +131,12 @@ class RobotGUI:
         self.dfs_threshold = tk.StringVar(value="")
         self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
+        # Marker grid map: its own feed so it never shares sequence state with the navigator.
+        self.map_feed = VisionFeed()
+        self.map_start_cell = (0, 0)  # Rover's starting cell, facing up the map.
+        self.found_markers = {}
+        self.map_title = ""
+        self.map_drawn_at = 0.0
 
         # No on-screen control buttons (keyboard-only controls)
 
@@ -303,15 +311,19 @@ class RobotGUI:
         # !! ToF mapping display to be here
         self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
-        self.ax.set_xlim(-3000, 3000)
-        self.ax.set_ylim(-3000, 3000)
+        # 6x6 grid of 60 cm cells, drawn in cell units.
+        self.ax.set_xlim(0, GRID_SIZE)
+        self.ax.set_ylim(0, GRID_SIZE)
         self.ax.set_aspect('equal')
-        self.ax.grid(True, color='#3498db', alpha=0.3, linewidth=0.5)
-        self.ax.set_xlabel('X (mm)', color='white', fontsize=10)
-        self.ax.set_ylabel('Y (mm)', color='white', fontsize=10)
-        self.ax.set_title('Map (waiting for ToF / mapping data)', color='white', pad=15, fontsize=12)
+        self.ax.set_xticks(range(GRID_SIZE + 1))
+        self.ax.set_yticks(range(GRID_SIZE + 1))
+        self.ax.grid(True, color='#3498db', alpha=0.6, linewidth=1)
+        self.ax.set_xlabel('Column (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_ylabel('Row (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_title('Waiting for camera', color='white', pad=15, fontsize=12)
         self.ax.tick_params(colors='white', labelsize=8)
-        self.ax.plot(0, 0, 'go', markersize=8, zorder=10)  # robot
+        self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
+                     'go', markersize=10, zorder=10)  # rover start
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.map_frame)
         self.canvas.draw()
@@ -491,6 +503,28 @@ class RobotGUI:
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
         self.root.after(0, self.navigator.vision_received, message)
+
+    def update_marker_map(self, data):
+        frame = self.map_feed.decode(data, time.time() * 1000)
+        if frame is None:
+            return
+        new = place_markers(frame.markers, self.found_markers, self.map_start_cell)
+        for marker_id in new:
+            col, row = grid_cell(self.found_markers[marker_id])
+            self.ax.add_patch(Rectangle((col, row), 1, 1, color='#27ae60', alpha=0.7))
+            self.ax.text(col + 0.5, row + 0.5, str(marker_id), ha='center', va='center',
+                         color='white', fontsize=14, fontweight='bold')
+            self.log(f"Marker {marker_id} mapped to grid cell (col {col}, row {row})")
+        ahead = min(frame.markers, key=lambda marker: marker.camera_distance_mm, default=None)
+        if ahead:
+            title = f"Marker ahead: ID {ahead.marker_id} at {ahead.camera_distance_mm:.0f} mm"
+        else:
+            title = "No marker ahead" if frame.status in ("ok", "no_marker") else "Camera " + frame.status
+        # Redraw at most 5 times a second; the camera sends ~30 frames a second.
+        if new or (title != self.map_title and time.monotonic() - self.map_drawn_at >= 0.2):
+            self.map_title, self.map_drawn_at = title, time.monotonic()
+            self.ax.set_title(title, color='white', pad=15, fontsize=12)
+            self.canvas.draw_idle()
 
     def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
         """Queue a simple lens-relative observation; an ID alone is not arrival."""
@@ -886,6 +920,7 @@ class RobotGUI:
                     raise ValueError("Expected an object")
                 if "schema" in data or "markers" in data:
                     self.navigator.vision_received(data)
+                    self.update_marker_map(data)
                 else:
                     self.navigator.marker_seen(data["marker_id"], data["frame_id"], data.get("age_ms", 0),
                                                data.get("distance_mm"), data.get("bearing_deg"))
