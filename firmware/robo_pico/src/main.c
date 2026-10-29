@@ -16,7 +16,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 10 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -59,6 +59,7 @@ static int last_turn_direction = 0;               // Remember last turn to bias 
 static uint32_t last_successful_forward_time = 0; // Track when we last moved forward successfully
 static uint32_t entered_moving_forward_time = 0;  // When we entered MOVING_FORWARD state
 static bool safety_lock_reported = false;
+static bool link_lost = true; // FR-08: true until the first laptop heartbeat
 
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
@@ -314,10 +315,17 @@ static void process_command(const char *command)
         printf("[CMD] Unknown command: %s\n", cmd_buffer);
         return;
     }
+    printf("[CMD] %s -> result %d (motion state %d)\n",
+           cmd_buffer, (int)result, motor_motion_state());
 
     if (result == MOTOR_OK)
     {
-        mqtt_publish_status("RUNNING");
+        static char last_reported[16] = "";
+        if (strncmp(last_reported, cmd_buffer, sizeof(last_reported)) != 0)
+        {
+            mqtt_publish_status("RUNNING");
+            strncpy(last_reported, cmd_buffer, sizeof(last_reported) - 1);
+        }
     }
     else
     {
@@ -593,9 +601,55 @@ int main()
 
             last_stats_print = now;
         }
+        // FR-08: stop on our own if the laptop goes quiet
+        {
+            uint32_t last_rx = mqtt_last_link_rx_ms();
+            bool link_ok = (last_rx != 0) &&
+                           ((int32_t)(now - last_rx) <= LINK_TIMEOUT_MS);
 
-        sleep_ms(100);
+            if (!link_ok && !link_lost)
+            {
+                link_lost = true;
+                autonomous_mode = false;
+                autonomous_state = AUTO_STATE_IDLE;
+                motor_emergency_stop();
+                printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
+                       (unsigned long)now, (unsigned long)last_rx);
+                mqtt_publish_status("STOPPED: LINK LOST");
+            }
+            else if (link_ok && link_lost)
+            {
+                link_lost = false;
+                printf("[LINK] Laptop link up\n");
+            }
+        }
+
+        // FR-12: if the broker connection died, retry every 3 s and resubscribe
+        {
+            static uint32_t last_reconnect_try = 0;
+            static bool need_resubscribe = false;
+
+            if (!mqtt_is_connected())
+            {
+                if (now - last_reconnect_try >= 3000)
+                {
+                    last_reconnect_try = now;
+                    printf("[MQTT] Connection down, trying to reconnect...\n");
+                    mqtt_connect();
+                    need_resubscribe = true;
+                }
+            }
+            else if (need_resubscribe)
+            {
+                need_resubscribe = false;
+                if (mqtt_subscribe_commands(process_command) == WIFI_OK)
+                {
+                    printf("[MQTT] Reconnected and resubscribed\n");
+                    mqtt_publish_status("RECONNECTED");
+                }
+            }
+        }
+        sleep_ms(10);
     }
-
     return 0;
 }

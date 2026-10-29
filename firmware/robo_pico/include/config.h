@@ -7,7 +7,7 @@
 
 
 // ====================== MQTT CONFIG ======================
-#define MQTT_BROKER_IP    "192.168.50.11"
+#define MQTT_BROKER_IP    "10.91.86.200" //!!check correct IP
 #define MQTT_BROKER_PORT  1883
 #define MQTT_CLIENT_ID    "robot_pico_w"
 
@@ -15,6 +15,10 @@
 #define MQTT_TOPIC_COMMAND    "robot/command"
 #define MQTT_TOPIC_STATUS     "robot/status"
 #define MQTT_TOPIC_TELEMETRY  "robot/telemetry"
+#define MQTT_TOPIC_HEARTBEAT  "robot/heartbeat"
+
+// FR-08: stop if no laptop message for this long (ms)
+#define LINK_TIMEOUT_MS       1500
 
 // ====================== MOTOR CONFIG =====================
 // Motor pins are in motor_pins.h; motor tuning is in motor_config.h.

@@ -63,7 +63,10 @@ class RobotGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Rover II Controller - MQTT + TOF")
-        self.root.geometry("1600x900")
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = min(1600, int(sw * 0.95)), min(900, int(sh * 0.9))
+        self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+0")
+        self.root.minsize(1000, 650)
         self.root.configure(bg='#2c3e50')
 
         # MQTT Client
@@ -268,9 +271,9 @@ class RobotGUI:
         main = tk.Frame(self.root, bg='#2c3e50')
         main.pack(fill='both', expand=True, padx=20, pady=10)
         # Make left column slimmer to free space for map and logs
-        main.grid_columnconfigure(0, weight=0, minsize=240)
-        main.grid_columnconfigure(1, weight=3, minsize=800)
-        main.grid_columnconfigure(2, weight=2, minsize=520)
+        main.grid_columnconfigure(0, weight=0, minsize=200)
+        main.grid_columnconfigure(1, weight=3, minsize=400)
+        main.grid_columnconfigure(2, weight=2, minsize=300)
         main.grid_rowconfigure(0, weight=1)
 
         # LEFT COLUMN - Key mappings only (no movement buttons)
@@ -301,7 +304,7 @@ class RobotGUI:
         self.map_frame.pack(fill='both', expand=True)
 
         # !! ToF mapping display to be here
-        self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
+        self.fig = Figure(figsize=(4, 4), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
         self.ax.set_xlim(-3000, 3000)
         self.ax.set_ylim(-3000, 3000)
@@ -326,8 +329,7 @@ class RobotGUI:
         log_frame = tk.LabelFrame(right_col, text="Command & Status Log",
                                   fg='white', bg='#34495e')
         log_frame.grid(row=0, column=0, sticky='nsew')
-        self.log_text = tk.Text(log_frame, height=30, bg='#2c3e50', fg='#ecf0f1', 
-                               font=("Consolas", 9), wrap='word', state='disabled')
+        self.log_text = tk.Text(log_frame, height=10, bg='#2c3e50', fg='#ecf0f1',                               font=("Consolas", 9), wrap='word', state='disabled')
         scrollbar = tk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -804,9 +806,14 @@ class RobotGUI:
         self.stop_link_heartbeat()
         self.cancel_heartbeat()
         if self.mqtt_client:
-            self.mqtt_client.disconnect()
-            self.mqtt_client.loop_stop()
+            client = self.mqtt_client
             self.mqtt_client = None
+            # Stop handing new messages to Tk, then stop paho without blocking the window
+            client.on_message = None
+            client.on_connect = None
+            client.on_disconnect = None
+            client.disconnect()
+            threading.Thread(target=client.loop_stop, daemon=True).start()
         self.connected = False
         self.broker_connected.set("Not Connected")
         self.broker_status_label.config(fg='#e74c3c')

@@ -25,6 +25,11 @@ static bool publish_warning_logged = false;
 static bool first_telemetry_queued = false;
 static bool first_telemetry_completed = false;
 
+// FR-08: which topic the incoming data belongs to, and when we last heard the laptop
+typedef enum { IN_TOPIC_OTHER, IN_TOPIC_COMMAND, IN_TOPIC_HEARTBEAT } in_topic_t;
+static in_topic_t current_in_topic = IN_TOPIC_OTHER;
+static volatile uint32_t last_link_rx_ms = 0;
+
 static void reset_publish_state(void) {
     publishes_in_flight = 0;
     telemetry_in_flight = false;
@@ -96,9 +101,20 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
         message_buffer[buffer_pos] = '\0';
         
         // Process command
-        if (command_callback != NULL) {
-            printf("[MQTT] Received command: %s\n", message_buffer);
-            command_callback(message_buffer);
+        uint32_t t = to_ms_since_boot(get_absolute_time());
+        switch (current_in_topic) {
+        case IN_TOPIC_COMMAND:
+            last_link_rx_ms = t;
+            if (command_callback != NULL) {
+                printf("[MQTT] Received command: %s\n", message_buffer);
+                command_callback(message_buffer);
+            }
+            break;
+        case IN_TOPIC_HEARTBEAT:
+            last_link_rx_ms = t;   // heartbeat only proves the link is alive
+            break;
+        default:
+            break;                 // not ours, ignore
         }
         
         // Reset buffer
@@ -107,7 +123,10 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
 }
 
 static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
-    printf("[MQTT] Incoming publish on topic: %s (length: %lu)\n", topic, tot_len);
+    (void)arg; (void)tot_len;
+    if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0)        current_in_topic = IN_TOPIC_COMMAND;
+    else if (strcmp(topic, MQTT_TOPIC_HEARTBEAT) == 0) current_in_topic = IN_TOPIC_HEARTBEAT;
+    else                                               current_in_topic = IN_TOPIC_OTHER;
 }
 
 static void mqtt_subscribe_cb(void *arg, err_t result) {
@@ -223,7 +242,10 @@ wifi_mqtt_error_t wifi_connect(const char *ssid, const char *password, uint32_t 
     }
 
     wifi_connected_flag = true;
-    
+
+    // Disable power save mode to improve latency for MQTT messages
+    cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 20, 1, 1, 1));
+
     extern struct netif *netif_list;
     if (netif_list) {
         printf("[WIFI] Connected! IP: %s\n", 
@@ -284,7 +306,7 @@ wifi_mqtt_error_t mqtt_connect(void) {
     struct mqtt_connect_client_info_t ci;
     memset(&ci, 0, sizeof(ci));
     ci.client_id = MQTT_CLIENT_ID;
-    ci.keep_alive = 60;
+    ci.keep_alive = 5;
 
     printf("[MQTT] ===== MQTT CONNECTION DEBUG =====\n");
     printf("[MQTT] Client ID: %s\n", MQTT_CLIENT_ID);
@@ -344,8 +366,10 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
         NULL
     );
 
+    // FR-08: also listen for the dashboard heartbeat
+    err = mqtt_subscribe(mqtt_client, MQTT_TOPIC_HEARTBEAT, 0, mqtt_subscribe_cb, NULL);
     if (err != ERR_OK) {
-        printf("[MQTT] Subscribe failed (error: %d)\n", err);
+        printf("[MQTT] Heartbeat subscribe failed (error: %d)\n", err);
         return MQTT_ERR_SUBSCRIBE_FAILED;
     }
 
@@ -373,4 +397,8 @@ void wifi_mqtt_poll(void) {
 // Expose mqtt_client for LIDAR publishing
 mqtt_client_t* get_mqtt_client(void) {
     return mqtt_client;
+}
+
+uint32_t mqtt_last_link_rx_ms(void) {
+    return last_link_rx_ms;
 }
