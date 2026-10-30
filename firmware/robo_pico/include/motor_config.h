@@ -29,7 +29,7 @@
 /* Heading is carried in tenths of a degree (0..3599) = 12 bits. */
 #define MC_HEADING_TOL_TENTHS   30    /* +/-3.0 deg: rotation counts as done      */
 #define MC_ROT_SLOW_ZONE_TENTHS 250   /* within 25 deg of target: rotate slowly   */
-#define MC_ROT_FAST_PCT         70    /* rotate-on-spot effort, far from target (floor test: 70 turns, 45 too weak) */
+#define MC_ROT_FAST_PCT         60    /* rotate-on-spot effort, far from target (floor calibration 30 Oct) */
 #define MC_ROT_SLOW_PCT         40    /* rotate-on-spot effort, near target        */
 
 /* Heading hold: turn trim = KP * error, error in tenths of a degree.
@@ -50,7 +50,7 @@
 /* ---------------- Speed (A5) ---------------- */
 /* Provisional cruise 0.3 m/s. The % that gives 0.3 m/s must be measured;
  * these are effort percentages, not m/s. Exploration chooses the speed. */
-#define MC_AUTO_CRUISE_PCT      50
+#define MC_AUTO_CRUISE_PCT      30    /* floor calibration 30 Oct (same as W/S) */
 #define MC_AUTO_APPROACH_PCT    30    /* slower near a marker (NFR-05 overshoot) */
 #define MC_PARK_PCT             60    /* parallel park strafe effort (35 too weak on the floor) */
 #define MC_PARK_DURATION_MS     1500u /* parallel park strafe time               */
@@ -60,10 +60,10 @@
  * tests: strafe and diagonal need more (only 2 wheels push on a diagonal,
  * and mecanum rollers slip sideways). Forward also gets the team's pitch
  * boost on a slope. Tune on the floor, then rebuild. */
-#define MC_DASH_STRAIGHT_PCT    50    /* W / S      forward, backward  */
-#define MC_DASH_STRAFE_PCT      100   /* A / D      strafe left, right */
-#define MC_DASH_DIAGONAL_PCT    80    /* R T F G    diagonals          */
-#define MC_DASH_ROTATE_PCT      70    /* Q / E      rotate on the spot */
+#define MC_DASH_STRAIGHT_PCT    30    /* W / S      forward, backward  */
+#define MC_DASH_STRAFE_PCT      100   /* Q / E      strafe left, right (zigzag) */
+#define MC_DASH_DIAGONAL_PCT    60    /* R T F G    diagonals (bench: m 30 30 0) */
+#define MC_DASH_ROTATE_PCT      50    /* A / D      rotate on the spot */
 
 /* ---------------- Start boost ----------------
  * Motors need more power to START turning than to keep turning (static
@@ -80,7 +80,7 @@
  * The rover wobbles slightly forward/back but moves sideways.
  * 0 = off (normal strafe). Adjustable on the bench ('zz MS'). */
 #ifndef MC_STRAFE_ZIGZAG_MS
-#define MC_STRAFE_ZIGZAG_MS     200u
+#define MC_STRAFE_ZIGZAG_MS     200u   /* floor test: 150-300 ms works, 100 doesn't */
 #endif
 
 /* ---------------- Ramp (FR-42) ---------------- */
@@ -96,9 +96,9 @@
  *           drifts right going forward, straight going backward).
  *           Tune live on the bench with 'trim W FWD REV'.
  * INVERT:   set to 1 if that wheel spins backwards for a positive command. */
-#define MC_DEADBAND_PCT   { 20, 20, 20, 20 }
-#define MC_TRIM_FWD_PCT   { 100, 100, 100, 100 }
-#define MC_TRIM_REV_PCT   { 100, 100, 100, 100 }
+#define MC_DEADBAND_PCT   { 40, 40, 40, 40 }        /* all wheels start at 40 % (t 40) */
+#define MC_TRIM_FWD_PCT   { 90, 100, 90, 100 }      /* forward curved right: left side 90 */
+#define MC_TRIM_REV_PCT   { 100, 90, 100, 90 }      /* backward curved left: right side 90 */
 #define MC_INVERT         { 0, 0, 0, 0 }
 
 /* Bench testing only: allow manual moves while no heading is arriving

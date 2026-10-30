@@ -400,6 +400,10 @@ static void test_direction_trim(void) {
 
 int main(void) {
     mc_set_zigzag(0);   /* the older tests check the normal 4-wheel strafe */
+    /* The logic tests use neutral calibration (deadband 20, no trim), so they
+     * don't change every time the rover's motor_config.h numbers are tuned. */
+    mc_set_deadband(-1, 20);
+    mc_set_trim(-1, 100, 100);
     test_packing();
     test_helpers();
     test_zero_gyro_and_ready_gate();

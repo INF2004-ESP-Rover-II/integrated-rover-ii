@@ -291,7 +291,7 @@ static void process_command(const char *command)
     // ---- Autonomous moves for the mapping / Exploration side (Subsystem 6) ----
     // One command starts the move; it keeps going until MOVE_STOP, STOP
     // (operator) or a safety stop. Rotations end by themselves.
-    //   MOVE_FORWARD:50   MOVE_BACKWARD:50   (speed %, default 50)
+    //   MOVE_FORWARD:30   MOVE_BACKWARD:30   (speed %, default = W/S key speed)
     //   TURN_TO:90        absolute heading 0..359
     //   TURN_BY:-90       relative: + right, - left
     //   MOVE_STOP         normal stop (ramp down)
@@ -308,9 +308,9 @@ static void process_command(const char *command)
         autonomous_state = AUTO_STATE_IDLE;
 
         if (strncmp(cmd_buffer, "MOVE_FORWARD", 12) == 0)
-            result = motor_auto_drive(has_arg ? abs(value) : 50);
+            result = motor_auto_drive(has_arg ? abs(value) : motor_move_speed(DIRECTION_FORWARD));
         else if (strncmp(cmd_buffer, "MOVE_BACKWARD", 13) == 0)
-            result = motor_auto_drive(-(has_arg ? abs(value) : 50));
+            result = motor_auto_drive(-(has_arg ? abs(value) : motor_move_speed(DIRECTION_BACKWARD)));
         else if (strncmp(cmd_buffer, "TURN_TO", 7) == 0)
             result = has_arg ? motor_auto_rotate_to(value) : MOTOR_ERR_PIN;
         else if (strncmp(cmd_buffer, "TURN_BY", 7) == 0)
