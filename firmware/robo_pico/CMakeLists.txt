@@ -14,13 +14,20 @@ pico_sdk_init()
 add_executable(mecanum_robot
     src/main.c
     src/motor_driver.c
+    src/motor_control.c          # Subsystem 6 Motion Control logic
+    src/motor_hw.c               # Subsystem 6 L298N / arm / claw pins
     src/wifi_mqtt.c
     src/uart_protocol.c
+    src/safety_interlock.c
 )
 
 target_include_directories(mecanum_robot PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
+
+# Subsystem 6: allow manual moves while the Sensor Pico heading is missing or
+# late (heading hold then pauses). Set to 0 once heading arrives every 50 ms.
+target_compile_definitions(mecanum_robot PRIVATE MC_ALLOW_MANUAL_WITHOUT_HEADING=1)
 
 target_link_libraries(mecanum_robot
     pico_stdlib

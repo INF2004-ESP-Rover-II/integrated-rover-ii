@@ -1,2 +1,7 @@
 /build
 /.vscode
+/firmware/robo_pico/include/config.h
+/.venv
+*.md
+/tests
+/dashboard/__pycache__

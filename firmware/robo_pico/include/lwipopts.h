@@ -45,7 +45,7 @@
 #define LWIP_MQTT                   1
 #define LWIP_CALLBACK_API           1
 #define MQTT_VAR_HEADER_BUFFER_LEN  256       // ← INCREASE from 128 to 256
-#define MQTT_REQ_MAX_IN_FLIGHT      4         // ← Set to 4 (was 1)
+#define MQTT_REQ_MAX_IN_FLIGHT      16        // Shared by subscriptions, status and telemetry.
 
 // MQTT output ring buffer (important for publishing)
 #define MQTT_OUTPUT_RINGBUF_SIZE    8192       // ← ADD THIS LINE
