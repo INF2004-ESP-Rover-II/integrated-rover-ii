@@ -42,6 +42,38 @@ class MarkerGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(found[2][0], 720)
         self.assertAlmostEqual(found[2][1], 600)
 
+    def test_marker_seen_alone_after_a_turn_uses_last_anchored_rover_position(self):
+        found, rover = {}, {}
+        place_markers([MarkerObservation(15, 480, 0), MarkerObservation(18, 1080, 0)], found, rover=rover)
+        # Drive up the row: 18 near, 10 new.
+        place_markers([MarkerObservation(18, 480, 0), MarkerObservation(10, 1080, 0)], found, rover=rover)
+        place_markers([MarkerObservation(10, 480, 0)], found, rover=rover)  # Stop in front of 10.
+        # Turn right in place; only 16 is in view.
+        self.assertEqual(place_markers([MarkerObservation(16, 480, 0)], found, heading_deg=90, rover=rover), [16])
+        self.assertEqual(grid_cell(found[10]), (0, 3))
+        self.assertEqual(grid_cell(found[16]), (1, 2))
+
+    def test_wall_ahead_then_turn_puts_rover_on_last_recorded_marker(self):
+        found, rover = {}, {}
+        # Straight up column 0: 14, 15, 18, 10 recorded as the camera reaches ~2 cells ahead.
+        place_markers([MarkerObservation(14, 480, 0), MarkerObservation(15, 1080, 0)], found, rover=rover)
+        place_markers([MarkerObservation(15, 480, 0), MarkerObservation(18, 1080, 0)], found, rover=rover)
+        place_markers([MarkerObservation(18, 480, 0), MarkerObservation(10, 1080, 0)], found, rover=rover,
+                      front_mm=900)  # Wall ahead: no more markers in this line.
+        place_markers([], found, rover=rover, front_mm=300)  # Drives up to the wall blind.
+        # Turns right; 16 is the first marker seen on the new heading.
+        self.assertEqual(place_markers([MarkerObservation(16, 480, 0)], found, heading_deg=90,
+                                       rover=rover, front_mm=1023), [16])
+        self.assertEqual([grid_cell(found[i]) for i in (14, 15, 18, 10)], [(0, 1), (0, 2), (0, 3), (0, 4)])
+        self.assertEqual(grid_cell(found[16]), (1, 4))
+
+    def test_turn_without_a_wall_keeps_last_anchored_position(self):
+        found, rover = {}, {}
+        place_markers([MarkerObservation(18, 480, 0), MarkerObservation(10, 1080, 0)], found, rover=rover,
+                      front_mm=1023)  # 1023 = nothing within 1 m.
+        place_markers([MarkerObservation(16, 480, 0)], found, heading_deg=90, rover=rover)
+        self.assertEqual(grid_cell(found[16]), (1, 0))
+
     def test_invalid_heading_cannot_add_a_marker(self):
         for heading in (None, True, float("nan"), float("inf")):
             with self.subTest(heading=heading):
@@ -61,7 +93,7 @@ class DashboardMarkerMapTests(unittest.TestCase):
         tree = ast.parse(source.read_text(encoding="utf-8"))
         gui = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RobotGUI")
         names = {"update_marker_map", "handle_mqtt_message", "on_mqtt_message"}
-        namespace = {"datetime": datetime, "json": json,
+        namespace = {"datetime": datetime, "json": json, "math": math,
                      "time": SimpleNamespace(time=lambda: self.wall_start + self.now,
                                              monotonic=lambda: self.now),
                      "Rectangle": Mock(), "GRID_SIZE": GRID_SIZE,
@@ -77,6 +109,7 @@ class DashboardMarkerMapTests(unittest.TestCase):
         self.gui.map_feed = VisionFeed()
         self.gui.map_start_cell = (0, 0)
         self.gui.found_markers = {}
+        self.gui.map_rover = {}
         self.gui.map_title = ""
         self.gui.map_drawn_at = -float("inf")
         self.gui.ax = Mock()

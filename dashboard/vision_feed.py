@@ -91,6 +91,7 @@ class VisionFeed:
 GRID_CELL_MM = 600.0
 GRID_SIZE = 6
 LENS_AHEAD_MM = 120.0  # Camera lens ahead of the rover centre.
+AT_WALL_MM = 450.0  # Front ToF this close: the rover has driven up to the end of the line.
 
 
 def grid_cell(position_mm):
@@ -98,22 +99,37 @@ def grid_cell(position_mm):
     return round(position_mm[0] / GRID_CELL_MM), round(position_mm[1] / GRID_CELL_MM)
 
 
-def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0), heading_deg=0.0):
+def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0), heading_deg=0.0, rover=None,
+                  front_mm=None):
     """Add first sightings to found {marker_id: (x_mm, y_mm)}; return the new IDs.
 
     heading_deg is clockwise from the starting IMU heading: 0 faces +row,
     90 faces +col. Rotate the camera offset along with each observation.
-    A visible mapped marker anchors the rover's position in the map frame.
-    Without an anchor the position still defaults to start_cell; heading alone
-    cannot measure translation. Signed cells allow observations on every side
-    of the start. The dashboard expands its initial grid to display them.
+    A visible mapped marker anchors the rover's position in the map frame;
+    without one the rover stays where it was last anchored (else start_cell).
+    Corridor ends: no markers lie past the wall, so once the front ToF
+    (front_mm) reads AT_WALL_MM or less the rover is at the last marker
+    recorded; when the heading then turns to a new quarter it is placed in
+    that marker's cell. Turning before reaching the wall keeps the position.
+    rover keeps this state between frames. Signed cells allow observations on
+    every side of the start. The dashboard expands its grid to display them.
     """
     if not finite_number(heading_deg):
         raise ValueError("A finite map-relative heading is required")
+    rover = {} if rover is None else rover
+    rover.setdefault("mm", (start_cell[0] * GRID_CELL_MM, start_cell[1] * GRID_CELL_MM))
+    quarter = round(heading_deg % 360 / 90) % 4
+    if rover.setdefault("quarter", quarter) != quarter:  # Turned left or right.
+        if rover.get("wall") and "last" in rover:
+            col, row = grid_cell(rover["last"])
+            rover["mm"] = (col * GRID_CELL_MM, row * GRID_CELL_MM)
+        rover["quarter"], rover["wall"] = quarter, False
+    if finite_number(front_mm) and 0 < front_mm <= AT_WALL_MM:
+        rover["wall"] = True
     heading = math.radians(heading_deg % 360)
     cos_heading, sin_heading = math.cos(heading), math.sin(heading)
     seen = {}
-    for marker in markers:
+    for marker in sorted(markers, key=lambda marker: marker.camera_distance_mm):
         bearing = math.radians(marker.camera_bearing_deg)
         right = marker.camera_distance_mm * math.sin(bearing)
         forward = LENS_AHEAD_MM + marker.camera_distance_mm * math.cos(bearing)
@@ -121,13 +137,13 @@ def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0), he
                                   forward * cos_heading - right * sin_heading)
     anchor = next((marker_id for marker_id in seen if marker_id in found), None)
     if anchor is None:
-        origin = (start_cell[0] * GRID_CELL_MM, start_cell[1] * GRID_CELL_MM)
+        origin = rover["mm"]
     else:
-        origin = (found[anchor][0] - seen[anchor][0], found[anchor][1] - seen[anchor][1])
+        origin = rover["mm"] = (found[anchor][0] - seen[anchor][0], found[anchor][1] - seen[anchor][1])
     new = []
-    for marker_id, (x, y) in seen.items():
+    for marker_id, (x, y) in seen.items():  # Nearest first, so "last" ends on the farthest new marker.
         position = (origin[0] + x, origin[1] + y)
         if marker_id not in found:
-            found[marker_id] = position
+            found[marker_id] = rover["last"] = position
             new.append(marker_id)
     return new

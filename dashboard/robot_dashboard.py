@@ -133,8 +133,9 @@ class RobotGUI:
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
         # Marker grid map: its own feed so it never shares sequence state with the navigator.
         self.map_feed = VisionFeed()
-        self.map_start_cell = (0, 0)  # Starting IMU heading defines up the map.
+        self.map_start_cell = (3, 0)  # 4th column (middle), bottom row; starting IMU heading defines up the map.
         self.found_markers = {}
+        self.map_rover = {}  # Last rover position worked out from a mapped marker.
         self.map_title = ""
         self.map_drawn_at = 0.0
 
@@ -435,44 +436,16 @@ class RobotGUI:
             speed_factor = self.current_speed.get() / 100.0
             base_velocity = 200.0 * speed_factor  # mm/s (adjust based on your robot)
             
-            # Convert heading to radians
+            # (forward, right) parts of each move; heading is clockwise, so right = (cos, -sin).
+            forward, right = {
+                "FORWARD": (1, 0), "BACKWARD": (-1, 0), "LEFT": (0, -1), "RIGHT": (0, 1),
+                "FRONT_LEFT": (0.707, -0.707), "FRONT_RIGHT": (0.707, 0.707),
+                "BACK_LEFT": (-0.707, -0.707), "BACK_RIGHT": (-0.707, 0.707),
+            }.get(command, (0, 0))
             heading_rad = math.radians(self.robot_heading)
-            
-            # Update position based on command
-            if command == "FORWARD":
-                self.robot_x += base_velocity * math.sin(heading_rad) * dt
-                self.robot_y += base_velocity * math.cos(heading_rad) * dt
-            elif command == "BACKWARD":
-                self.robot_x -= base_velocity * math.sin(heading_rad) * dt
-                self.robot_y -= base_velocity * math.cos(heading_rad) * dt
-            elif command == "LEFT":
-                # Strafe left (perpendicular to heading)
-                self.robot_x += base_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= base_velocity * math.sin(heading_rad) * dt
-            elif command == "RIGHT":
-                # Strafe right
-                self.robot_x -= base_velocity * math.cos(heading_rad) * dt
-                self.robot_y += base_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_LEFT":
-                # Diagonal forward-left (combine forward + left)
-                diag_velocity = base_velocity * 0.707  # sqrt(2)/2 for 45° movement
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_RIGHT":
-                # Diagonal forward-right (combine forward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_LEFT":
-                # Diagonal backward-left (combine backward + left)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_RIGHT":
-                # Diagonal backward-right (combine backward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
+            step = base_velocity * dt
+            self.robot_x += step * (forward * math.sin(heading_rad) + right * math.cos(heading_rad))
+            self.robot_y += step * (forward * math.cos(heading_rad) - right * math.sin(heading_rad))
             # Heading comes exclusively from healthy IMU telemetry. Rotation
             # commands provide no measured angle and must not overwrite it.
 
@@ -518,7 +491,9 @@ class RobotGUI:
         if (sensor is not None and self.navigator.initial_sensor_heading is not None and
                 self.navigator.clock() - sensor.received_at + sensor.age_s <= self.navigator.SENSOR_MAX_AGE_S):
             heading = (sensor.heading - self.navigator.initial_sensor_heading) % 360
-        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading)
+        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading,
+                             rover=self.map_rover,
+                             front_mm=sensor.distances.get("front"))
                if heading is not None else [])
         for marker_id in new:
             col, row = grid_cell(self.found_markers[marker_id])
