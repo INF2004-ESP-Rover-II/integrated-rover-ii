@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MQTT Robot Controller Dashboard
-Robot-centered map with odometry tracking
+Marker grid oriented relative to the first fresh IMU heading.
 Requires: pip install paho-mqtt matplotlib numpy
 """
 
@@ -16,11 +16,29 @@ import math
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import gc
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
+from tkinter import ttk
+from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
+import os
 from laptop_navigation import LaptopNavigator
+from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
+
+
+
+def make_mqtt_client(client_id):
+    """paho-mqtt 1.x and 2.x both work (2.x needs an explicit callback API version)."""
+    try:
+        return mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=client_id)
+    except AttributeError:
+        return mqtt.Client(client_id=client_id)
+
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -35,6 +53,7 @@ TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
 
 ROBOT_LOST_S = 2.0
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 WATCHDOG_CHECK_MS = 250
 TOF_UART_STALE_MS = 500
 
@@ -103,6 +122,9 @@ class RobotGUI:
         self.estop_active = False
         self.estop_time = 0
         self.estop_cooldown = 3.0  # 3 seconds cooldown
+        self.stop_sent_at = None
+        self.stop_latencies = []
+        self.last_refused = None
 
         # Assumed speed (%) for the odometry estimate only
         self.current_speed = tk.IntVar(value=80)
@@ -132,8 +154,20 @@ class RobotGUI:
         self.dfs_threshold = tk.StringVar(value="")
         self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
+        # Marker grid map: its own feed so it never shares sequence state with the navigator.
+        self.map_feed = VisionFeed()
+        self.map_start_cell = (3, 0)  # 4th column (middle), bottom row; starting IMU heading defines up the map.
+        self.found_markers = {}
+        self.map_rover = {}  # Last rover position worked out from a mapped marker.
+        self.map_title = ""
+        self.map_drawn_at = 0.0
 
         # No on-screen control buttons (keyboard-only controls)
+
+        # Logging
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log_name = datetime.now().strftime("dashboard_%Y%m%d_%H%M%S.txt")
+        self.log_file = open(os.path.join(LOG_DIR, log_name), "a", encoding="utf-8", buffering=1)
 
         self.setup_ui()
         self.root.after(100, self.navigation_tick)
@@ -142,7 +176,7 @@ class RobotGUI:
     def setup_ui(self):
         # Header
         header = tk.Frame(self.root, bg='#2c3e50')
-        header.pack(fill='x', pady=(10, 0))
+        header.pack(fill='x', pady=(4, 0))
         header.grid_columnconfigure(0, weight=1)
         
         tk.Label(header, text="ROVER II CONTROLLER - MQTT + TOF",
@@ -157,7 +191,7 @@ class RobotGUI:
 
         # Connection bar
         conn_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
-        conn_frame.pack(pady=10, padx=20, fill='x')
+        conn_frame.pack(pady=3, padx=20, fill='x')
 
         tk.Label(conn_frame, text="Broker IP:", fg='white', bg='#34495e',
                  font=("Arial", 10)).grid(row=0, column=0, padx=6, pady=6, sticky='w')
@@ -176,7 +210,7 @@ class RobotGUI:
 
         # Status indicators
         status_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
-        status_frame.pack(pady=5, padx=20, fill='x')
+        status_frame.pack(pady=2, padx=20, fill='x')
 
         tk.Label(status_frame, text="Broker:", fg='white', bg='#34495e',
                  font=("Arial", 10, "bold")).grid(row=0, column=0, padx=10, pady=8, sticky='w')
@@ -210,6 +244,12 @@ class RobotGUI:
                                     fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
         self.pitch_label.grid(row=0, column=9, padx=5, pady=8, sticky='w')
 
+        tk.Label(status_frame, text="Roll:", fg='white', bg='#34495e',
+                 font=("Arial", 10, "bold")).grid(row=0, column=10, padx=10, pady=8, sticky='w')
+        self.roll_label = tk.Label(status_frame, text="N/A",
+                                   fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
+        self.roll_label.grid(row=0, column=11, padx=5, pady=8, sticky='w')
+
         # Add ultrasonic readings display
         tk.Label(status_frame, text="Ultrasonic (mm):", fg='white', bg='#34495e',
                  font=("Arial", 10, "bold")).grid(row=0, column=12, padx=10, pady=8, sticky='w')
@@ -234,33 +274,34 @@ class RobotGUI:
             bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
         self.reset_safety_btn.grid(row=1, column=14, padx=15, pady=(0, 8))
 
-        # Keep ToF readings on their own row so they do not crowd the controls.
-        tof_frame = tk.LabelFrame(self.root, text="ToF sensors (mm)",
-                                  fg='white', bg='#34495e', font=("Arial", 12, "bold"))
-        tof_frame.pack(padx=20, pady=5, fill='x')
+        # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
+        tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
+                                  fg='white', bg='#34495e', font=("Arial", 8, "bold"))
+        tof_frame.pack(padx=20, pady=(2, 2), fill='x')
         self.tof_labels = {}
         self.tof_state_labels = {}
         for column, direction in enumerate(('left', 'front', 'right')):
-            tof_frame.grid_columnconfigure(column, weight=1, uniform='tof')
+            base = column * 3
+            tof_frame.grid_columnconfigure(base + 1, weight=1)
             tk.Label(tof_frame, text=direction.title(), fg='white', bg='#34495e',
-                     font=("Arial", 10, "bold")).grid(row=0, column=column, pady=(5, 0))
+                     font=("Arial", 9, "bold")).grid(row=0, column=base, padx=(12, 4))
             self.tof_labels[direction] = tk.Label(
-                tof_frame, text="--", fg='#95a5a6', bg='#34495e', font=("Consolas", 22, "bold"))
-            self.tof_labels[direction].grid(row=1, column=column, padx=12)
+                tof_frame, text="--", fg='#95a5a6', bg='#34495e', font=("Consolas", 14, "bold"))
+            self.tof_labels[direction].grid(row=0, column=base + 1, sticky='w')
             self.tof_state_labels[direction] = tk.Label(
-                tof_frame, text="Waiting", fg='#95a5a6', bg='#34495e', font=("Arial", 10))
-            self.tof_state_labels[direction].grid(row=2, column=column, pady=(0, 5))
+                tof_frame, text="Waiting", fg='#95a5a6', bg='#34495e', font=("Arial", 9))
+            self.tof_state_labels[direction].grid(row=0, column=base + 2, padx=(4, 12), sticky='w')
         self.tof_summary_label = tk.Label(
             tof_frame, text="Stop request: --   |   Blocked: --   |   Urgent: --",
-            fg='#95a5a6', bg='#34495e', font=("Consolas", 11, "bold"))
-        self.tof_summary_label.grid(row=3, column=0, columnspan=3, sticky='w', padx=12)
+            fg='#95a5a6', bg='#34495e', font=("Consolas", 9, "bold"))
+        self.tof_summary_label.grid(row=1, column=0, columnspan=5, sticky='w', padx=12)
         self.tof_age_label = tk.Label(
             tof_frame, text="Waiting for ToF telemetry. Stop request is separate from the motor lock.",
-            fg='#bdc3c7', bg='#34495e', font=("Arial", 9))
-        self.tof_age_label.grid(row=4, column=0, columnspan=3, sticky='w', padx=12, pady=(3, 7))
+            fg='#bdc3c7', bg='#34495e', font=("Arial", 8))
+        self.tof_age_label.grid(row=1, column=5, columnspan=4, sticky='e', padx=12, pady=(0, 2))
 
         dfs_frame = tk.Frame(self.root, bg='#34495e')
-        dfs_frame.pack(padx=20, pady=5, fill='x')
+        dfs_frame.pack(padx=20, pady=2, fill='x')
         tk.Label(dfs_frame, text="DFS target markers (1–36):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
         tk.Label(dfs_frame, text="Open path ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
@@ -269,11 +310,11 @@ class RobotGUI:
 
         # Main area with 3 columns
         main = tk.Frame(self.root, bg='#2c3e50')
-        main.pack(fill='both', expand=True, padx=20, pady=10)
+        main.pack(fill='both', expand=True, padx=20, pady=(4, 8))
         # Make left column slimmer to free space for map and logs
-        main.grid_columnconfigure(0, weight=0, minsize=200)
-        main.grid_columnconfigure(1, weight=3, minsize=400)
-        main.grid_columnconfigure(2, weight=2, minsize=300)
+        main.grid_columnconfigure(0, weight=0, minsize=220)
+        main.grid_columnconfigure(1, weight=10, minsize=800)   # the map is the main focus
+        main.grid_columnconfigure(2, weight=1, minsize=300)
         main.grid_rowconfigure(0, weight=1)
 
         # LEFT COLUMN - Key mappings only (no movement buttons)
@@ -303,20 +344,36 @@ class RobotGUI:
                                        fg='white', bg='#34495e', font=("Arial", 14, "bold"))
         self.map_frame.pack(fill='both', expand=True)
 
-        # !! ToF mapping display to be here
-        self.fig = Figure(figsize=(4, 4), dpi=100, facecolor='#2c3e50')
-        self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
-        self.ax.set_xlim(-3000, 3000)
-        self.ax.set_ylim(-3000, 3000)
-        self.ax.set_aspect('equal')
-        self.ax.grid(True, color='#3498db', alpha=0.3, linewidth=0.5)
-        self.ax.set_xlabel('X (mm)', color='white', fontsize=10)
-        self.ax.set_ylabel('Y (mm)', color='white', fontsize=10)
-        self.ax.set_title('Map (waiting for ToF / mapping data)', color='white', pad=15, fontsize=12)
-        self.ax.tick_params(colors='white', labelsize=8)
-        self.ax.plot(0, 0, 'go', markersize=8, zorder=10)  # robot
+        # Subsystem 4: tabs inside the Map frame. "Live view" keeps the original ToF placeholder.
+        self.map_tabs = ttk.Notebook(self.map_frame)
+        self.map_tabs.pack(fill='both', expand=True)
+        live_tab = tk.Frame(self.map_tabs, bg='#2c3e50')
+        self.map_tabs.add(live_tab, text="Live view")
+        self.mapping = MappingPanel(
+            self.map_tabs, self.navigator,
+            get_threshold=lambda: int(self.dfs_threshold.get() or 0),
+            log=lambda m: self.log(m))
+        self.map_tabs.add(self.mapping, text="Mapping & path")
+        self.map_tabs.select(self.mapping)
 
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.map_frame)
+        # !! ToF mapping display to be here
+        self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
+        self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
+        # Initial 6x6 grid of 60 cm cells; expand for markers beyond its edges.
+        self.ax.set_xlim(0, GRID_SIZE)
+        self.ax.set_ylim(0, GRID_SIZE)
+        self.ax.set_aspect('equal')
+        self.ax.set_xticks(range(GRID_SIZE + 1))
+        self.ax.set_yticks(range(GRID_SIZE + 1))
+        self.ax.grid(True, color='#3498db', alpha=0.6, linewidth=1)
+        self.ax.set_xlabel('Column (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_ylabel('Row (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_title('Waiting for camera', color='white', pad=15, fontsize=12)
+        self.ax.tick_params(colors='white', labelsize=8)
+        self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
+                     'go', markersize=10, zorder=10)  # rover start
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=live_tab)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=10)
 
@@ -329,7 +386,8 @@ class RobotGUI:
         log_frame = tk.LabelFrame(right_col, text="Command & Status Log",
                                   fg='white', bg='#34495e')
         log_frame.grid(row=0, column=0, sticky='nsew')
-        self.log_text = tk.Text(log_frame, height=10, bg='#2c3e50', fg='#ecf0f1',                               font=("Consolas", 9), wrap='word', state='disabled')
+        self.log_text = tk.Text(log_frame, height=30, bg='#2c3e50', fg='#ecf0f1', 
+                               font=("Consolas", 9), wrap='word', state='disabled')
         scrollbar = tk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -419,48 +477,18 @@ class RobotGUI:
             speed_factor = self.current_speed.get() / 100.0
             base_velocity = 200.0 * speed_factor  # mm/s (adjust based on your robot)
             
-            # Convert heading to radians
+            # (forward, right) parts of each move; heading is clockwise, so right = (cos, -sin).
+            forward, right = {
+                "FORWARD": (1, 0), "BACKWARD": (-1, 0), "LEFT": (0, -1), "RIGHT": (0, 1),
+                "FRONT_LEFT": (0.707, -0.707), "FRONT_RIGHT": (0.707, 0.707),
+                "BACK_LEFT": (-0.707, -0.707), "BACK_RIGHT": (-0.707, 0.707),
+            }.get(command, (0, 0))
             heading_rad = math.radians(self.robot_heading)
-            
-            # Update position based on command
-            if command == "FORWARD":
-                self.robot_x += base_velocity * math.sin(heading_rad) * dt
-                self.robot_y += base_velocity * math.cos(heading_rad) * dt
-            elif command == "BACKWARD":
-                self.robot_x -= base_velocity * math.sin(heading_rad) * dt
-                self.robot_y -= base_velocity * math.cos(heading_rad) * dt
-            elif command == "LEFT":
-                # Strafe left (perpendicular to heading)
-                self.robot_x += base_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= base_velocity * math.sin(heading_rad) * dt
-            elif command == "RIGHT":
-                # Strafe right
-                self.robot_x -= base_velocity * math.cos(heading_rad) * dt
-                self.robot_y += base_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_LEFT":
-                # Diagonal forward-left (combine forward + left)
-                diag_velocity = base_velocity * 0.707  # sqrt(2)/2 for 45° movement
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_RIGHT":
-                # Diagonal forward-right (combine forward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_LEFT":
-                # Diagonal backward-left (combine backward + left)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_RIGHT":
-                # Diagonal backward-right (combine backward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "ROTATE_LEFT":
-                self.robot_heading = (self.robot_heading + 90 * dt) % 360
-            elif command == "ROTATE_RIGHT":
-                self.robot_heading = (self.robot_heading - 90 * dt) % 360
+            step = base_velocity * dt
+            self.robot_x += step * (forward * math.sin(heading_rad) + right * math.cos(heading_rad))
+            self.robot_y += step * (forward * math.cos(heading_rad) - right * math.sin(heading_rad))
+            # Heading comes exclusively from healthy IMU telemetry. Rotation
+            # commands provide no measured angle and must not overwrite it.
 
     def toggle_auto_mode(self):
         """The laptop owns exploration; never start the inherited Pico AUTO mode."""
@@ -486,6 +514,7 @@ class RobotGUI:
 
     def navigation_tick(self):
         self.navigator.tick()
+        self.mapping.sync()              # Subsystem 4: read the DFS graph / drive routes
         if not self.navigator.active:
             self.auto_mode.set(False)
         self.root.after(100, self.navigation_tick)
@@ -493,6 +522,51 @@ class RobotGUI:
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
         self.root.after(0, self.navigator.vision_received, message)
+
+    def update_marker_map(self, data):
+        """Place fresh camera observations using the current healthy IMU heading."""
+        frame = self.map_feed.decode(data, time.time() * 1000)
+        if frame is None:
+            return
+        sensor = self.navigator.sensor
+        heading = None
+        if (sensor is not None and self.navigator.initial_sensor_heading is not None and
+                self.navigator.clock() - sensor.received_at + sensor.age_s <= self.navigator.SENSOR_MAX_AGE_S):
+            heading = (sensor.heading - self.navigator.initial_sensor_heading) % 360
+        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading,
+                             rover=self.map_rover,
+                             front_mm=sensor.distances.get("front"))
+               if heading is not None else [])
+        for marker_id in new:
+            col, row = grid_cell(self.found_markers[marker_id])
+            self.ax.add_patch(Rectangle((col, row), 1, 1, color='#27ae60', alpha=0.7))
+            self.ax.text(col + 0.5, row + 0.5, str(marker_id), ha='center', va='center',
+                         color='white', fontsize=14, fontweight='bold')
+            self.log(f"Marker {marker_id} mapped to grid cell (col {col}, row {row})")
+        if new:
+            cells = [grid_cell(position) for position in self.found_markers.values()]
+            min_col = min(0, min(col for col, row in cells))
+            max_col = max(GRID_SIZE, max(col + 1 for col, row in cells))
+            min_row = min(0, min(row for col, row in cells))
+            max_row = max(GRID_SIZE, max(row + 1 for col, row in cells))
+            self.ax.set_xlim(min_col, max_col)
+            self.ax.set_ylim(min_row, max_row)
+            self.ax.set_xticks(range(min_col, max_col + 1))
+            self.ax.set_yticks(range(min_row, max_row + 1))
+        ahead = min(frame.markers, key=lambda marker: marker.camera_distance_mm, default=None)
+        if frame.status not in ("ok", "no_marker"):
+            title = "Camera " + frame.status
+        elif heading is None:
+            title = "Waiting for fresh IMU heading"
+        elif ahead:
+            title = f"Marker ahead: ID {ahead.marker_id} at {ahead.camera_distance_mm:.0f} mm"
+        else:
+            title = "No marker ahead"
+        # Redraw at most 5 times a second; the camera sends ~30 frames a second.
+        if new or (title != self.map_title and time.monotonic() - self.map_drawn_at >= 0.2):
+            self.map_title, self.map_drawn_at = title, time.monotonic()
+            self.ax.set_title(title, color='white', pad=15, fontsize=12)
+            self.canvas.draw_idle()
 
     def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
         """Queue a simple lens-relative observation; an ID alone is not arrival."""
@@ -505,6 +579,7 @@ class RobotGUI:
 
     def close(self):
         self.disconnect()
+        self.log_file.close()
         self.root.destroy()
 
     def reset_odometry(self):
@@ -535,6 +610,7 @@ class RobotGUI:
         self.active_command = None
         self.auto_mode.set(False)
         if status == "SAFETY_READY":
+            self.last_refused = None
             self.log("Safety reset accepted. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
             self.log("Safety reset refused: check the front stop request and Sensor Pico UART connection.")
@@ -730,6 +806,9 @@ class RobotGUI:
             # Time since the last telemetry. If none yet, count from connect.
             ref = self.last_telemetry_rx or self.connect_time
             age = time.time() - ref
+            colour = '#95a5a6' if age > 0.5 else '#3498db'
+            self.heading_label.config(fg=colour)
+            self.pitch_label.config(fg=colour)
             if age > ROBOT_LOST_S and self.robot_link != "lost":
                 self.set_robot_link("lost", age)
             elif (age <= ROBOT_LOST_S and self.last_telemetry_rx
@@ -776,7 +855,7 @@ class RobotGUI:
             
             self.log(f"Connecting to MQTT broker at {broker}:{port}...")
             
-            self.mqtt_client = mqtt.Client(client_id=self.client_id)
+            self.mqtt_client = make_mqtt_client(self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -869,6 +948,13 @@ class RobotGUI:
                 self.robot_status_label.config(fg='#27ae60')
                 self.log(f"[{ts}] Robot ready")
             elif payload == "STOPPED":
+                if self.stop_sent_at is not None:
+                    ms = (time.perf_counter() - self.stop_sent_at) * 1000
+                    if ms < 2000:
+                        self.stop_latencies.append(ms)
+                        s_ = sorted(self.stop_latencies)
+                        self.log(f"[{ts}] STOP confirmed in {ms:.0f} ms round trip "
+                                 f"(n={len(s_)}, min {s_[0]:.0f}, median {s_[len(s_)//2]:.0f}, max {s_[-1]:.0f})")
                 if self.robot_status != "SAFETY_LOCKED":
                     self.robot_status_label.config(fg='#f39c12')
                     self.log(f"[{ts}] Robot stopped")
@@ -878,6 +964,24 @@ class RobotGUI:
                 self.navigator.stop("RoboPico command error")
                 self.robot_status_label.config(fg='#e74c3c')
                 self.log(f"[{ts}] ⚠ Robot error")
+            elif payload.startswith("STOPPED: LINK LOST"):
+                self.navigator.stop("RoboPico lost the laptop link")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ Rover stopped itself: laptop link lost (FR-08)")
+            elif payload == "RECONNECTED":
+                self.robot_status_label.config(fg='#27ae60')
+                self.log(f"[{ts}] Rover reconnected to the broker (FR-12)")
+            elif payload.startswith("PITCH:"):
+                pass
+            elif payload.startswith("SAFE STOP"):
+                self.navigator.stop("Motion Control SAFE STOP")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ {payload}")
+            elif payload.startswith("REFUSED"):
+                self.robot_status_label.config(fg='#e74c3c')
+                if payload != getattr(self, 'last_refused', None):   # log once, not every 300 ms
+                    self.log(f"[{ts}] ⚠ {payload}")
+                self.last_refused = payload
             elif payload.startswith("AUTO:"):
                 # Autonomous mode status messages
                 self.robot_status_label.config(fg='#f39c12')
@@ -886,6 +990,8 @@ class RobotGUI:
                 # Legacy auto status
                 self.robot_status_label.config(fg='#f39c12')
                 self.log(f"[{ts}] {payload}")
+            else:
+                self.log(f"[{ts}] Status: {payload}")
         elif topic == TOPIC_MARKER:
             try:
                 data = json.loads(payload)
@@ -893,6 +999,7 @@ class RobotGUI:
                     raise ValueError("Expected an object")
                 if "schema" in data or "markers" in data:
                     self.navigator.vision_received(data)
+                    self.update_marker_map(data)
                 else:
                     self.navigator.marker_seen(data["marker_id"], data["frame_id"], data.get("age_ms", 0),
                                                data.get("distance_mm"), data.get("bearing_deg"))
@@ -909,20 +1016,30 @@ class RobotGUI:
                 imu = data.get("imu", {})
                 ultrasonic = data.get("ultrasonic", {})
 
-                # Simply use the calibrated heading directly
+                # Heading is clockwise relative to Sensor Pico startup.
                 heading = imu.get("heading", None)
                 pitch = imu.get("pitch", None)
+                roll = imu.get("roll", None)
+                imu_ok = imu.get("status", 0) == 0
                 
-                if heading is not None:
+                if heading is not None and imu_ok:
                     with self.odometry_lock:
                         self.robot_heading = float(heading)
                     # Update heading display
                     self.heading_label.config(text=f"{self.robot_heading:.1f}°")
                 
-                if pitch is not None:
+                if pitch is not None and imu_ok:
                     self.robot_pitch = float(pitch)
                     # Update pitch display
                     self.pitch_label.config(text=f"{self.robot_pitch:.1f}°")
+
+                if roll is not None and imu_ok:
+                    self.roll_label.config(text=f"{float(roll):.1f}°")
+
+                if not imu_ok:
+                    self.heading_label.config(text="N/A")
+                    self.pitch_label.config(text="N/A")
+                    self.roll_label.config(text="N/A")
 
                 # Update ultrasonic display
                 front = ultrasonic.get("front", self.ultrasonic.get('front', 0))
@@ -972,6 +1089,9 @@ class RobotGUI:
 
             if not quiet:
                 self.log(f"[{ts}] → {command}")
+            if command == "STOP":
+                self.stop_sent_at = time.perf_counter()
+
             result = self.mqtt_client.publish(TOPIC_COMMAND, payload, qos=0)
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -986,6 +1106,7 @@ class RobotGUI:
     # Removed no-op connection monitor
 
     def log(self, message):
+        self.log_file.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {message}\n")
         self.log_text.config(state='normal')
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.config(state='disabled')

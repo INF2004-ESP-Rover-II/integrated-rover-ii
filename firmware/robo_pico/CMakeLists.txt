@@ -3,13 +3,14 @@ cmake_minimum_required(VERSION 3.13)
 # Set board type to pico_w BEFORE including SDK
 set(PICO_BOARD pico_w)
 
-include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
-
-project(mecanum_robot C CXX ASM)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-
-pico_sdk_init()
+# Standalone build only; when added from the repo root the SDK is imported/initialised once there.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_LIST_DIR)
+    include(${CMAKE_CURRENT_LIST_DIR}/../../pico_sdk_import.cmake)
+    project(mecanum_robot C CXX ASM)
+    set(CMAKE_C_STANDARD 11)
+    set(CMAKE_CXX_STANDARD 17)
+    pico_sdk_init()
+endif()
 
 add_executable(mecanum_robot
     src/main.c

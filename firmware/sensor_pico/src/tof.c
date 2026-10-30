@@ -12,6 +12,12 @@
 #include "VL53L1X_platform.h"
 #include "VL53L1X_types.h"
 
+// The bundled ToF platform initializes board-default I2C pins. Keep its bus
+// separate from the IMU and fail compilation if the configured pins diverge.
+#if TOF_SDA_PIN != PICO_DEFAULT_I2C_SDA_PIN || TOF_SCL_PIN != PICO_DEFAULT_I2C_SCL_PIN
+#error "ToF pin config must match the bundled platform's board-default I2C pins"
+#endif
+
 #define TOF_DEFAULT_ADDR 0x29
 #define TOF_DISTANCE_MODE_LONG 2
 #define TOF_TIMING_BUDGET_MS 50
@@ -20,6 +26,22 @@
 static const uint8_t sensor_addresses[TOF_SENSOR_COUNT] = {0x30, 0x31, 0x32};
 static uint8_t sensor_xshut_pins[TOF_SENSOR_COUNT];
 static uint8_t online_mask;
+
+// Rate-limit diagnostics per sensor so persistent faults do not flood USB.
+static uint32_t last_diagnostic_ms[TOF_SENSOR_COUNT];
+static uint8_t diagnostic_reported_mask;
+
+static void report_diagnostic(int sensor, const char *stage, int status, unsigned distance)
+{
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    uint8_t bit = (uint8_t)(1u << sensor);
+    if ((diagnostic_reported_mask & bit) &&
+        (uint32_t)(now_ms - last_diagnostic_ms[sensor]) < 2000u) return;
+    diagnostic_reported_mask |= bit;
+    last_diagnostic_ms[sensor] = now_ms;
+    const char *names[TOF_SENSOR_COUNT] = {"L", "F", "R"};
+    printf("[TOF DIAG %s] %s status=%d raw_mm=%u\n", names[sensor], stage, status, distance);
+}
 
 static bool configure_sensor(uint8_t address)
 {
@@ -42,6 +64,7 @@ static bool configure_sensor(uint8_t address)
 uint8_t tof_init(const uint8_t xshut_pins[TOF_SENSOR_COUNT])
 {
     online_mask = 0;
+    diagnostic_reported_mask = 0;
     if (xshut_pins == NULL)
         return 0;
 
@@ -64,7 +87,7 @@ uint8_t tof_init(const uint8_t xshut_pins[TOF_SENSOR_COUNT])
         // It validates the first sensor while that sensor is at its default address.
         if (!platform_ready)
         {
-            if (VL53L1X_I2C_Init(TOF_DEFAULT_ADDR, I2C_PORT) != 0)
+            if (VL53L1X_I2C_Init(TOF_DEFAULT_ADDR, TOF_I2C_PORT) != 0)
             {
                 gpio_put(sensor_xshut_pins[i], 0);
                 continue;
@@ -105,20 +128,31 @@ void tof_poll(tof_readings_t *readings)
             continue;
 
         uint8_t data_ready = 0;
-        if (VL53L1X_CheckForDataReady(sensor_addresses[i], &data_ready) != 0 || !data_ready)
+        int status = VL53L1X_CheckForDataReady(sensor_addresses[i], &data_ready);
+        if (status != 0)
         {
+            report_diagnostic(i, "ready-read failed", status, 0);
             continue;
         }
+        if (!data_ready) continue;
 
         VL53L1X_Result_t result;
-        if (VL53L1X_GetResult(sensor_addresses[i], &result) != 0)
+        status = VL53L1X_GetResult(sensor_addresses[i], &result);
+        if (status != 0) {
+            report_diagnostic(i, "result-read failed", status, 0);
             continue;
-        if (VL53L1X_ClearInterrupt(sensor_addresses[i]) != 0)
+        }
+        status = VL53L1X_ClearInterrupt(sensor_addresses[i]);
+        if (status != 0) {
+            report_diagnostic(i, "interrupt-clear failed", status, 0);
             continue;
+        }
 
         readings->fresh_mask |= bit;
         readings->timestamp_ms[i] = to_ms_since_boot(get_absolute_time());
         uint16_t code = tof_result_code(result.status, result.distance);
+        if (code == 0)
+            report_diagnostic(i, "range rejected", result.status, result.distance);
         if (code != 0)
         {
             readings->valid_mask |= bit;

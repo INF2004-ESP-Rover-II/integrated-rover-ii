@@ -16,7 +16,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -125,18 +125,18 @@ static void service_safety_stop(void)
 #define AUTO_MIN_FORWARD_CLEAR_RATIO 0.40f // Require 40% of front rays free to resume
 
 // Pitch compensation for upslope detection
-#define PITCH_BASELINE 77.0f      // Flat ground pitch from MPU6050 (77.0°) - calibrate per robot
-#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15° pitch drop
+#define PITCH_BASELINE 0.0f       // MPU6500 mounted +X forward, +Z up: flat = 0 degrees
+#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15 degrees nose-up
 #define PITCH_MAX_BOOST 30        // Maximum boost capped at +30%
 
 static int apply_pitch_compensation(int base_speed, float current_pitch)
 {
-    // Calculate pitch drop from baseline (upslope detected when pitch < baseline)
+    // Sketch convention with +X forward/+Z up: nose-up pitch is negative.
     float pitch_drop = PITCH_BASELINE - current_pitch;
 
     if (pitch_drop > 0)
     {
-        // Apply boost: Every 15° drop adds 10% speed
+        // Apply boost: every 15 degrees nose-up adds 10% speed
         int boost_percent = (int)(pitch_drop / 15.0f) * PITCH_BOOST_PER_15_DEG;
 
         // Apply boost cap at 30%
@@ -219,7 +219,8 @@ static void process_command(const char *command)
     {
         // Apply pitch compensation for upslope
         int speed = motor_move_speed(DIRECTION_FORWARD);
-        int compensated_speed = apply_pitch_compensation(speed, latest_sensors.pitch);
+        int compensated_speed = (sensor_data_valid && latest_sensors.imu_status == 0)
+                                    ? apply_pitch_compensation(speed, latest_sensors.pitch) : speed;
         if (compensated_speed != speed)
         {
             char msg[128];
@@ -357,9 +358,11 @@ static void publish_sensor_data(void)
              "\"timestamp\":%lu,"
              "\"imu\":{"
              "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
-             "\"mag\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
+             "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"heading\":%.1f,"
              "\"pitch\":%.1f,"
+             "\"roll\":%.1f,"
+             "\"heading_reference\":\"startup\","
              "\"status\":%d"
              "},"
              "\"ultrasonic\":{"
@@ -380,8 +383,8 @@ static void publish_sensor_data(void)
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
              latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
-             latest_sensors.mag_x, latest_sensors.mag_y, latest_sensors.mag_z,
-             latest_sensors.heading, latest_sensors.pitch, latest_sensors.imu_status,
+             latest_sensors.gyro_x, latest_sensors.gyro_y, latest_sensors.gyro_z,
+             latest_sensors.heading, latest_sensors.pitch, latest_sensors.roll, latest_sensors.imu_status,
              latest_sensors.ultrasonic_front, latest_sensors.ultrasonic_back,
              latest_sensors.ultrasonic_left, latest_sensors.ultrasonic_right,
              latest_sensors.ultrasonic_status,
@@ -605,7 +608,8 @@ int main()
             {
                 printf("No sensor data");
             }
-
+            
+            printf("\n");
             last_stats_print = now;
         }
         // Tell the dashboard once when the rover enters SAFE STOP, and why
