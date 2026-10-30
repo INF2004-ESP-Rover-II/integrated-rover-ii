@@ -2,6 +2,8 @@
 
 An embedded systems project using Pico W and Robo Pico to control a mecanum-wheeled robot with LIDAR, IMU, and ultrasonic sensors. The system features autonomous navigation and remote control via MQTT.
 
+See [MPU6500 integration](MPU6500.md) for current IMU wiring, calibration and firmware compatibility.
+
 ---
 
 ## 📁 Project Structure
@@ -47,15 +49,17 @@ Reads sensors and transmits data to robo_pico.
 **src/**
 - `main.c` - Reads all sensors and sends data packets via UART
 - `rplidar.c` - RPLIDAR A1 driver using interrupt-based UART reading
-- `accelero.c` - LSM303DLHC IMU driver (accelerometer + magnetometer) via I2C
-- `ultrasonic.c` - HC-SR04 ultrasonic distance sensor interface (2 sensors)
+- `mpu6500.c` - MPU6500 accelerometer/gyroscope driver and startup calibration via I2C
+- `imu_filter.c` - Complementary pitch/roll filter and gravity-aligned relative heading
+- `imu_sampler.c` - Independent core 1 IMU sampling/fusion at a target of 100 Hz
+- `ultrasonic.c` - HC-SR04 ultrasonic interface (front/back/right active; legacy left disabled)
 - `sd_card.c` - SD card file operations for data logging
 - `sd_config.c` - SD card hardware configuration
 - `uart_protocol.c` - Sends binary sensor packets to robo_pico via UART
 
 **include/**
 - `rplidar.h` - RPLIDAR function declarations
-- `accelero.h` - IMU function declarations
+- `mpu6500.h` / `imu_filter.h` / `imu_sampler.h` - IMU driver, filter and snapshot declarations
 - `ultrasonic.h` - Ultrasonic sensor function declarations
 - `sd_card.h` - SD card function declarations
 - `sensor_config.h` - Pin assignments and timing constants
@@ -162,7 +166,7 @@ python robot_dashboard.py
 The dashboard connects to the MQTT broker and displays:
 - Real-time LIDAR point cloud
 - Ultrasonic sensor readings
-- Robot heading and pitch
+- Robot relative heading, pitch and roll
 - Control interface (keyboard or buttons)
 
 ---
@@ -189,6 +193,35 @@ The dashboard connects to the MQTT broker and displays:
 - Send commands, observe robot response
 - Check telemetry data updates in real-time
 
+### Test 5: Camera Marker Mapping (4 terminals)
+The ESP32-S3 camera streams to the laptop, `vision/vision_publisher.py` detects ArUco markers (DICT_6X6_250, IDs 1-36, 74 mm printed) and publishes them on `camera/marker`, and the dashboard places each marker in the 6x6 grid (60 cm cells) on the Map panel.
+
+Before starting:
+- Laptop on the `RoverII` Wi-Fi; `MQTT_BROKER_IP` in `firmware/robo_pico/include/config.h` set to the laptop's IP (`ipconfig getifaddr en0` on macOS), then robo_pico rebuilt and flashed
+- Camera powered (stream at `http://192.168.50.5/stream`); close any browser tab showing it, as it serves one viewer at a time
+- Python packages: `pip install "paho-mqtt<2" matplotlib numpy opencv-python` (paho-mqtt 2.x breaks the dashboard)
+
+Open 4 terminals in the repo root:
+
+| Terminal | Command | Leave running |
+|---|---|---|
+| 1. Broker | `mosquitto -c mosquitto-rover.conf -v` (Homebrew: `/opt/homebrew/opt/mosquitto/sbin/mosquitto`) | Yes |
+| 2. Dashboard | `cd dashboard && python robot_dashboard.py`, then click **Connect** (`localhost`, 1883) | Yes |
+| 3. Feed viewer (optional) | `mosquitto_sub -t camera/marker \| cut -c1-2000` | Yes |
+| 4. Camera publisher | `python vision/vision_publisher.py --marker-mm 74 --mqtt localhost` (`q` in the video window quits) | Yes |
+
+Then:
+1. Power on the rover and keep it still for a few seconds while the IMU calibrates. Terminal 1 should show `New client connected ... as robot_pico_w`, and the dashboard's "telemetry lost" warning should clear.
+2. Place the rover in the start cell (4th column, bottom row; `map_start_cell` in `robot_dashboard.py`) facing up the row of markers. The heading at the first telemetry becomes "up" on the map.
+3. Drive along the row. The Map title shows `Marker ahead: ID … at … mm`, and each marker's cell turns green with its ID the first time it is seen.
+
+Notes:
+- Stop the broker with Ctrl+C, not Ctrl+Z; a paused broker keeps port 1883 and passes no messages (`Address already in use` on the next start).
+- The map title reads `Waiting for fresh IMU heading` until telemetry reports a healthy IMU (`"status":0`); check with `mosquitto_sub -t robot/telemetry -C 3`.
+- Markers seen with no mapped marker in view are placed from the rover's last known cell. At the end of a line (front ToF ≤ 45 cm) a turn puts the rover in the last marker's cell; tune `AT_WALL_MM` in `dashboard/vision_feed.py`.
+- Without the camera, replay a recording: `python <ESP32-LogiCam-Test>/software/laptop/replay.py session.jsonl | mosquitto_pub -l -t camera/marker`.
+- Unit tests: `python -m unittest discover -s tests -p "test_*.py"`.
+
 ---
 
 ## 🔧 Configuration
@@ -210,7 +243,8 @@ The dashboard connects to the MQTT broker and displays:
 **Sensor Pin Assignments** (`firmware/sensor_pico/include/sensor_config.h`):
 ```c
 #define LIDAR_RX_PIN 9       // RPLIDAR UART
-#define IMU_SDA_PIN 4        // IMU I2C
+#define IMU_SDA_PIN 6        // IMU I2C1 SDA
+#define IMU_SCL_PIN 7        // IMU I2C1 SCL
 #define ULTRASONIC_TRIG_PIN 10  // Ultrasonic trigger
 ```
 

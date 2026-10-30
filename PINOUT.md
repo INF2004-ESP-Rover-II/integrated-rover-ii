@@ -93,26 +93,28 @@ Complete pin assignments for both Pico boards in the mecanum robot system.
 - Range: 0.15m - 12m
 - Angular Resolution: 1°
 
-### LSM303DLHC IMU (Accelerometer + Magnetometer)
+### GY-6500 / MPU6500 (Accelerometer + Gyroscope)
 | Function | GPIO Pin | Description |
 |----------|----------|-------------|
-| SDA (Data) | GP4 | I2C data line |
-| SCL (Clock) | GP5 | I2C clock line |
+| SDA (Data) | GP6 | IMU I2C1 data |
+| SCL (Clock) | GP7 | IMU I2C1 clock |
 | VCC | 3.3V | Power supply |
 | GND | GND | Ground |
+| AD0 | GND | Selects 0x68 (0x69 when tied to 3V3) |
+| CS / NCS, if exposed | 3.3V | Selects I2C mode |
 
-**I2C Settings:**
-- I2C Port: i2c0
-- Accelerometer Address: 0x19
-- Magnetometer Address: 0x1E
-- Clock Speed: 400 kHz (Fast Mode)
+The IMU uses I2C1 on GP6/GP7; ToF remains on I2C0 at GP4/GP5.
+The old magnetometer driver is removed. The IMU configures
++/-4 g and +/-2000 deg/s. Core 1 samples/fuses at a target of 100 Hz. Keep the
+rover level and stationary at startup for gravity-aligned yaw. Mount +X forward,
++Y left, +Z up for rover-aligned pitch/roll. Heading is clockwise from startup and drifts;
+there is no magnetometer or implemented ArUco correction. See [MPU6500.md](MPU6500.md).
 
-**Sensor Ranges:**
-- Accelerometer: ±16g
-- Magnetometer: ±8 Gauss
-- Update Rate: 100 Hz
+### HC-SR04 Ultrasonic Sensors (3 active channels)
 
-### HC-SR04 Ultrasonic Sensors (4x Distance Sensors)
+Front, back and right are enabled. The legacy left channel on GP6/GP7 is
+disabled because those pins now belong to the IMU. It reports 500/unavailable
+and status bit 2. Reassign unused pins before enabling it again.
 
 #### Front Ultrasonic Sensor
 | Function | GPIO Pin | Description |
@@ -189,10 +191,10 @@ Complete pin assignments for both Pico boards in the mecanum robot system.
 | GP1 | Ultrasonic Back ECHO | Input |
 | GP2 | Ultrasonic Right TRIG | Output |
 | GP3 | Ultrasonic Right ECHO | Input |
-| GP4 | IMU SDA (I2C Data) | I/O |
-| GP5 | IMU SCL (I2C Clock) | Output |
-| GP6 | Ultrasonic Left TRIG | Output |
-| GP7 | Ultrasonic Left ECHO | Input |
+| GP4 | ToF SDA (I2C0 Data) | I/O |
+| GP5 | ToF SCL (I2C0 Clock) | Output |
+| GP6 | IMU SDA (I2C1 Data) | I/O |
+| GP7 | IMU SCL (I2C1 Clock) | Output |
 | GP8 | RPLIDAR UART TX | Output |
 | GP9 | RPLIDAR UART RX | Input |
 | GP10 | SD Card SCK (SPI Clock) | Output |
@@ -243,7 +245,8 @@ Sensor Pico GND      ────→ Robo Pico GND (Common Ground)
 ### Sensor Pico
 - Pin definitions: `firmware/sensor_pico/include/sensor_config.h`
 - RPLIDAR driver: `firmware/sensor_pico/src/rplidar.c`
-- IMU driver: `firmware/sensor_pico/src/accelero.c`
+- IMU driver: `firmware/sensor_pico/src/mpu6500.c`
+- Tilt/heading filter: `firmware/sensor_pico/src/imu_filter.c`
 - Ultrasonic driver: `firmware/sensor_pico/src/ultrasonic.c`
 - SD card driver: `firmware/sensor_pico/src/sd_card.c`
 
