@@ -98,19 +98,27 @@ def grid_cell(position_mm):
     return round(position_mm[0] / GRID_CELL_MM), round(position_mm[1] / GRID_CELL_MM)
 
 
-def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0)):
+def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0), heading_deg=0.0):
     """Add first sightings to found {marker_id: (x_mm, y_mm)}; return the new IDs.
 
-    The rover faces +row (up the map) and does not turn. A marker already on
-    the map anchors new ones in the same frame, so driving forward needs no
-    odometry. shortcut: with no mapped marker in view the rover is assumed to
-    still be in start_cell; use odometry once the rover turns or drives blind.
+    heading_deg is clockwise from the starting IMU heading: 0 faces +row,
+    90 faces +col. Rotate the camera offset along with each observation.
+    A visible mapped marker anchors the rover's position in the map frame.
+    Without an anchor the position still defaults to start_cell; heading alone
+    cannot measure translation. Signed cells allow observations on every side
+    of the start. The dashboard expands its initial grid to display them.
     """
+    if not finite_number(heading_deg):
+        raise ValueError("A finite map-relative heading is required")
+    heading = math.radians(heading_deg % 360)
+    cos_heading, sin_heading = math.cos(heading), math.sin(heading)
     seen = {}
     for marker in markers:
         bearing = math.radians(marker.camera_bearing_deg)
-        seen[marker.marker_id] = (marker.camera_distance_mm * math.sin(bearing),
-                                  LENS_AHEAD_MM + marker.camera_distance_mm * math.cos(bearing))
+        right = marker.camera_distance_mm * math.sin(bearing)
+        forward = LENS_AHEAD_MM + marker.camera_distance_mm * math.cos(bearing)
+        seen[marker.marker_id] = (right * cos_heading + forward * sin_heading,
+                                  forward * cos_heading - right * sin_heading)
     anchor = next((marker_id for marker_id in seen if marker_id in found), None)
     if anchor is None:
         origin = (start_cell[0] * GRID_CELL_MM, start_cell[1] * GRID_CELL_MM)
@@ -119,8 +127,7 @@ def place_markers(markers: List[MarkerObservation], found, start_cell=(0, 0)):
     new = []
     for marker_id, (x, y) in seen.items():
         position = (origin[0] + x, origin[1] + y)
-        col, row = grid_cell(position)
-        if marker_id not in found and 0 <= col < GRID_SIZE and 0 <= row < GRID_SIZE:
+        if marker_id not in found:
             found[marker_id] = position
             new.append(marker_id)
     return new

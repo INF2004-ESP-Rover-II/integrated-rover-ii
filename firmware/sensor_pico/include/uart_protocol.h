@@ -25,14 +25,10 @@ typedef struct {
     float gyro_y;
     float gyro_z;
     
-    // IMU - Magnetometer (gauss)
-    float mag_x;
-    float mag_y;
-    float mag_z;
-    
-    // Calculated heading (degrees, 0-360)
+    // MPU6500 relative heading (degrees, 0-360 clockwise from startup)
     float heading;
-    float pitch;
+    float pitch;               // Degrees, +X forward/+Z up: negative nose-up
+    float roll;                // Degrees, rotation about +X
     
     // Ultrasonic distances (cm)
     uint16_t ultrasonic_front;

@@ -2,6 +2,8 @@
 
 An embedded systems project using Pico W and Robo Pico to control a mecanum-wheeled robot with LIDAR, IMU, and ultrasonic sensors. The system features autonomous navigation and remote control via MQTT.
 
+See [MPU6500 integration](MPU6500.md) for current IMU wiring, calibration and firmware compatibility.
+
 ---
 
 ## 📁 Project Structure
@@ -47,15 +49,17 @@ Reads sensors and transmits data to robo_pico.
 **src/**
 - `main.c` - Reads all sensors and sends data packets via UART
 - `rplidar.c` - RPLIDAR A1 driver using interrupt-based UART reading
-- `accelero.c` - LSM303DLHC IMU driver (accelerometer + magnetometer) via I2C
-- `ultrasonic.c` - HC-SR04 ultrasonic distance sensor interface (2 sensors)
+- `mpu6500.c` - MPU6500 accelerometer/gyroscope driver and startup calibration via I2C
+- `imu_filter.c` - Complementary pitch/roll filter and gravity-aligned relative heading
+- `imu_sampler.c` - Independent core 1 IMU sampling/fusion at a target of 100 Hz
+- `ultrasonic.c` - HC-SR04 ultrasonic interface (front/back/right active; legacy left disabled)
 - `sd_card.c` - SD card file operations for data logging
 - `sd_config.c` - SD card hardware configuration
 - `uart_protocol.c` - Sends binary sensor packets to robo_pico via UART
 
 **include/**
 - `rplidar.h` - RPLIDAR function declarations
-- `accelero.h` - IMU function declarations
+- `mpu6500.h` / `imu_filter.h` / `imu_sampler.h` - IMU driver, filter and snapshot declarations
 - `ultrasonic.h` - Ultrasonic sensor function declarations
 - `sd_card.h` - SD card function declarations
 - `sensor_config.h` - Pin assignments and timing constants
@@ -162,7 +166,7 @@ python robot_dashboard.py
 The dashboard connects to the MQTT broker and displays:
 - Real-time LIDAR point cloud
 - Ultrasonic sensor readings
-- Robot heading and pitch
+- Robot relative heading, pitch and roll
 - Control interface (keyboard or buttons)
 
 ---
@@ -210,7 +214,8 @@ The dashboard connects to the MQTT broker and displays:
 **Sensor Pin Assignments** (`firmware/sensor_pico/include/sensor_config.h`):
 ```c
 #define LIDAR_RX_PIN 9       // RPLIDAR UART
-#define IMU_SDA_PIN 4        // IMU I2C
+#define IMU_SDA_PIN 6        // IMU I2C1 SDA
+#define IMU_SCL_PIN 7        // IMU I2C1 SCL
 #define ULTRASONIC_TRIG_PIN 10  // Ultrasonic trigger
 ```
 

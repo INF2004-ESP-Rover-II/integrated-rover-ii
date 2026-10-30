@@ -15,7 +15,10 @@
 #define MQTT_TOPIC_COMMAND    "robot/command"
 #define MQTT_TOPIC_STATUS     "robot/status"
 #define MQTT_TOPIC_TELEMETRY  "robot/telemetry"
+#define MQTT_TOPIC_HEARTBEAT  "robot/heartbeat"
 
+// FR-08: stop if no laptop message for this long (ms)
+#define LINK_TIMEOUT_MS       1500
 // ====================== MOTOR CONFIG =====================
 // Motor pins are in motor_pins.h; motor tuning is in motor_config.h.
 // Dashboard command timeout (ms): a held move stops if no command arrives.

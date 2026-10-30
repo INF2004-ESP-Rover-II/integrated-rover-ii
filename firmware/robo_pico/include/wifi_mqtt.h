@@ -83,4 +83,9 @@ void wifi_mqtt_poll(void);
  */
 mqtt_client_t* get_mqtt_client(void);  // <--- ADD THIS FUNCTION DECLARATION
 
+/**
+ * @brief Time (ms since boot) of the last message from the laptop, 0 if none yet (FR-08)
+ */
+uint32_t mqtt_last_link_rx_ms(void);
+
 #endif // WIFI_MQTT_H

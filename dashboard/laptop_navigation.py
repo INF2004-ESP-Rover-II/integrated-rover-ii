@@ -90,6 +90,8 @@ class LaptopNavigator:
         self.vision_feed = VisionFeed()
         self.explorer = DFSExplorer()
         self.sensor: Optional[SensorSnapshot] = None
+        # Stable dashboard map reference, independent of DFS mission restarts.
+        self.initial_sensor_heading: Optional[float] = None
         self.last_camera_at: Optional[float] = None
         self.visible_marker: Optional[int] = None
         self.last_frame = -1
@@ -128,6 +130,8 @@ class LaptopNavigator:
                 self.stop("Sensor clock restarted or rolled over")
             self._sensor_timestamp = timestamp
             self.sensor = SensorSnapshot.decode(data, self.clock())
+            if self.initial_sensor_heading is None and self.sensor.age_s <= self.SENSOR_MAX_AGE_S:
+                self.initial_sensor_heading = self.sensor.heading
         except (KeyError, TypeError, ValueError):
             self.sensor = None
             if self.active:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MQTT Robot Controller Dashboard
-Robot-centered map with odometry tracking
+Marker grid oriented relative to the first fresh IMU heading.
 Requires: pip install paho-mqtt matplotlib numpy
 """
 
@@ -71,7 +71,7 @@ class RobotGUI:
         # MQTT Client
         self.mqtt_client = None
         self.connected = False
-        self.broker_ip = tk.StringVar(value="localhost")
+        self.broker_ip = tk.StringVar(value="192.168.50.11")
         self.broker_port = tk.IntVar(value=1883)
         self.client_id = "robot_dashboard"
 
@@ -133,7 +133,7 @@ class RobotGUI:
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
         # Marker grid map: its own feed so it never shares sequence state with the navigator.
         self.map_feed = VisionFeed()
-        self.map_start_cell = (0, 0)  # Rover's starting cell, facing up the map.
+        self.map_start_cell = (0, 0)  # Starting IMU heading defines up the map.
         self.found_markers = {}
         self.map_title = ""
         self.map_drawn_at = 0.0
@@ -214,6 +214,12 @@ class RobotGUI:
         self.pitch_label = tk.Label(status_frame, text="N/A",
                                     fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
         self.pitch_label.grid(row=0, column=9, padx=5, pady=8, sticky='w')
+
+        tk.Label(status_frame, text="Roll:", fg='white', bg='#34495e',
+                 font=("Arial", 10, "bold")).grid(row=0, column=10, padx=10, pady=8, sticky='w')
+        self.roll_label = tk.Label(status_frame, text="N/A",
+                                   fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
+        self.roll_label.grid(row=0, column=11, padx=5, pady=8, sticky='w')
 
         # Add ultrasonic readings display
         tk.Label(status_frame, text="Ultrasonic (mm):", fg='white', bg='#34495e',
@@ -311,7 +317,7 @@ class RobotGUI:
         # !! ToF mapping display to be here
         self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
-        # 6x6 grid of 60 cm cells, drawn in cell units.
+        # Initial 6x6 grid of 60 cm cells; expand for markers beyond its edges.
         self.ax.set_xlim(0, GRID_SIZE)
         self.ax.set_ylim(0, GRID_SIZE)
         self.ax.set_aspect('equal')
@@ -467,10 +473,8 @@ class RobotGUI:
                 diag_velocity = base_velocity * 0.707
                 self.robot_x -= diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
                 self.robot_y -= diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "ROTATE_LEFT":
-                self.robot_heading = (self.robot_heading + 90 * dt) % 360
-            elif command == "ROTATE_RIGHT":
-                self.robot_heading = (self.robot_heading - 90 * dt) % 360
+            # Heading comes exclusively from healthy IMU telemetry. Rotation
+            # commands provide no measured angle and must not overwrite it.
 
     def toggle_auto_mode(self):
         """The laptop owns exploration; never start the inherited Pico AUTO mode."""
@@ -505,21 +509,42 @@ class RobotGUI:
         self.root.after(0, self.navigator.vision_received, message)
 
     def update_marker_map(self, data):
+        """Place fresh camera observations using the current healthy IMU heading."""
         frame = self.map_feed.decode(data, time.time() * 1000)
         if frame is None:
             return
-        new = place_markers(frame.markers, self.found_markers, self.map_start_cell)
+        sensor = self.navigator.sensor
+        heading = None
+        if (sensor is not None and self.navigator.initial_sensor_heading is not None and
+                self.navigator.clock() - sensor.received_at + sensor.age_s <= self.navigator.SENSOR_MAX_AGE_S):
+            heading = (sensor.heading - self.navigator.initial_sensor_heading) % 360
+        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading)
+               if heading is not None else [])
         for marker_id in new:
             col, row = grid_cell(self.found_markers[marker_id])
             self.ax.add_patch(Rectangle((col, row), 1, 1, color='#27ae60', alpha=0.7))
             self.ax.text(col + 0.5, row + 0.5, str(marker_id), ha='center', va='center',
                          color='white', fontsize=14, fontweight='bold')
             self.log(f"Marker {marker_id} mapped to grid cell (col {col}, row {row})")
+        if new:
+            cells = [grid_cell(position) for position in self.found_markers.values()]
+            min_col = min(0, min(col for col, row in cells))
+            max_col = max(GRID_SIZE, max(col + 1 for col, row in cells))
+            min_row = min(0, min(row for col, row in cells))
+            max_row = max(GRID_SIZE, max(row + 1 for col, row in cells))
+            self.ax.set_xlim(min_col, max_col)
+            self.ax.set_ylim(min_row, max_row)
+            self.ax.set_xticks(range(min_col, max_col + 1))
+            self.ax.set_yticks(range(min_row, max_row + 1))
         ahead = min(frame.markers, key=lambda marker: marker.camera_distance_mm, default=None)
-        if ahead:
+        if frame.status not in ("ok", "no_marker"):
+            title = "Camera " + frame.status
+        elif heading is None:
+            title = "Waiting for fresh IMU heading"
+        elif ahead:
             title = f"Marker ahead: ID {ahead.marker_id} at {ahead.camera_distance_mm:.0f} mm"
         else:
-            title = "No marker ahead" if frame.status in ("ok", "no_marker") else "Camera " + frame.status
+            title = "No marker ahead"
         # Redraw at most 5 times a second; the camera sends ~30 frames a second.
         if new or (title != self.map_title and time.monotonic() - self.map_drawn_at >= 0.2):
             self.map_title, self.map_drawn_at = title, time.monotonic()
@@ -937,20 +962,30 @@ class RobotGUI:
                 imu = data.get("imu", {})
                 ultrasonic = data.get("ultrasonic", {})
 
-                # Simply use the calibrated heading directly
+                # Heading is clockwise relative to Sensor Pico startup.
                 heading = imu.get("heading", None)
                 pitch = imu.get("pitch", None)
+                roll = imu.get("roll", None)
+                imu_ok = imu.get("status", 0) == 0
                 
-                if heading is not None:
+                if heading is not None and imu_ok:
                     with self.odometry_lock:
                         self.robot_heading = float(heading)
                     # Update heading display
                     self.heading_label.config(text=f"{self.robot_heading:.1f}°")
                 
-                if pitch is not None:
+                if pitch is not None and imu_ok:
                     self.robot_pitch = float(pitch)
                     # Update pitch display
                     self.pitch_label.config(text=f"{self.robot_pitch:.1f}°")
+
+                if roll is not None and imu_ok:
+                    self.roll_label.config(text=f"{float(roll):.1f}°")
+
+                if not imu_ok:
+                    self.heading_label.config(text="N/A")
+                    self.pitch_label.config(text="N/A")
+                    self.roll_label.config(text="N/A")
 
                 # Update ultrasonic display
                 front = ultrasonic.get("front", self.ultrasonic.get('front', 0))

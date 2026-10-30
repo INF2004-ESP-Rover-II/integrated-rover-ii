@@ -16,7 +16,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 10 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -59,6 +59,7 @@ static int last_turn_direction = 0;               // Remember last turn to bias 
 static uint32_t last_successful_forward_time = 0; // Track when we last moved forward successfully
 static uint32_t entered_moving_forward_time = 0;  // When we entered MOVING_FORWARD state
 static bool safety_lock_reported = false;
+static bool link_lost = true; // FR-08: true until the first laptop heartbeat
 
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
@@ -124,18 +125,18 @@ static void service_safety_stop(void)
 #define AUTO_MIN_FORWARD_CLEAR_RATIO 0.40f // Require 40% of front rays free to resume
 
 // Pitch compensation for upslope detection
-#define PITCH_BASELINE 77.0f      // Flat ground pitch from MPU6050 (77.0°) - calibrate per robot
-#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15° pitch drop
+#define PITCH_BASELINE 0.0f       // MPU6500 mounted +X forward, +Z up: flat = 0 degrees
+#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15 degrees nose-up
 #define PITCH_MAX_BOOST 30        // Maximum boost capped at +30%
 
 static int apply_pitch_compensation(int base_speed, float current_pitch)
 {
-    // Calculate pitch drop from baseline (upslope detected when pitch < baseline)
+    // Sketch convention with +X forward/+Z up: nose-up pitch is negative.
     float pitch_drop = PITCH_BASELINE - current_pitch;
 
     if (pitch_drop > 0)
     {
-        // Apply boost: Every 15° drop adds 10% speed
+        // Apply boost: every 15 degrees nose-up adds 10% speed
         int boost_percent = (int)(pitch_drop / 15.0f) * PITCH_BOOST_PER_15_DEG;
 
         // Apply boost cap at 30%
@@ -218,7 +219,8 @@ static void process_command(const char *command)
     {
         // Apply pitch compensation for upslope
         int speed = motor_move_speed(DIRECTION_FORWARD);
-        int compensated_speed = apply_pitch_compensation(speed, latest_sensors.pitch);
+        int compensated_speed = (sensor_data_valid && latest_sensors.imu_status == 0)
+                                    ? apply_pitch_compensation(speed, latest_sensors.pitch) : speed;
         if (compensated_speed != speed)
         {
             char msg[128];
@@ -314,10 +316,17 @@ static void process_command(const char *command)
         printf("[CMD] Unknown command: %s\n", cmd_buffer);
         return;
     }
+    printf("[CMD] %s -> result %d (motion state %d)\n",
+           cmd_buffer, (int)result, motor_motion_state());
 
     if (result == MOTOR_OK)
     {
-        mqtt_publish_status("RUNNING");
+        static char last_reported[16] = "";
+        if (strncmp(last_reported, cmd_buffer, sizeof(last_reported)) != 0)
+        {
+            mqtt_publish_status("RUNNING");
+            strncpy(last_reported, cmd_buffer, sizeof(last_reported) - 1);
+        }
     }
     else
     {
@@ -342,9 +351,11 @@ static void publish_sensor_data(void)
              "\"timestamp\":%lu,"
              "\"imu\":{"
              "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
-             "\"mag\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
+             "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"heading\":%.1f,"
              "\"pitch\":%.1f,"
+             "\"roll\":%.1f,"
+             "\"heading_reference\":\"startup\","
              "\"status\":%d"
              "},"
              "\"ultrasonic\":{"
@@ -365,8 +376,8 @@ static void publish_sensor_data(void)
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
              latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
-             latest_sensors.mag_x, latest_sensors.mag_y, latest_sensors.mag_z,
-             latest_sensors.heading, latest_sensors.pitch, latest_sensors.imu_status,
+             latest_sensors.gyro_x, latest_sensors.gyro_y, latest_sensors.gyro_z,
+             latest_sensors.heading, latest_sensors.pitch, latest_sensors.roll, latest_sensors.imu_status,
              latest_sensors.ultrasonic_front, latest_sensors.ultrasonic_back,
              latest_sensors.ultrasonic_left, latest_sensors.ultrasonic_right,
              latest_sensors.ultrasonic_status,
@@ -590,12 +601,58 @@ int main()
             {
                 printf("No sensor data");
             }
-
+            printf("\n");
             last_stats_print = now;
         }
+        // FR-08: stop on our own if the laptop goes quiet
+        {
+            uint32_t last_rx = mqtt_last_link_rx_ms();
+            bool link_ok = (last_rx != 0) &&
+                           ((int32_t)(now - last_rx) <= LINK_TIMEOUT_MS);
 
-        sleep_ms(100);
+            if (!link_ok && !link_lost)
+            {
+                link_lost = true;
+                autonomous_mode = false;
+                autonomous_state = AUTO_STATE_IDLE;
+                motor_emergency_stop();
+                printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
+                       (unsigned long)now, (unsigned long)last_rx);
+                mqtt_publish_status("STOPPED: LINK LOST");
+            }
+            else if (link_ok && link_lost)
+            {
+                link_lost = false;
+                printf("[LINK] Laptop link up\n");
+            }
+        }
+
+        // FR-12: if the broker connection died, retry every 3 s and resubscribe
+        {
+            static uint32_t last_reconnect_try = 0;
+            static bool need_resubscribe = false;
+
+            if (!mqtt_is_connected())
+            {
+                if (now - last_reconnect_try >= 3000)
+                {
+                    last_reconnect_try = now;
+                    printf("[MQTT] Connection down, trying to reconnect...\n");
+                    mqtt_connect();
+                    need_resubscribe = true;
+                }
+            }
+            else if (need_resubscribe)
+            {
+                need_resubscribe = false;
+                if (mqtt_subscribe_commands(process_command) == WIFI_OK)
+                {
+                    printf("[MQTT] Reconnected and resubscribed\n");
+                    mqtt_publish_status("RECONNECTED");
+                }
+            }
+        }
+        sleep_ms(10);
     }
-
     return 0;
 }
