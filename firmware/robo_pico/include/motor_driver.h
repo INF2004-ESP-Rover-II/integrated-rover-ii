@@ -69,7 +69,23 @@ bool motor_safety_reset(void);
  *  UART interrupt). valid = false if the IMU reported an error. */
 void motor_heading_update(float heading_deg, bool valid);
 
-/** Motion Control state (motor_state_t in motor_types.h), for telemetry. */
+/** Motion Control state (motor_state_t in motor_types.h), for telemetry.
+ *  0 ZERO_GYRO, 1 IDLE, 3 MANUAL, 4 AUTO_ROTATE, 5 AUTO_DRIVE, 6 RAMP_DOWN,
+ *  7 SAFE_STOP (moves refused until Reset Safety). */
 int motor_motion_state(void);
+#define MOTOR_STATE_SAFE_STOP 7
+
+/** Laptop link lost (FR-08): stop now; SAFE STOP if the rover was moving. */
+void motor_link_lost(void);
+
+/** Why the rover is in SAFE STOP, as short text for the dashboard. */
+typedef enum {
+    MOTOR_SAFE_NONE = 0,
+    MOTOR_SAFE_CMD_TIMEOUT,    /* moving, then no command for 0.8 s (FR-42) */
+    MOTOR_SAFE_LINK_LOST,      /* laptop heartbeat lost while moving (FR-08) */
+    MOTOR_SAFE_SENSOR_LOCK,    /* Collision Detection STOP / sensor link lost */
+    MOTOR_SAFE_HEADING_STALE   /* heading too old (auto moves)               */
+} motor_safe_reason_t;
+const char *motor_safe_stop_reason(void);
 
 #endif /* MOTOR_DRIVER_H */

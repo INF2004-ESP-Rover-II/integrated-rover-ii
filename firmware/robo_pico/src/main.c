@@ -327,6 +327,13 @@ static void process_command(const char *command)
             strncpy(last_reported, cmd_buffer, sizeof(last_reported) - 1);
         }
     }
+    else if (motor_motion_state() == MOTOR_STATE_SAFE_STOP)
+    {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "REFUSED: SAFE STOP (%s) - press Reset Safety",
+                 motor_safe_stop_reason());
+        mqtt_publish_status(msg);
+    }
     else
     {
         mqtt_publish_status("ERROR");
@@ -601,6 +608,21 @@ int main()
 
             last_stats_print = now;
         }
+        // Tell the dashboard once when the rover enters SAFE STOP, and why
+        {
+            static bool safe_stop_reported = false;
+            bool safe_stop = motor_motion_state() == MOTOR_STATE_SAFE_STOP;
+            if (safe_stop && !safe_stop_reported)
+            {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "SAFE STOP: %s - press Reset Safety",
+                         motor_safe_stop_reason());
+                printf("[MOTOR] %s\n", msg);
+                mqtt_publish_status(msg);
+            }
+            safe_stop_reported = safe_stop;
+        }
+
         // FR-08: stop on our own if the laptop goes quiet
         {
             uint32_t last_rx = mqtt_last_link_rx_ms();
@@ -612,7 +634,7 @@ int main()
                 link_lost = true;
                 autonomous_mode = false;
                 autonomous_state = AUTO_STATE_IDLE;
-                motor_emergency_stop();
+                motor_link_lost();
                 printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
                        (unsigned long)now, (unsigned long)last_rx);
                 mqtt_publish_status("STOPPED: LINK LOST");

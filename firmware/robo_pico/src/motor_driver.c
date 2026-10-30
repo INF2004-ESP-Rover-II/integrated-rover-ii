@@ -56,6 +56,9 @@ static uint32_t           s_word;           /* move being held (0 = none) */
 static uint32_t           s_last_call_ms;
 static uint8_t            s_seq;
 
+/* Why Motion Control last entered SAFE STOP (state 7), for the dashboard. */
+static volatile uint8_t   s_safe_reason = MOTOR_SAFE_NONE;
+
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
 static void apply(const mc_out_t *o) {
@@ -82,8 +85,12 @@ static bool motion_tick(struct repeating_timer *t) {
             s_word = 0;   /* caller went quiet: Motion Control times out (FR-42) */
         }
     }
+    motor_state_t before = mc_state(&s_mc);
     mc_out_clear(&out);
     mc_step(&s_mc, nm, hw, &out);
+    if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
+        s_safe_reason = (out.fault_set & FAULT_CMD_TIMEOUT) ? MOTOR_SAFE_CMD_TIMEOUT
+                                                            : MOTOR_SAFE_HEADING_STALE;
     apply(&out);
     restore_interrupts(irq);
     return true;
@@ -102,11 +109,14 @@ static motor_error_t submit(uint32_t word) {
 }
 
 static void hard_stop(mc_stop_kind_t kind) {
+    motor_state_t before = mc_state(&s_mc);
     mc_out_t out;
     mc_out_clear(&out);
     mc_immediate_stop(&s_mc, kind, now_ms(), &out);
     motor_hw_apply(&out);
     s_word = 0;
+    if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
+        s_safe_reason = (kind == MC_STOP_LINK_LOST) ? MOTOR_SAFE_LINK_LOST : MOTOR_SAFE_SENSOR_LOCK;
 }
 
 static int clamp100(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
@@ -275,6 +285,26 @@ void motor_safety_poll(void) {
     restore_interrupts(irq);
 }
 
+/* Laptop link lost (FR-08): stop at once. If the rover was moving this is
+ * SAFE STOP (statechart 6.6): it will not move again until Reset Safety. */
+void motor_link_lost(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    hard_stop(MC_STOP_LINK_LOST);
+    motor_hw_arm(MH_OFF);
+    motor_hw_claw(MH_OFF);
+    restore_interrupts(irq);
+}
+
+const char *motor_safe_stop_reason(void) {
+    switch (s_safe_reason) {
+    case MOTOR_SAFE_CMD_TIMEOUT:   return "no command for 0.8 s (link lost?)";
+    case MOTOR_SAFE_LINK_LOST:     return "laptop link lost";
+    case MOTOR_SAFE_SENSOR_LOCK:   return "collision stop / sensor link lost";
+    case MOTOR_SAFE_HEADING_STALE: return "heading too old";
+    default:                       return "unknown";
+    }
+}
+
 bool motor_safety_is_latched(void) {
     uint32_t irq = save_and_disable_interrupts();
     bool l = s_safety.latched;
@@ -292,6 +322,7 @@ bool motor_safety_reset(void) {
         mc_command(&s_mc, mc_pack_simple(MC_RESET, MC_SRC_MANUAL, next_seq()),
                    now_ms(), s_heading_word, &out);          /* SAFE STOP -> IDLE */
         mc_set_system_ready(&s_mc, true);
+        if (mc_state(&s_mc) != MS_SAFE_STOP) s_safe_reason = MOTOR_SAFE_NONE;
     }
     restore_interrupts(irq);
     return ready;
