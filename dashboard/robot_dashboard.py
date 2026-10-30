@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 MQTT Robot Controller Dashboard
-Robot-centered map with odometry tracking
 Requires: pip install paho-mqtt matplotlib numpy
 """
 
@@ -13,14 +12,10 @@ import time
 import json
 from datetime import datetime
 import math
-import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from collections import deque
-import gc
 from laptop_navigation import LaptopNavigator
+import os
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -35,6 +30,8 @@ TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
 
 ROBOT_LOST_S = 2.0
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
 WATCHDOG_CHECK_MS = 250
 TOF_UART_STALE_MS = 500
 
@@ -103,27 +100,18 @@ class RobotGUI:
         self.estop_active = False
         self.estop_time = 0
         self.estop_cooldown = 3.0  # 3 seconds cooldown
-
-        # Assumed speed (%) for the odometry estimate only
-        self.current_speed = tk.IntVar(value=80)
+        self.stop_sent_at = None
+        self.stop_latencies = []
         
-
-        # Robot odometry state
-        self.robot_x = 0.0  # mm
-        self.robot_y = 0.0  # mm
+        # Latest IMU values from telemetry
         self.robot_heading = 0.0  # degrees (calibrated)
         self.robot_pitch = 0.0  # degrees
-        self.last_telemetry_time = time.time()
-        self.odometry_lock = threading.Lock()
 
         # Ultrasonic distances (mm)
         self.ultrasonic = {'front': 0, 'back': 0, 'left': 0, 'right': 0}
 
         # ToF values arrive in the obstacle object of robot/telemetry.
         self.last_tof_rx = None
-
-        # Map following mode
-        self.follow_robot = tk.BooleanVar(value=True)
         
         # Autonomous mode
         self.auto_mode = tk.BooleanVar(value=False)
@@ -133,8 +121,11 @@ class RobotGUI:
         self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
 
-        # No on-screen control buttons (keyboard-only controls)
-
+        # Logging
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log_name = datetime.now().strftime("dashboard_%Y%m%d_%H%M%S.txt")
+        self.log_file = open(os.path.join(LOG_DIR, log_name), "a", encoding="utf-8", buffering=1)
+        
         self.setup_ui()
         self.root.after(100, self.navigation_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -412,56 +403,6 @@ class RobotGUI:
                  "Stop request is separate from the motor lock.")
         self.last_tof_rx = time.time()
 
-    def update_odometry(self, command, dt):
-        """Update robot position based on movement command"""
-        with self.odometry_lock:
-            # Estimate velocity (mm/s) based on speed percentage
-            speed_factor = self.current_speed.get() / 100.0
-            base_velocity = 200.0 * speed_factor  # mm/s (adjust based on your robot)
-            
-            # Convert heading to radians
-            heading_rad = math.radians(self.robot_heading)
-            
-            # Update position based on command
-            if command == "FORWARD":
-                self.robot_x += base_velocity * math.sin(heading_rad) * dt
-                self.robot_y += base_velocity * math.cos(heading_rad) * dt
-            elif command == "BACKWARD":
-                self.robot_x -= base_velocity * math.sin(heading_rad) * dt
-                self.robot_y -= base_velocity * math.cos(heading_rad) * dt
-            elif command == "LEFT":
-                # Strafe left (perpendicular to heading)
-                self.robot_x += base_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= base_velocity * math.sin(heading_rad) * dt
-            elif command == "RIGHT":
-                # Strafe right
-                self.robot_x -= base_velocity * math.cos(heading_rad) * dt
-                self.robot_y += base_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_LEFT":
-                # Diagonal forward-left (combine forward + left)
-                diag_velocity = base_velocity * 0.707  # sqrt(2)/2 for 45° movement
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_RIGHT":
-                # Diagonal forward-right (combine forward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_LEFT":
-                # Diagonal backward-left (combine backward + left)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_RIGHT":
-                # Diagonal backward-right (combine backward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "ROTATE_LEFT":
-                self.robot_heading = (self.robot_heading + 90 * dt) % 360
-            elif command == "ROTATE_RIGHT":
-                self.robot_heading = (self.robot_heading - 90 * dt) % 360
-
     def toggle_auto_mode(self):
         """The laptop owns exploration; never start the inherited Pico AUTO mode."""
         if self.auto_mode.get():
@@ -505,17 +446,8 @@ class RobotGUI:
 
     def close(self):
         self.disconnect()
+        self.log_file.close()
         self.root.destroy()
-
-    def reset_odometry(self):
-        """Reset robot position to origin"""
-        with self.odometry_lock:
-            self.robot_x = 0.0
-            self.robot_y = 0.0
-            self.robot_heading = 0.0
-        # reset ultrasonic readings too
-        self.ultrasonic = {'front': 0, 'back': 0, 'left': 0, 'right': 0}
-        self.log("Robot position reset to origin")
 
     def request_safety_reset(self):
         """Request an unlock without resuming a held movement command."""
@@ -535,6 +467,7 @@ class RobotGUI:
         self.active_command = None
         self.auto_mode.set(False)
         if status == "SAFETY_READY":
+            self.last_refused = None
             self.log("Safety reset accepted. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
             self.log("Safety reset refused: check the front stop request and Sensor Pico UART connection.")
@@ -594,7 +527,6 @@ class RobotGUI:
             # Drive <-> arm: stop the old one first
             self.stop_hold()
         self.active_command = cmd
-        self.last_command_time = time.time()
         self.send_command(cmd)
         self.schedule_heartbeat()
 
@@ -611,12 +543,6 @@ class RobotGUI:
 
     def heartbeat_tick(self):
         if self.active_command:
-            # Update odometry
-            current_time = time.time()
-            dt = current_time - getattr(self, 'last_command_time', current_time)
-            self.last_command_time = current_time
-            self.update_odometry(self.active_command, dt)
-            
             self.send_command(self.active_command, quiet=True)
             self.schedule_heartbeat()
 
@@ -730,6 +656,9 @@ class RobotGUI:
             # Time since the last telemetry. If none yet, count from connect.
             ref = self.last_telemetry_rx or self.connect_time
             age = time.time() - ref
+            colour = '#95a5a6' if age > 0.5 else '#3498db'
+            self.heading_label.config(fg=colour)
+            self.pitch_label.config(fg=colour)
             if age > ROBOT_LOST_S and self.robot_link != "lost":
                 self.set_robot_link("lost", age)
             elif (age <= ROBOT_LOST_S and self.last_telemetry_rx
@@ -869,15 +798,39 @@ class RobotGUI:
                 self.robot_status_label.config(fg='#27ae60')
                 self.log(f"[{ts}] Robot ready")
             elif payload == "STOPPED":
-                if self.robot_status != "SAFETY_LOCKED":
-                    self.robot_status_label.config(fg='#f39c12')
-                    self.log(f"[{ts}] Robot stopped")
+                if self.stop_sent_at is not None:
+                    ms = (time.perf_counter() - self.stop_sent_at) * 1000
+                    if ms < 2000:
+                        self.stop_latencies.append(ms)
+                        s = sorted(self.stop_latencies)
+                        self.log(f"[{ts}] STOP confirmed in {ms:.0f} ms round trip " 
+                             f"(n={len(s)}, min {s[0]:.0f}, median {s[len(s)//2]:.0f}, max {s[-1]:.0f})")
+                self.robot_status_label.config(fg='#f39c12')
+                self.log(f"[{ts}] Robot stopped")
             elif payload == "RUNNING":
                 self.robot_status_label.config(fg='#3498db')
             elif payload == "ERROR":
                 self.navigator.stop("RoboPico command error")
                 self.robot_status_label.config(fg='#e74c3c')
                 self.log(f"[{ts}] ⚠ Robot error")
+            elif payload.startswith("STOPPED: LINK LOST"):
+                self.navigator.stop("RoboPico lost the laptop link")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ Rover stopped itself: laptop link lost (FR-08)")
+            elif payload == "RECONNECTED":
+                self.robot_status_label.config(fg='#27ae60')
+                self.log(f"[{ts}] Rover reconnected to the broker (FR-12)")
+            elif payload.startswith("PITCH:"):
+                pass
+            elif payload.startswith("SAFE STOP"):
+                self.navigator.stop("Motion Control SAFE STOP")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ {payload}")
+            elif payload.startswith("REFUSED"):
+                self.robot_status_label.config(fg='#e74c3c')
+                if payload != getattr(self, 'last_refused', None):   # log once, not every 300 ms
+                    self.log(f"[{ts}] ⚠ {payload}")
+                self.last_refused = payload
             elif payload.startswith("AUTO:"):
                 # Autonomous mode status messages
                 self.robot_status_label.config(fg='#f39c12')
@@ -886,6 +839,8 @@ class RobotGUI:
                 # Legacy auto status
                 self.robot_status_label.config(fg='#f39c12')
                 self.log(f"[{ts}] {payload}")
+            else:
+                self.log(f"[{ts}] Status: {payload}")
         elif topic == TOPIC_MARKER:
             try:
                 data = json.loads(payload)
@@ -914,8 +869,7 @@ class RobotGUI:
                 pitch = imu.get("pitch", None)
                 
                 if heading is not None:
-                    with self.odometry_lock:
-                        self.robot_heading = float(heading)
+                    self.robot_heading = float(heading)
                     # Update heading display
                     self.heading_label.config(text=f"{self.robot_heading:.1f}°")
                 
@@ -972,6 +926,10 @@ class RobotGUI:
 
             if not quiet:
                 self.log(f"[{ts}] → {command}")
+
+            if command == "STOP":
+                self.stop_sent_at = time.perf_counter()
+
             result = self.mqtt_client.publish(TOPIC_COMMAND, payload, qos=0)
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -986,6 +944,7 @@ class RobotGUI:
     # Removed no-op connection monitor
 
     def log(self, message):
+        self.log_file.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {message}\n")
         self.log_text.config(state='normal')
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.config(state='disabled')

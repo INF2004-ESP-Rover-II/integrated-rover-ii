@@ -16,7 +16,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -226,7 +226,6 @@ static void process_command(const char *command)
             snprintf(msg, sizeof(msg), "PITCH: Upslope %.1f° - boost %d%% -> %d%%",
                      latest_sensors.pitch, speed, compensated_speed);
             printf("[%s]\n", msg);
-            mqtt_publish_status(msg);
         }
         result = motor_set_direction(DIRECTION_FORWARD, compensated_speed);
     }
@@ -348,7 +347,7 @@ static void publish_sensor_data(void)
     if (!sensor_data_valid)
         return;
 
-    static char telemetry[2048]; // ← Reduced size since no LIDAR
+    static char telemetry[512]; // ← Reduced size since no LIDAR
 
     memset(telemetry, 0, sizeof(telemetry));
 
@@ -356,19 +355,11 @@ static void publish_sensor_data(void)
              "{"
              "\"timestamp\":%lu,"
              "\"imu\":{"
-             "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
-             "\"mag\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"heading\":%.1f,"
              "\"pitch\":%.1f,"
              "\"status\":%d"
              "},"
-             "\"ultrasonic\":{"
-             "\"front\":%d,"
-             "\"back\":%d,"
-             "\"left\":%d,"
-             "\"right\":%d,"
-             "\"status\":%d"
-             "},"
+             "\"ultrasonic\":{\"front\":%d,\"back\":%d},"
              "\"obstacle\":{"
              "\"distance_mm\":{\"left\":%u,\"front\":%u,\"right\":%u},"
              "\"blocked_mask\":%u,"
@@ -379,26 +370,15 @@ static void publish_sensor_data(void)
              "}"
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
-             latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
-             latest_sensors.mag_x, latest_sensors.mag_y, latest_sensors.mag_z,
              latest_sensors.heading, latest_sensors.pitch, latest_sensors.imu_status,
              latest_sensors.ultrasonic_front, latest_sensors.ultrasonic_back,
-             latest_sensors.ultrasonic_left, latest_sensors.ultrasonic_right,
-             latest_sensors.ultrasonic_status,
-             // (unsigned)latest_sensors.tof_mm[0],
-             // (unsigned)latest_sensors.tof_mm[1],
-             // (unsigned)latest_sensors.tof_mm[2],
-             (unsigned)(latest_sensors.tof_bits & 0x3FFu),          // Left (bit 0-9)
-             (unsigned)((latest_sensors.tof_bits >> 10u) & 0x3FFu), // Front (bit 10-19)
-             (unsigned)((latest_sensors.tof_bits >> 20u) & 0x3FFu), // Right (bit 20-29)
-            //  (unsigned)latest_sensors.blocked_mask,
-            //  (unsigned)latest_sensors.urgent_mask,
-            //  (unsigned)latest_sensors.fault_mask,
-            //  latest_sensors.stop_required ? "true" : "false",
-            (unsigned)(latest_sensors.obstacle_flags & 0x07u),
-            (unsigned)((latest_sensors.obstacle_flags >> 3u) & 0x07u),
-            (unsigned)((latest_sensors.obstacle_flags >> 6u) & 0x07u),
-            (latest_sensors.obstacle_flags & (1u << 9u)) ? "true" : "false",
+             (unsigned)(latest_sensors.tof_bits & 0x3FFu),          // left
+             (unsigned)((latest_sensors.tof_bits >> 10u) & 0x3FFu), // front
+             (unsigned)((latest_sensors.tof_bits >> 20u) & 0x3FFu), // right
+             (unsigned)(latest_sensors.obstacle_flags & 0x07u),
+             (unsigned)((latest_sensors.obstacle_flags >> 3u) & 0x07u),
+             (unsigned)((latest_sensors.obstacle_flags >> 6u) & 0x07u),
+             (latest_sensors.obstacle_flags & (1u << 9u)) ? "true" : "false",
              (unsigned long)(to_ms_since_boot(get_absolute_time()) - last_sensor_packet_ms));
 
     mqtt_publish_telemetry(telemetry);
@@ -605,7 +585,8 @@ int main()
             {
                 printf("No sensor data");
             }
-
+            
+            printf("\n");
             last_stats_print = now;
         }
         // Tell the dashboard once when the rover enters SAFE STOP, and why
