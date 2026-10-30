@@ -383,6 +383,21 @@ static void test_zigzag_strafe(void) {
     mc_set_zigzag(0);
 }
 
+static void test_direction_trim(void) {
+    puts("per-wheel trim: separate forward / backward values");
+    mc_set_trim(1, 80, 100);                                  /* FR weaker forward only */
+    sim_t s; sim_init(&s, 0); sim_tick(&s); mc_set_system_ready(&s.mc, true);
+    uint32_t f = mc_pack_manual_drive(1, 100, 0, 0);
+    for (int i = 0; i < 40; i++) { sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, f); }
+    CHECK(s.out.wheel[1] < s.out.wheel[0], "forward: FR trimmed (FL %d, FR %d)", s.out.wheel[0], s.out.wheel[1]);
+    sim_cmd(&s, mc_pack_simple(MC_STOP, MC_SRC_MANUAL, 2));
+    for (int i = 0; i < 40; i++) sim_tick(&s);
+    uint32_t b = mc_pack_manual_drive(3, -100, 0, 0);
+    for (int i = 0; i < 40; i++) { sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, b); }
+    CHECK(s.out.wheel[1] == s.out.wheel[0], "backward: FR not trimmed (FL %d, FR %d)", s.out.wheel[0], s.out.wheel[1]);
+    mc_set_trim(-1, 100, 100);
+}
+
 int main(void) {
     mc_set_zigzag(0);   /* the older tests check the normal 4-wheel strafe */
     test_packing();
@@ -400,6 +415,7 @@ int main(void) {
     test_start_boost();
     test_park();
     test_zigzag_strafe();
+    test_direction_trim();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

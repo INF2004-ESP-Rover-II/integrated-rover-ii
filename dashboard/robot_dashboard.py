@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MQTT Robot Controller Dashboard
-Robot-centered map with odometry tracking
+Marker grid oriented relative to the first fresh IMU heading.
 Requires: pip install paho-mqtt matplotlib numpy
 """
 
@@ -16,11 +16,13 @@ import math
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import gc
 from laptop_navigation import LaptopNavigator
+from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -42,10 +44,10 @@ ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
             'w':'FORWARD',
             's':'BACKWARD',
-            'a':'LEFT',
-            'd':'RIGHT',
-            'q':'ROTATE_LEFT',
-            'e':'ROTATE_RIGHT',
+            'a':'ROTATE_LEFT',
+            'd':'ROTATE_RIGHT',
+            'q':'LEFT',
+            'e':'RIGHT',
             # Diagonal movements for mecanum wheels
             'r':'FRONT_LEFT',
             't':'FRONT_RIGHT',
@@ -72,7 +74,7 @@ class RobotGUI:
         # MQTT Client
         self.mqtt_client = None
         self.connected = False
-        self.broker_ip = tk.StringVar(value="localhost")
+        self.broker_ip = tk.StringVar(value="192.168.50.11")
         self.broker_port = tk.IntVar(value=1883)
         self.client_id = "robot_dashboard"
 
@@ -132,6 +134,13 @@ class RobotGUI:
         self.dfs_threshold = tk.StringVar(value="")
         self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
+        # Marker grid map: its own feed so it never shares sequence state with the navigator.
+        self.map_feed = VisionFeed()
+        self.map_start_cell = (3, 0)  # 4th column (middle), bottom row; starting IMU heading defines up the map.
+        self.found_markers = {}
+        self.map_rover = {}  # Last rover position worked out from a mapped marker.
+        self.map_title = ""
+        self.map_drawn_at = 0.0
 
         # No on-screen control buttons (keyboard-only controls)
 
@@ -210,6 +219,12 @@ class RobotGUI:
                                     fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
         self.pitch_label.grid(row=0, column=9, padx=5, pady=8, sticky='w')
 
+        tk.Label(status_frame, text="Roll:", fg='white', bg='#34495e',
+                 font=("Arial", 10, "bold")).grid(row=0, column=10, padx=10, pady=8, sticky='w')
+        self.roll_label = tk.Label(status_frame, text="N/A",
+                                   fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
+        self.roll_label.grid(row=0, column=11, padx=5, pady=8, sticky='w')
+
         # Add ultrasonic readings display
         tk.Label(status_frame, text="Ultrasonic (mm):", fg='white', bg='#34495e',
                  font=("Arial", 10, "bold")).grid(row=0, column=12, padx=10, pady=8, sticky='w')
@@ -284,8 +299,8 @@ class RobotGUI:
         keymap_frame.pack(pady=6, fill='x')
         mappings = (
             "W/S - Move Forward/Backward\n"
-            "A/D - Strafe Left/Right\n"
-            "Q/E - Rotate Left/Right\n"
+            "A/D - Turn Left/Right\n"
+            "Q/E - Strafe Left/Right\n"
             "R/T/F/G - Diagonals\n"
             "\n"
             "O/C - Open/Close Claw\n"
@@ -306,15 +321,19 @@ class RobotGUI:
         # !! ToF mapping display to be here
         self.fig = Figure(figsize=(4, 4), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
-        self.ax.set_xlim(-3000, 3000)
-        self.ax.set_ylim(-3000, 3000)
+        # Initial 6x6 grid of 60 cm cells; expand for markers beyond its edges.
+        self.ax.set_xlim(0, GRID_SIZE)
+        self.ax.set_ylim(0, GRID_SIZE)
         self.ax.set_aspect('equal')
-        self.ax.grid(True, color='#3498db', alpha=0.3, linewidth=0.5)
-        self.ax.set_xlabel('X (mm)', color='white', fontsize=10)
-        self.ax.set_ylabel('Y (mm)', color='white', fontsize=10)
-        self.ax.set_title('Map (waiting for ToF / mapping data)', color='white', pad=15, fontsize=12)
+        self.ax.set_xticks(range(GRID_SIZE + 1))
+        self.ax.set_yticks(range(GRID_SIZE + 1))
+        self.ax.grid(True, color='#3498db', alpha=0.6, linewidth=1)
+        self.ax.set_xlabel('Column (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_ylabel('Row (60 cm cells)', color='white', fontsize=10)
+        self.ax.set_title('Waiting for camera', color='white', pad=15, fontsize=12)
         self.ax.tick_params(colors='white', labelsize=8)
-        self.ax.plot(0, 0, 'go', markersize=8, zorder=10)  # robot
+        self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
+                     'go', markersize=10, zorder=10)  # rover start
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.map_frame)
         self.canvas.draw()
@@ -419,48 +438,18 @@ class RobotGUI:
             speed_factor = self.current_speed.get() / 100.0
             base_velocity = 200.0 * speed_factor  # mm/s (adjust based on your robot)
             
-            # Convert heading to radians
+            # (forward, right) parts of each move; heading is clockwise, so right = (cos, -sin).
+            forward, right = {
+                "FORWARD": (1, 0), "BACKWARD": (-1, 0), "LEFT": (0, -1), "RIGHT": (0, 1),
+                "FRONT_LEFT": (0.707, -0.707), "FRONT_RIGHT": (0.707, 0.707),
+                "BACK_LEFT": (-0.707, -0.707), "BACK_RIGHT": (-0.707, 0.707),
+            }.get(command, (0, 0))
             heading_rad = math.radians(self.robot_heading)
-            
-            # Update position based on command
-            if command == "FORWARD":
-                self.robot_x += base_velocity * math.sin(heading_rad) * dt
-                self.robot_y += base_velocity * math.cos(heading_rad) * dt
-            elif command == "BACKWARD":
-                self.robot_x -= base_velocity * math.sin(heading_rad) * dt
-                self.robot_y -= base_velocity * math.cos(heading_rad) * dt
-            elif command == "LEFT":
-                # Strafe left (perpendicular to heading)
-                self.robot_x += base_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= base_velocity * math.sin(heading_rad) * dt
-            elif command == "RIGHT":
-                # Strafe right
-                self.robot_x -= base_velocity * math.cos(heading_rad) * dt
-                self.robot_y += base_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_LEFT":
-                # Diagonal forward-left (combine forward + left)
-                diag_velocity = base_velocity * 0.707  # sqrt(2)/2 for 45° movement
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "FRONT_RIGHT":
-                # Diagonal forward-right (combine forward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x += diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y += diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_LEFT":
-                # Diagonal backward-left (combine backward + left)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt - diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt + diag_velocity * math.sin(heading_rad) * dt
-            elif command == "BACK_RIGHT":
-                # Diagonal backward-right (combine backward + right)
-                diag_velocity = base_velocity * 0.707
-                self.robot_x -= diag_velocity * math.sin(heading_rad) * dt + diag_velocity * math.cos(heading_rad) * dt
-                self.robot_y -= diag_velocity * math.cos(heading_rad) * dt - diag_velocity * math.sin(heading_rad) * dt
-            elif command == "ROTATE_LEFT":
-                self.robot_heading = (self.robot_heading + 90 * dt) % 360
-            elif command == "ROTATE_RIGHT":
-                self.robot_heading = (self.robot_heading - 90 * dt) % 360
+            step = base_velocity * dt
+            self.robot_x += step * (forward * math.sin(heading_rad) + right * math.cos(heading_rad))
+            self.robot_y += step * (forward * math.cos(heading_rad) - right * math.sin(heading_rad))
+            # Heading comes exclusively from healthy IMU telemetry. Rotation
+            # commands provide no measured angle and must not overwrite it.
 
     def toggle_auto_mode(self):
         """The laptop owns exploration; never start the inherited Pico AUTO mode."""
@@ -493,6 +482,51 @@ class RobotGUI:
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
         self.root.after(0, self.navigator.vision_received, message)
+
+    def update_marker_map(self, data):
+        """Place fresh camera observations using the current healthy IMU heading."""
+        frame = self.map_feed.decode(data, time.time() * 1000)
+        if frame is None:
+            return
+        sensor = self.navigator.sensor
+        heading = None
+        if (sensor is not None and self.navigator.initial_sensor_heading is not None and
+                self.navigator.clock() - sensor.received_at + sensor.age_s <= self.navigator.SENSOR_MAX_AGE_S):
+            heading = (sensor.heading - self.navigator.initial_sensor_heading) % 360
+        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading,
+                             rover=self.map_rover,
+                             front_mm=sensor.distances.get("front"))
+               if heading is not None else [])
+        for marker_id in new:
+            col, row = grid_cell(self.found_markers[marker_id])
+            self.ax.add_patch(Rectangle((col, row), 1, 1, color='#27ae60', alpha=0.7))
+            self.ax.text(col + 0.5, row + 0.5, str(marker_id), ha='center', va='center',
+                         color='white', fontsize=14, fontweight='bold')
+            self.log(f"Marker {marker_id} mapped to grid cell (col {col}, row {row})")
+        if new:
+            cells = [grid_cell(position) for position in self.found_markers.values()]
+            min_col = min(0, min(col for col, row in cells))
+            max_col = max(GRID_SIZE, max(col + 1 for col, row in cells))
+            min_row = min(0, min(row for col, row in cells))
+            max_row = max(GRID_SIZE, max(row + 1 for col, row in cells))
+            self.ax.set_xlim(min_col, max_col)
+            self.ax.set_ylim(min_row, max_row)
+            self.ax.set_xticks(range(min_col, max_col + 1))
+            self.ax.set_yticks(range(min_row, max_row + 1))
+        ahead = min(frame.markers, key=lambda marker: marker.camera_distance_mm, default=None)
+        if frame.status not in ("ok", "no_marker"):
+            title = "Camera " + frame.status
+        elif heading is None:
+            title = "Waiting for fresh IMU heading"
+        elif ahead:
+            title = f"Marker ahead: ID {ahead.marker_id} at {ahead.camera_distance_mm:.0f} mm"
+        else:
+            title = "No marker ahead"
+        # Redraw at most 5 times a second; the camera sends ~30 frames a second.
+        if new or (title != self.map_title and time.monotonic() - self.map_drawn_at >= 0.2):
+            self.map_title, self.map_drawn_at = title, time.monotonic()
+            self.ax.set_title(title, color='white', pad=15, fontsize=12)
+            self.canvas.draw_idle()
 
     def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
         """Queue a simple lens-relative observation; an ID alone is not arrival."""
@@ -893,6 +927,7 @@ class RobotGUI:
                     raise ValueError("Expected an object")
                 if "schema" in data or "markers" in data:
                     self.navigator.vision_received(data)
+                    self.update_marker_map(data)
                 else:
                     self.navigator.marker_seen(data["marker_id"], data["frame_id"], data.get("age_ms", 0),
                                                data.get("distance_mm"), data.get("bearing_deg"))
@@ -909,20 +944,30 @@ class RobotGUI:
                 imu = data.get("imu", {})
                 ultrasonic = data.get("ultrasonic", {})
 
-                # Simply use the calibrated heading directly
+                # Heading is clockwise relative to Sensor Pico startup.
                 heading = imu.get("heading", None)
                 pitch = imu.get("pitch", None)
+                roll = imu.get("roll", None)
+                imu_ok = imu.get("status", 0) == 0
                 
-                if heading is not None:
+                if heading is not None and imu_ok:
                     with self.odometry_lock:
                         self.robot_heading = float(heading)
                     # Update heading display
                     self.heading_label.config(text=f"{self.robot_heading:.1f}°")
                 
-                if pitch is not None:
+                if pitch is not None and imu_ok:
                     self.robot_pitch = float(pitch)
                     # Update pitch display
                     self.pitch_label.config(text=f"{self.robot_pitch:.1f}°")
+
+                if roll is not None and imu_ok:
+                    self.roll_label.config(text=f"{float(roll):.1f}°")
+
+                if not imu_ok:
+                    self.heading_label.config(text="N/A")
+                    self.pitch_label.config(text="N/A")
+                    self.roll_label.config(text="N/A")
 
                 # Update ultrasonic display
                 front = ultrasonic.get("front", self.ultrasonic.get('front', 0))

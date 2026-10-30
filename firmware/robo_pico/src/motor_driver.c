@@ -59,7 +59,27 @@ static uint8_t            s_seq;
 /* Why Motion Control last entered SAFE STOP (state 7), for the dashboard. */
 static volatile uint8_t   s_safe_reason = MOTOR_SAFE_NONE;
 
+/* Autonomous move (mapping / Exploration). The driver refreshes it itself,
+ * so it keeps going until motor_auto_stop(), an operator STOP or a safety
+ * stop. A rotation also ends by itself when the heading is reached. */
+static uint32_t           s_auto_word;      /* auto move being held (0 = none) */
+static uint8_t            s_auto_seq;
+static volatile uint8_t   s_auto_status = MOTOR_AUTO_IDLE;
+
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
+/* Turn a move result for the running auto command into its status. */
+static void note_result(const mc_out_t *o) {
+    if (!o->result_valid || s_auto_status != MOTOR_AUTO_RUNNING) return;
+    if (((o->result_byte >> 2) & 0xFu) != s_auto_seq) return;   /* not the auto move */
+    switch ((move_result_t)(o->result_byte & 0x3u)) {
+    case MR_DONE:            s_auto_status = MOTOR_AUTO_DONE;            break;
+    case MR_HEADING_REACHED: s_auto_status = MOTOR_AUTO_HEADING_REACHED; break;
+    case MR_STOPPED:         s_auto_status = MOTOR_AUTO_STOPPED;         break;
+    case MR_REJECTED:        s_auto_status = MOTOR_AUTO_REJECTED;        break;
+    }
+    if (s_auto_status != MOTOR_AUTO_RUNNING) s_auto_word = 0;
+}
 
 static void apply(const mc_out_t *o) {
 #if MOTOR_SEND_DIR_BYTE
@@ -85,9 +105,15 @@ static bool motion_tick(struct repeating_timer *t) {
             s_word = 0;   /* caller went quiet: Motion Control times out (FR-42) */
         }
     }
+    if (s_auto_word) {
+        mc_out_clear(&out);
+        mc_command(&s_mc, s_auto_word, nm, hw, &out);  /* keep the auto move alive */
+        note_result(&out);
+    }
     motor_state_t before = mc_state(&s_mc);
     mc_out_clear(&out);
     mc_step(&s_mc, nm, hw, &out);
+    note_result(&out);
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
         s_safe_reason = (out.fault_set & FAULT_CMD_TIMEOUT) ? MOTOR_SAFE_CMD_TIMEOUT
                                                             : MOTOR_SAFE_HEADING_STALE;
@@ -113,8 +139,11 @@ static void hard_stop(mc_stop_kind_t kind) {
     mc_out_t out;
     mc_out_clear(&out);
     mc_immediate_stop(&s_mc, kind, now_ms(), &out);
+    note_result(&out);
     motor_hw_apply(&out);
     s_word = 0;
+    s_auto_word = 0;
+    if (s_auto_status == MOTOR_AUTO_RUNNING) s_auto_status = MOTOR_AUTO_STOPPED;
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
         s_safe_reason = (kind == MC_STOP_LINK_LOST) ? MOTOR_SAFE_LINK_LOST : MOTOR_SAFE_SENSOR_LOCK;
 }
@@ -206,6 +235,94 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
     }
     restore_interrupts(irq);
     return r;
+}
+
+/* ======================= autonomous moves (FR-40, FR-41) =======================
+ * Called by the mapping / Exploration side. One call starts the move; it
+ * keeps going (the driver refreshes it) until motor_auto_stop(), an operator
+ * STOP, or a safety stop. Needs a fresh heading from the Sensor Pico. */
+
+static bool heading_ready(void) { return s_mc.heading_seen && !s_mc.stale_latched; }
+static int  heading_deg_now(void) { return (int)((s_mc.heading + 5u) / 10u) % 360; }
+
+static motor_error_t start_auto(uint32_t word) {
+    s_word = 0;                              /* a manual move can't be held now */
+    s_auto_seq = mc_seq(word);
+    s_auto_status = MOTOR_AUTO_RUNNING;
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_command(&s_mc, word, now_ms(), s_heading_word, &out);
+    note_result(&out);
+    if (s_auto_status == MOTOR_AUTO_REJECTED) return MOTOR_ERR_SAFETY;
+    s_auto_word = word;
+    return MOTOR_OK;
+}
+
+static motor_error_t auto_checks(void) {
+    if (s_safety.latched) return MOTOR_ERR_SAFETY;
+    if (!heading_ready()) return MOTOR_ERR_NO_HEADING;
+    return MOTOR_OK;
+}
+
+motor_error_t motor_auto_drive(int speed_percent) {
+    if (speed_percent == 0) return motor_auto_stop();
+    if (speed_percent < -100 || speed_percent > 100) return MOTOR_ERR_PIN;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    if (r == MOTOR_OK) {
+        /* Hold the heading the rover has now; if it is already driving
+         * straight, keep the same target so a speed change doesn't re-aim. */
+        int hold = (mc_state(&s_mc) == MS_AUTO_DRIVE && s_auto_word)
+                   ? (int)mc_hdg9(s_auto_word, 16) : heading_deg_now();
+        r = start_auto(mc_pack_auto_drive(next_seq(), (int8_t)speed_percent, (uint16_t)hold));
+    }
+    restore_interrupts(irq);
+    return r;
+}
+
+motor_error_t motor_auto_rotate_to(int heading_deg) {
+    heading_deg %= 360;
+    if (heading_deg < 0) heading_deg += 360;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    if (r == MOTOR_OK) r = start_auto(mc_pack_auto_rotate(next_seq(), (uint16_t)heading_deg));
+    restore_interrupts(irq);
+    return r;
+}
+
+motor_error_t motor_auto_rotate_by(int delta_deg) {
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    int target = heading_deg_now() + delta_deg;
+    restore_interrupts(irq);
+    return r == MOTOR_OK ? motor_auto_rotate_to(target) : r;
+}
+
+motor_error_t motor_auto_stop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    if (s_auto_word) {
+        s_auto_word = 0;                     /* stop refreshing the move */
+        mc_out_t out;
+        mc_out_clear(&out);
+        mc_command(&s_mc, mc_pack_simple(MC_STOP, MC_SRC_AUTO, s_auto_seq), now_ms(),
+                   s_heading_word, &out);    /* normal stop: ramp down, then DONE */
+        note_result(&out);
+    }
+    restore_interrupts(irq);
+    return MOTOR_OK;
+}
+
+motor_auto_status_t motor_auto_status(void) { return (motor_auto_status_t)s_auto_status; }
+
+const char *motor_auto_status_name(motor_auto_status_t s) {
+    switch (s) {
+    case MOTOR_AUTO_RUNNING:         return "RUNNING";
+    case MOTOR_AUTO_DONE:            return "DONE";
+    case MOTOR_AUTO_HEADING_REACHED: return "HEADING_REACHED";
+    case MOTOR_AUTO_STOPPED:         return "STOPPED";
+    case MOTOR_AUTO_REJECTED:        return "REJECTED";
+    default:                         return "IDLE";
+    }
 }
 
 /* Parallel park (strafe for MC_PARK_DURATION_MS, then stops by itself).

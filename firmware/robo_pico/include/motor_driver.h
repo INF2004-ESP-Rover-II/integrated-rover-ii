@@ -15,7 +15,8 @@ typedef enum {
     MOTOR_OK         =  0,
     MOTOR_ERR_INIT   = -1,
     MOTOR_ERR_PIN    = -2,   /* bad direction or speed */
-    MOTOR_ERR_SAFETY = -5    /* refused: safety lock or SAFE STOP */
+    MOTOR_ERR_SAFETY = -5,   /* refused: safety lock, SAFE STOP, or wrong state */
+    MOTOR_ERR_NO_HEADING = -6 /* auto move refused: no fresh heading from the IMU */
 } motor_error_t;
 
 typedef enum {
@@ -50,6 +51,41 @@ int motor_move_speed(motor_direction_t direction);
  *  @param direction -1 = left, +1 = right
  *  @param power_percent 10..100, or 0 for the default (MC_PARK_PCT) */
 motor_error_t motor_parallel_park(int direction, int power_percent);
+
+/* ---------------- Autonomous moves (for the mapping / Exploration side) ----------------
+ * One call starts the move and it KEEPS GOING until motor_auto_stop(), an
+ * operator STOP (motor_emergency_stop) or a safety stop (Collision Detection,
+ * link lost). No need to resend. Heading hold keeps it straight (FR-41).
+ * Needs a fresh heading from the Sensor Pico, else MOTOR_ERR_NO_HEADING.
+ * Manual dashboard moves are refused while an auto move runs (FR-40). */
+
+/** Drive straight, holding the current heading. speed: +1..100 forward,
+ *  -1..-100 backward (0 = motor_auto_stop). */
+motor_error_t motor_auto_drive(int speed_percent);
+
+/** Rotate on the spot to an absolute heading 0..359 (shortest way).
+ *  Stops by itself within +/-3 deg; status becomes HEADING_REACHED. */
+motor_error_t motor_auto_rotate_to(int heading_deg);
+
+/** Rotate on the spot by an angle: +90 = turn right 90, -90 = left 90. */
+motor_error_t motor_auto_rotate_by(int delta_deg);
+
+/** Normal stop of the auto move: ramps down, status becomes DONE. */
+motor_error_t motor_auto_stop(void);
+
+typedef enum {
+    MOTOR_AUTO_IDLE = 0,          /* no auto move yet                         */
+    MOTOR_AUTO_RUNNING,           /* moving                                   */
+    MOTOR_AUTO_DONE,              /* stopped normally (motor_auto_stop)       */
+    MOTOR_AUTO_HEADING_REACHED,   /* rotation finished within +/-3 deg        */
+    MOTOR_AUTO_STOPPED,           /* ended by operator STOP / safety stop     */
+    MOTOR_AUTO_REJECTED           /* refused (state, range, FR-40)            */
+} motor_auto_status_t;
+
+/** How the last auto move is doing / how it ended. Poll it, or watch the
+ *  "AUTO_RESULT:" status the rover publishes. */
+motor_auto_status_t motor_auto_status(void);
+const char *motor_auto_status_name(motor_auto_status_t s);
 
 /** Arm and claw: on/off. */
 motor_error_t arm_set_direction(arm_direction_t direction);

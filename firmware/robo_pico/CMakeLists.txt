@@ -28,6 +28,10 @@ target_include_directories(mecanum_robot PRIVATE
 # Subsystem 6: allow manual moves while the Sensor Pico heading is missing or
 # late (heading hold then pauses). Set to 0 once heading arrives every 50 ms.
 target_compile_definitions(mecanum_robot PRIVATE MC_ALLOW_MANUAL_WITHOUT_HEADING=1)
+# The Sensor Pico currently sends about 4 packets/s (not 20), so a heading is
+# up to ~250 ms old between packets. Allow 600 ms before "heading too old"
+# stops an auto move. Back to 150 once the Sensor Pico sends at 20 Hz.
+target_compile_definitions(mecanum_robot PRIVATE MC_HEADING_STALE_MS=600u)
 
 target_link_libraries(mecanum_robot
     pico_stdlib

@@ -17,7 +17,8 @@ static int8_t k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;   /* adjustable on the be
 static int     k_kick_pct = MC_KICK_PCT;                  /* adjustable on the bench */
 static int     k_kick_ms  = (int)MC_KICK_MS;
 static int     k_zigzag_ms = (int)MC_STRAFE_ZIGZAG_MS;          /* adjustable on the bench */
-static const int8_t k_trim[MC_WHEELS]     = MC_TRIM_PCT;
+static int8_t k_trim_fwd[MC_WHEELS] = MC_TRIM_FWD_PCT;   /* adjustable on the bench */
+static int8_t k_trim_rev[MC_WHEELS] = MC_TRIM_REV_PCT;   /* adjustable on the bench */
 static const int8_t k_invert[MC_WHEELS]   = MC_INVERT;
 
 /* ============================== helpers ============================== */
@@ -176,6 +177,17 @@ void mc_set_deadband(int wheel, int pct) {
     for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) k_deadband[i] = (int8_t)pct;
 }
 int mc_get_deadband(int wheel) { return k_deadband[clampi(wheel, 0, MC_WHEELS - 1)]; }
+
+void mc_set_trim(int wheel, int fwd_pct, int rev_pct) {
+    fwd_pct = clampi(fwd_pct, 0, 100);
+    rev_pct = clampi(rev_pct, 0, 100);
+    for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) {
+        k_trim_fwd[i] = (int8_t)fwd_pct;
+        k_trim_rev[i] = (int8_t)rev_pct;
+    }
+}
+int mc_get_trim_fwd(int wheel) { return k_trim_fwd[clampi(wheel, 0, MC_WHEELS - 1)]; }
+int mc_get_trim_rev(int wheel) { return k_trim_rev[clampi(wheel, 0, MC_WHEELS - 1)]; }
 
 void mc_set_kick(int pct, int ms) { k_kick_pct = clampi(pct, 0, 100); k_kick_ms = clampi(ms, 0, 1000); }
 int  mc_get_kick_pct(void) { return k_kick_pct; }
@@ -431,7 +443,7 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
 
     /* ---- final duty per wheel: trim, invert, deadband ---- */
     for (int i = 0; i < MC_WHEELS; i++) {
-        int d = m->duty[i] * k_trim[i] / 100;
+        int d = m->duty[i] * (m->duty[i] > 0 ? k_trim_fwd[i] : k_trim_rev[i]) / 100;
         if (k_invert[i]) d = -d;
         if (d != 0) {
             int mag = k_deadband[i] + (100 - k_deadband[i]) * absi(d) / 100;
