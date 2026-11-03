@@ -31,7 +31,6 @@ from laptop_navigation import LaptopNavigator
 from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
 
 
-
 def make_mqtt_client(client_id):
     """paho-mqtt 1.x and 2.x both work (2.x needs an explicit callback API version)."""
     try:
@@ -61,10 +60,10 @@ ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
             'w':'FORWARD',
             's':'BACKWARD',
-            'a':'LEFT',
-            'd':'RIGHT',
-            'q':'ROTATE_LEFT',
-            'e':'ROTATE_RIGHT',
+            'a':'ROTATE_LEFT',
+            'd':'ROTATE_RIGHT',
+            'q':'LEFT',
+            'e':'RIGHT',
             # Diagonal movements for mecanum wheels
             'r':'FRONT_LEFT',
             't':'FRONT_RIGHT',
@@ -328,8 +327,8 @@ class RobotGUI:
         keymap_frame.pack(pady=6, fill='x')
         mappings = (
             "W/S - Move Forward/Backward\n"
-            "A/D - Strafe Left/Right\n"
-            "Q/E - Rotate Left/Right\n"
+            "A/D - Turn Left/Right\n"
+            "Q/E - Strafe Left/Right\n"
             "R/T/F/G - Diagonals\n"
             "\n"
             "O/C - Open/Close Claw\n"

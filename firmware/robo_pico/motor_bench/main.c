@@ -24,6 +24,8 @@
  *                    (duty 10..100 %, default 60; try 't 90' if nothing moves)
  *   db N             minimum starting power for all wheels (0..90 %)
  *   db W N           ... for one wheel (W = 0 FL, 1 FR, 2 BL, 3 BR)
+ *   trim W FWD REV   scale one wheel down, separately forward / backward
+ *                    (100 = full; e.g. 'trim 0 90 100' slows FL forward only)
  *   pwm              shows the PWM frequency (fixed per build: 1 kHz or 10 kHz)
  *   kick PCT MS      start boost: PCT power for MS ms when a wheel starts
  *                    (default kick 90 150; 'kick 0 0' turns it off)
@@ -76,6 +78,9 @@ static void print_status(int heading_tenths) {
     printf(" pwm=%luHz minpower=%d/%d/%d/%d%% kick=%d%%/%dms", (unsigned long)motor_hw_pwm_freq(),
            mc_get_deadband(0), mc_get_deadband(1), mc_get_deadband(2), mc_get_deadband(3),
            mc_get_kick_pct(), mc_get_kick_ms());
+    printf(" trim fwd=%d/%d/%d/%d rev=%d/%d/%d/%d",
+           mc_get_trim_fwd(0), mc_get_trim_fwd(1), mc_get_trim_fwd(2), mc_get_trim_fwd(3),
+           mc_get_trim_rev(0), mc_get_trim_rev(1), mc_get_trim_rev(2), mc_get_trim_rev(3));
     printf(" stack_free=%lu words\n",
            (unsigned long)uxTaskGetStackHighWaterMark(motor_task_handle()));
 }
@@ -160,6 +165,11 @@ static void bench_task(void *arg) {
                     held = 0; wheel_test(duty);
                 }
                 else if (!strcmp(line, "q"))     { print_status(heading_tenths); }
+                else if (sscanf(line, "trim %d %d %d", &a, &b, &d) == 3) {
+                    mc_set_trim(a, b, d);
+                    printf("[bench] wheel %d trim: forward %d%%, backward %d%%\n",
+                           a, mc_get_trim_fwd(a < 0 ? 0 : a), mc_get_trim_rev(a < 0 ? 0 : a));
+                }
                 else if (sscanf(line, "db %d %d", &a, &b) == 2) {
                     held = 0; motor_task_operator_stop(); vTaskDelay(pdMS_TO_TICKS(50));
                     mc_set_deadband(a, b);

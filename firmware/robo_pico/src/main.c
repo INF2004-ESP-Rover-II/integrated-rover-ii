@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
@@ -277,6 +278,49 @@ static void process_command(const char *command)
     {
         // Direct mapping per corrected wiring
         result = claw_set_direction(CLAW_CLOSE);
+    }
+    // ---- Autonomous moves for the mapping / Exploration side (Subsystem 6) ----
+    // One command starts the move; it keeps going until MOVE_STOP, STOP
+    // (operator) or a safety stop. Rotations end by themselves.
+    //   MOVE_FORWARD:30   MOVE_BACKWARD:30   (speed %, default = W/S key speed)
+    //   TURN_TO:90        absolute heading 0..359
+    //   TURN_BY:-90       relative: + right, - left
+    //   MOVE_STOP         normal stop (ramp down)
+    // Replies on robot/status: "AUTO_MOVE: ..." now, "AUTO_RESULT: ..." when it ends.
+    else if (strncmp(cmd_buffer, "MOVE_FORWARD", 12) == 0 ||
+             strncmp(cmd_buffer, "MOVE_BACKWARD", 13) == 0 ||
+             strncmp(cmd_buffer, "TURN_TO", 7) == 0 ||
+             strncmp(cmd_buffer, "TURN_BY", 7) == 0 ||
+             strncmp(cmd_buffer, "MOVE_STOP", 9) == 0) {
+        const char *arg = strchr(command, ':');
+        bool has_arg = arg != NULL && arg[1] != '\0';
+        int value = has_arg ? atoi(arg + 1) : 0;
+        autonomous_mode = false;           // the old LIDAR auto mode must not drive too
+        autonomous_state = AUTO_STATE_IDLE;
+
+        if (strncmp(cmd_buffer, "MOVE_FORWARD", 12) == 0)
+            result = motor_auto_drive(has_arg ? abs(value) : motor_move_speed(DIRECTION_FORWARD));
+        else if (strncmp(cmd_buffer, "MOVE_BACKWARD", 13) == 0)
+            result = motor_auto_drive(-(has_arg ? abs(value) : motor_move_speed(DIRECTION_BACKWARD)));
+        else if (strncmp(cmd_buffer, "TURN_TO", 7) == 0)
+            result = has_arg ? motor_auto_rotate_to(value) : MOTOR_ERR_PIN;
+        else if (strncmp(cmd_buffer, "TURN_BY", 7) == 0)
+            result = has_arg ? motor_auto_rotate_by(value) : MOTOR_ERR_PIN;
+        else
+            result = motor_auto_stop();
+
+        char msg[80];
+        if (result == MOTOR_OK)
+            snprintf(msg, sizeof(msg), "AUTO_MOVE: %s", command);
+        else if (result == MOTOR_ERR_NO_HEADING)
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (no fresh heading from IMU)", cmd_buffer);
+        else if (result == MOTOR_ERR_PIN)
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (bad or missing value)", cmd_buffer);
+        else
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (safety lock / SAFE STOP / busy)", cmd_buffer);
+        printf("[AUTO] %s\n", msg);
+        mqtt_publish_status(msg);
+        return;
     }
     else if (strncmp(cmd_buffer, "AUTO_START", 10) == 0)
     {
@@ -569,6 +613,19 @@ int main()
         }
 
         // IMU-tied arm PID removed (manual control only)
+
+        // Subsystem 6: tell the mapping side once when an auto move ends
+        {
+            static motor_auto_status_t last_auto = MOTOR_AUTO_IDLE;
+            motor_auto_status_t st = motor_auto_status();
+            if (st != last_auto && st != MOTOR_AUTO_RUNNING && st != MOTOR_AUTO_IDLE) {
+                char msg[48];
+                snprintf(msg, sizeof(msg), "AUTO_RESULT: %s", motor_auto_status_name(st));
+                printf("[AUTO] %s\n", msg);
+                mqtt_publish_status(msg);
+            }
+            last_auto = st;
+        }
 
         // --- Sensor & status publishing ---
         if (sensor_data_valid && (now - last_sensor_publish >= SENSOR_TELEMETRY_INTERVAL_MS))
