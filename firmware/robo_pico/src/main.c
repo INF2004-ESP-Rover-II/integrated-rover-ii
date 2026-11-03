@@ -62,6 +62,25 @@ static uint32_t last_successful_forward_time = 0; // Track when we last moved fo
 static uint32_t entered_moving_forward_time = 0;  // When we entered MOVING_FORWARD state
 static bool safety_lock_reported = false;
 static bool link_lost = true; // FR-08: true until the first laptop heartbeat
+static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
+static bool heading_zero_pending;
+static uint32_t heading_zero_ready_ms;
+
+static void service_heading_zero(void)
+{
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!heading_zero_pending || (int32_t)(now - heading_zero_ready_ms) < 0) return;
+    // Capture a new healthy sample after braking, rather than zeroing a cached
+    // heading measured while the rover was still rotating.
+    if (!motor_heading_sample_since(heading_zero_ready_ms)) {
+        if ((uint32_t)(now - heading_zero_ready_ms) <= 1000u) return;
+        heading_zero_pending = false;
+        mqtt_publish_status("HEADING_ZERO_REFUSED");
+        return;
+    }
+    heading_zero_pending = false;
+    mqtt_publish_status(motor_zero_heading() == MOTOR_OK ? "HEADING_ZEROED" : "HEADING_ZERO_REFUSED");
+}
 
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
@@ -177,6 +196,27 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+    if (strcmp(cmd_buffer, "ZERO_HEADING") == 0)
+    {
+        autonomous_mode = false;
+        autonomous_state = AUTO_STATE_IDLE;
+        motor_emergency_stop();
+        heading_zero_pending = true;
+        heading_zero_ready_ms = to_ms_since_boot(get_absolute_time()) + 400u;
+        mqtt_publish_status("HEADING_ZERO_PENDING");
+        return;
+    }
+    if (heading_zero_pending)
+    {
+        if (strcmp(cmd_buffer, "STOP") == 0 || strcmp(cmd_buffer, "ESTOP") == 0 ||
+            strcmp(cmd_buffer, "RESET_SAFETY") == 0 || strcmp(cmd_buffer, "AUTO_STOP") == 0) {
+            heading_zero_pending = false;
+            mqtt_publish_status("HEADING_ZERO_CANCELLED");
+        } else {
+            mqtt_publish_status("HEADING_ZERO_BUSY");
+            return;
+        }
+    }
     if (strcmp(cmd_buffer, "ESTOP") == 0)
     {
         motor_manual_estop();
@@ -310,8 +350,11 @@ static void process_command(const char *command)
             result = motor_auto_stop();
 
         char msg[80];
-        if (result == MOTOR_OK)
+        if (result == MOTOR_OK) {
+            // Also report consecutive short turns that finish between loop polls.
+            last_auto_reported = MOTOR_AUTO_RUNNING;
             snprintf(msg, sizeof(msg), "AUTO_MOVE: %s", command);
+        }
         else if (result == MOTOR_ERR_NO_HEADING)
             snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (no fresh heading from IMU)", cmd_buffer);
         else if (result == MOTOR_ERR_PIN)
@@ -388,13 +431,14 @@ static void publish_sensor_data(void)
     snprintf(telemetry, sizeof(telemetry),
              "{"
              "\"timestamp\":%lu,"
+             "\"heading_epoch\":%lu,\"heading_offset_deg\":%.3f,"
              "\"imu\":{"
              "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"heading\":%.1f,"
              "\"pitch\":%.1f,"
              "\"roll\":%.1f,"
-             "\"heading_reference\":\"startup\","
+             "\"heading_reference\":\"%s\","
              "\"status\":%d"
              "},"
              "\"ultrasonic\":{"
@@ -415,9 +459,11 @@ static void publish_sensor_data(void)
              "}"
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
+             (unsigned long)motor_heading_epoch(), motor_heading_offset(),
              latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
              latest_sensors.gyro_x, latest_sensors.gyro_y, latest_sensors.gyro_z,
-             latest_sensors.heading, latest_sensors.pitch, latest_sensors.roll, latest_sensors.imu_status,
+             motor_heading_relative(latest_sensors.heading), latest_sensors.pitch, latest_sensors.roll,
+             motor_heading_epoch() ? "manual_zero" : "startup", latest_sensors.imu_status,
              latest_sensors.ultrasonic_front, latest_sensors.ultrasonic_back,
              latest_sensors.ultrasonic_left, latest_sensors.ultrasonic_right,
              latest_sensors.ultrasonic_status,
@@ -545,6 +591,7 @@ int main()
         service_safety_stop();
         cyw43_arch_poll();
         service_safety_stop();
+        service_heading_zero();
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         if (now - last_timeout_check >= 100)
@@ -616,15 +663,14 @@ int main()
 
         // Subsystem 6: tell the mapping side once when an auto move ends
         {
-            static motor_auto_status_t last_auto = MOTOR_AUTO_IDLE;
             motor_auto_status_t st = motor_auto_status();
-            if (st != last_auto && st != MOTOR_AUTO_RUNNING && st != MOTOR_AUTO_IDLE) {
+            if (st != last_auto_reported && st != MOTOR_AUTO_RUNNING && st != MOTOR_AUTO_IDLE) {
                 char msg[48];
                 snprintf(msg, sizeof(msg), "AUTO_RESULT: %s", motor_auto_status_name(st));
                 printf("[AUTO] %s\n", msg);
                 mqtt_publish_status(msg);
             }
-            last_auto = st;
+            last_auto_reported = st;
         }
 
         // --- Sensor & status publishing ---

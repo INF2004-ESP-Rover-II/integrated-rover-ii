@@ -16,7 +16,7 @@ typedef enum {
     MOTOR_ERR_INIT   = -1,
     MOTOR_ERR_PIN    = -2,   /* bad direction or speed */
     MOTOR_ERR_SAFETY = -5,   /* refused: safety lock, SAFE STOP, or wrong state */
-    MOTOR_ERR_NO_HEADING = -6 /* auto move refused: no fresh heading from the IMU */
+    MOTOR_ERR_NO_HEADING = -7, /* auto move refused: no fresh heading from the IMU */
     MOTOR_ERR_FRONT_BLOCKED = -6 /* front proximity blocks FORWARD only */
 } motor_error_t;
 
@@ -110,6 +110,12 @@ bool motor_safety_reset(void);
 /** Latest heading from the Sensor Pico, once per packet (safe from the
  *  UART interrupt). valid = false if the IMU reported an error. */
 void motor_heading_update(float heading_deg, bool valid);
+/** Stop and make the latest fresh raw IMU heading the new zero reference. */
+motor_error_t motor_zero_heading(void);
+float motor_heading_relative(float raw_heading_deg);
+float motor_heading_offset(void);
+uint32_t motor_heading_epoch(void);
+bool motor_heading_sample_since(uint32_t since_ms);
 
 /** Motion Control state (motor_state_t in motor_types.h), for telemetry.
  *  0 ZERO_GYRO, 1 IDLE, 3 MANUAL, 4 AUTO_ROTATE, 5 AUTO_DRIVE, 6 RAMP_DOWN,

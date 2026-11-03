@@ -5,7 +5,9 @@
  */
 #include <assert.h>
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
+#include "motor_config.h"
 #include "motor_driver.h"
 #include "motor_hw.h"
 #include "safety_interlock.h"
@@ -35,6 +37,8 @@ void motor_hw_claw(mh_dir_t dir) { (void)dir; }
 
 int main(void) {
     assert(motor_init() == MOTOR_OK);
+    assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
+    assert(!motor_heading_sample_since(clock_ms));
     // No packets or IMU at startup must not lock manual movement.
     assert(!motor_safety_is_latched());
     assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
@@ -90,6 +94,49 @@ int main(void) {
     motor_link_lost();
     assert(!motor_safety_is_latched());
     assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+
+    motor_emergency_stop();
+    assert(motor_auto_rotate_to(90) == MOTOR_ERR_NO_HEADING);
+    motor_heading_update(0, true);
+    assert(motor_heading_sample_since(clock_ms));
+    assert(!motor_heading_sample_since(clock_ms + 1));
+    tick(NULL);
+    assert(motor_auto_rotate_to(90) == MOTOR_OK);
+    tick(NULL);
+    assert(motor_auto_status() == MOTOR_AUTO_RUNNING);
+    clock_ms += 20;
+    motor_heading_update(89, true);
+    tick(NULL);
+    assert(motor_auto_status() == MOTOR_AUTO_HEADING_REACHED);
+    assert(motor_motion_state() == MS_IDLE && output.brake);
+    tick(NULL);
+    assert(motor_auto_status() == MOTOR_AUTO_HEADING_REACHED);
+    assert(motor_motion_state() == MS_IDLE);
+    motor_manual_estop();
+    assert(motor_auto_rotate_to(180) == MOTOR_ERR_SAFETY);
+    assert(motor_zero_heading() == MOTOR_OK);
+    assert(motor_safety_is_latched()); // Zeroing must not release manual E-STOP.
+    assert(motor_heading_epoch() == 1);
+    assert(fabsf(motor_heading_relative(89)) < 0.01f);
+    assert(fabsf(motor_heading_relative(179) - 90) < 0.01f);
+    assert(motor_safety_reset());
+    motor_heading_update(179, true);
+    tick(NULL);
+    assert(motor_auto_rotate_to(90) == MOTOR_OK);
+    tick(NULL);
+    assert(motor_auto_status() == MOTOR_AUTO_HEADING_REACHED);
+    assert(motor_zero_heading() == MOTOR_OK); // A repeated zero uses the new raw heading.
+    assert(fabsf(motor_heading_offset() - 179) < 0.01f);
+    assert(fabsf(motor_heading_relative(179)) < 0.01f);
+    motor_heading_update(350, true);
+    assert(motor_zero_heading() == MOTOR_OK);
+    assert(fabsf(motor_heading_relative(10) - 20) < 0.01f);
+    assert(fabsf(motor_heading_relative(349) - 359) < 0.01f);
+    uint32_t epoch = motor_heading_epoch();
+    clock_ms += MC_HEADING_STALE_MS + 1;
+    motor_heading_update(NAN, true); // Invalid readings cannot refresh the reference.
+    assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
+    assert(motor_heading_epoch() == epoch);
     puts("Front range, timeout and manual E-STOP tests passed");
     return 0;
 }

@@ -11,6 +11,15 @@
 !/tests/test_imu_sampler.c
 !/tests/test_dashboard_heading.py
 !/tests/test_dashboard_front_stop.py
+!/tests/test_dfs_turns.py
+!/tests/test_dfs_mission.py
+!/tests/test_dashboard_manual_turn.py
+!/tests/test_heading_zero.py
+!/tests/test_grid_navigation.py
+!/tests/test_bearing_alignment.py
+!/tests/test_obstacle.c
+!/tests/test_tof_health.py
+!/tests/test_dashboard_tof.py
 !/tests/imu_stubs/
 !/tests/imu_stubs/**
 !/tests/imu_stubs/

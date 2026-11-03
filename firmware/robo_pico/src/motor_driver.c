@@ -30,6 +30,7 @@
 #include "motor_types.h"
 
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/sync.h"
 
@@ -59,6 +60,11 @@ static uint8_t            s_hdg_seq;
 static uint32_t           s_word;           /* move being held (0 = none) */
 static uint32_t           s_last_call_ms;
 static uint8_t            s_seq;
+static float              s_raw_heading;
+static float              s_heading_offset;
+static uint32_t           s_raw_heading_ms;
+static uint32_t           s_heading_epoch;
+static bool               s_have_raw_heading;
 
 /* Why Motion Control last entered SAFE STOP (state 7), for the dashboard. */
 static volatile uint8_t   s_safe_reason = MOTOR_SAFE_NONE;
@@ -191,6 +197,9 @@ motor_error_t motor_init(void) {
     s_front_blocked = false;
     s_front_stop_pending = false;
     s_word = 0;
+    s_heading_offset = 0;
+    s_heading_epoch = 0;
+    s_have_raw_heading = false;
 
     if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer))
         return MOTOR_ERR_INIT;
@@ -198,14 +207,74 @@ motor_error_t motor_init(void) {
     return MOTOR_OK;
 }
 
-void motor_heading_update(float heading_deg, bool valid) {
-    if (!valid) return;                /* no new frame -> heading goes stale by itself */
-    while (heading_deg < 0.0f)    heading_deg += 360.0f;
-    while (heading_deg >= 360.0f) heading_deg -= 360.0f;
+static float wrap_heading(float heading_deg) {
+    float wrapped = fmodf(heading_deg, 360.0f);
+    return wrapped < 0 ? wrapped + 360.0f : wrapped;
+}
+
+static void store_heading(float heading_deg) {
     uint16_t tenths = (uint16_t)(heading_deg * 10.0f + 0.5f);
     if (tenths >= 3600u) tenths = 0;
     s_hdg_seq = (uint8_t)((s_hdg_seq + 1u) & 0xFu);
     s_heading_word = heading_word_pack(tenths, s_hdg_seq, now_ms());   /* one store */
+}
+
+void motor_heading_update(float heading_deg, bool valid) {
+    if (!valid || !isfinite(heading_deg)) return;
+    uint32_t irq = save_and_disable_interrupts();
+    s_raw_heading = wrap_heading(heading_deg);
+    s_raw_heading_ms = now_ms();
+    s_have_raw_heading = true;
+    store_heading(wrap_heading(s_raw_heading - s_heading_offset));
+    restore_interrupts(irq);
+}
+
+float motor_heading_relative(float raw_heading_deg) {
+    uint32_t irq = save_and_disable_interrupts();
+    float relative = wrap_heading(raw_heading_deg - s_heading_offset);
+    restore_interrupts(irq);
+    return relative;
+}
+
+float motor_heading_offset(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    float offset = s_heading_offset;
+    restore_interrupts(irq);
+    return offset;
+}
+
+uint32_t motor_heading_epoch(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    uint32_t epoch = s_heading_epoch;
+    restore_interrupts(irq);
+    return epoch;
+}
+
+bool motor_heading_sample_since(uint32_t since_ms) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool received = s_have_raw_heading && (int32_t)(s_raw_heading_ms - since_ms) >= 0;
+    restore_interrupts(irq);
+    return received;
+}
+
+motor_error_t motor_zero_heading(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    if (!s_have_raw_heading || (uint32_t)(now_ms() - s_raw_heading_ms) > MC_HEADING_STALE_MS) {
+        restore_interrupts(irq);
+        return MOTOR_ERR_NO_HEADING;
+    }
+    hard_stop(MC_STOP_OPERATOR);
+    motor_hw_arm(MH_OFF);
+    motor_hw_claw(MH_OFF);
+    s_heading_offset = s_raw_heading;
+    ++s_heading_epoch;
+    store_heading(0);
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_step(&s_mc, now_ms(), s_heading_word, &out);
+    apply(&out);
+    restore_interrupts(irq);
+    return MOTOR_OK;
 }
 
 int motor_move_speed(motor_direction_t direction) {
@@ -269,7 +338,7 @@ static motor_error_t start_auto(uint32_t word) {
 }
 
 static motor_error_t auto_checks(void) {
-    if (s_safety.latched) return MOTOR_ERR_SAFETY;
+    if (s_manual_estop) return MOTOR_ERR_SAFETY;
     if (!heading_ready()) return MOTOR_ERR_NO_HEADING;
     return MOTOR_OK;
 }

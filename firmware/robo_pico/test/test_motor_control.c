@@ -270,6 +270,9 @@ static void test_rotate_to_heading(void) {
         int ticks = 0;
         while (s.results[MR_HEADING_REACHED] == 0 && ticks < 400) {
             sim_tick(&s); ticks++;
+            if (s.results[MR_HEADING_REACHED])
+                CHECK(s.out.brake && mc_state(&s.mc) == MS_IDLE && s.out.wheel[0] == 0,
+                      "target reached: immediate brake, PWM zero and IDLE");
             if (ticks % 5 == 0) sim_cmd(&s, w);               /* Exploration refreshes */
             if (first_dir == 0 && s.mc.duty[0] != 0) first_dir = s.mc.duty[0];
         }
@@ -280,7 +283,7 @@ static void test_rotate_to_heading(void) {
               cases[c][0], cases[c][1], s.results[MR_HEADING_REACHED]);
         CHECK(fabs(expect_dir) < 1 || fabs(expect_dir) > 179 || (first_dir > 0) == (expect_dir > 0), "%.0f->%.0f turns the short way", cases[c][0], cases[c][1]);
         CHECK(mc_state(&s.mc) == MS_IDLE, "%.0f->%.0f back to IDLE", cases[c][0], cases[c][1]);
-        printf("  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg (incl. ramp-down overshoot)\n",
+        printf("  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg (local brake)\n",
                cases[c][0], cases[c][1], ticks * (int)MC_PERIOD_MS, err);
         CHECK(fabs(err) <= 5.0, "final error within 5 deg");
     }

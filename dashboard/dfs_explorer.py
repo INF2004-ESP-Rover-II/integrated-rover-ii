@@ -91,6 +91,7 @@ class DFSExplorer:
     def __init__(self):
         self.state = State.IDLE
         self.nodes: Dict[int, Node] = {}
+        self.arrival_history = []
         self.stack: List[int] = []
         self.current: Optional[int] = None
         self.current_confirmed = False
@@ -260,6 +261,7 @@ class DFSExplorer:
         self.current_confirmed = True
         self.heading = heading
         self.pending = None
+        self.arrival_history.append((current, marker_id, int(direction)))
         self.state = State.COMPLETE if len(self.nodes) >= self.target_markers else State.READY
         return True
 

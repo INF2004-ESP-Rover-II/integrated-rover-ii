@@ -38,6 +38,16 @@ class PoseTracker:
         sensor, explorer = nav.sensor, nav.explorer
         if sensor is None or not nav.active or explorer.current is None:
             return None
+        grid = getattr(nav, 'grid', None)
+        if grid is not None:
+            # Grid mode places the rover on the inferred node, not at the old
+            # camera stand-off. Do not smear occupancy while travelling/turning.
+            if grid.forward or nav.phase != 'scan':
+                return None
+            x, y = grid.cells[grid.current]
+            ox, oy = nav.grid_mission_origin
+            return ((x - ox) * cfg.MARKER_PITCH_CM, (y - oy) * cfg.MARKER_PITCH_CM,
+                    (sensor.heading - nav.map_zero_deg) % 360)
         if explorer.session_id != self._session:
             self._session, self._cur, self._travel_dir = explorer.session_id, None, None
             if not isinstance(explorer, RouteExplorer):

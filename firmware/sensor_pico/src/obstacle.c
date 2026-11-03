@@ -30,16 +30,22 @@ void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
         const bool accepted = (incoming > 0 && incoming <= TOF_MAX_DISTANCE_MM) ||
                               incoming == TOF_NO_TARGET_MM;
 
-        // No fresh result means retain the cached result, not overwrite it with 0.
+        // A completed result proves the device is responding, even when its
+        // range status rejects the distance (e.g. weak return with no target).
+        // Range validity is separate from sensor/communication health.
+        // No fresh result means retain the cached range until its timeout.
         if (readings->fresh_mask & bit)
         {
+            if (online)
+            {
+                state->timestamp_ms[i] = readings->timestamp_ms[i];
+                state->fault_mask &= (uint8_t)~bit;
+            }
             if (online && (readings->valid_mask & bit) && accepted)
             {
                 // state->distance_mm[i] = readings->distance_mm[i];
                 tof_distance_set(&state->distance_bits, sensor, incoming);
-                state->timestamp_ms[i] = readings->timestamp_ms[i];
                 state->valid_mask |= bit;
-                state->fault_mask &= (uint8_t)~bit;
             }
             else
             {

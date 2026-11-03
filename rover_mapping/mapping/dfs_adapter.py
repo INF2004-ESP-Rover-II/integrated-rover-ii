@@ -48,6 +48,7 @@ class DfsAdapter:
         self.prev: Optional[int] = None
         self._sig = {}
         self._state = None
+        self._history_index = 0
 
     def sync(self, explorer) -> None:
         """Call once per tick with navigator.explorer (Phase 1 explorer)."""
@@ -58,6 +59,22 @@ class DfsAdapter:
         if self.session is None:
             return
         cur = explorer.current
+        history = getattr(explorer, 'arrival_history', [])
+        for source, marker, direction in history[self._history_index:]:
+            if source == self.prev:
+                used = self.bridge.on_event(ev.MarkerReached(marker, direction))
+                if not used and _val(self.bridge.ctrl.state) == 'MAP_COMPLETE':
+                    # A terminal wall can confirm several passed cells together.
+                    # Preserve later hops even if the requested count was met
+                    # part-way through that same confirmation batch.
+                    with self.bridge.lock:
+                        graph = self.bridge.ctrl.graph
+                        if graph.current == source:
+                            graph.marker_reached(marker, direction)
+                            self.bridge.ctrl.heading = direction
+                self.bridge.confirm_marker(marker)
+                self.prev = marker
+        self._history_index = len(history)
         if explorer.current_confirmed and cur != self.prev and self.prev is not None:
             d = self._travelled_direction(explorer, self.prev, cur)
             if d is None:
@@ -85,10 +102,13 @@ class DfsAdapter:
     def _new_mission(self, explorer) -> None:
         self.session = explorer.session_id
         self._sig, self._state = {}, None
+        self._history_index = 0
         n = explorer.target_markers or len(explorer.nodes)
-        if self.bridge.begin_session(n, explorer.current):
-            self.prev = explorer.current
-            self.bridge.confirm_marker(explorer.current)
+        history = getattr(explorer, 'arrival_history', [])
+        start = history[0][0] if history else explorer.current
+        if self.bridge.begin_session(n, start):
+            self.prev = start
+            self.bridge.confirm_marker(start)
         else:
             self.session = None
 

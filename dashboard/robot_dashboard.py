@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
 from tkinter import ttk
 from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
+from mapping.config import CAMERA_HEIGHT_CM, CAMERA_FORWARD_CM
 import os
 from laptop_navigation import LaptopNavigator
 from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
@@ -127,6 +128,12 @@ class RobotGUI:
         self.stop_sent_at = None
         self.stop_latencies = []
         self.last_refused = None
+        self.turn_heading = tk.StringVar(value="90")
+        self.manual_turn_target = None
+        self.manual_turn_job = None
+        self.manual_turn_acked = False
+        self.heading_zero_pending = False
+        self.heading_zero_job = None
 
         # Assumed speed (%) for the odometry estimate only
         self.current_speed = tk.IntVar(value=80)
@@ -153,9 +160,18 @@ class RobotGUI:
         self.auto_mode = tk.BooleanVar(value=False)
         self.dfs_target = tk.StringVar(value="36")
         # Set this from measured maze geometry before starting a mission.
-        self.dfs_threshold = tk.StringVar(value="")
-        self.dfs_status = tk.StringVar(value="Waiting for a marker at 450 mm from the camera lens and RoboPico telemetry")
+        self.dfs_threshold = tk.StringVar(value="500")
+        self.dfs_status = tk.StringVar(value="Set the starting node under the rover before starting DFS")
+        self.start_node_id = tk.StringVar(value="")
+        self.current_marker_text = tk.StringVar(value="--")
+        self.marker_distance_text = tk.StringVar(value="--")
+        self.marker_bearing_text = tk.StringVar(value="--")
+        self.last_reached_marker_text = tk.StringVar(value="--")
+        self.dfs_current_node_text = tk.StringVar(value="--")
+        self.marker_confirmation_text = tk.StringVar(value="Waiting for fresh camera data")
+        self.node_confirmation_text = tk.StringVar(value="")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
+        self.navigator.grid_required = True
         # Marker grid map: its own feed so it never shares sequence state with the navigator.
         self.map_feed = VisionFeed()
         self.map_start_cell = (3, 0)  # 4th column (middle), bottom row; starting IMU heading defines up the map.
@@ -163,8 +179,11 @@ class RobotGUI:
         self.map_rover = {}  # Last rover position worked out from a mapped marker.
         self.map_title = ""
         self.map_drawn_at = 0.0
+        self.grid_map_signature = None
+        self.grid_marker_artists = {}
+        self.grid_marker_labels = {}
 
-        # No on-screen control buttons (keyboard-only controls)
+        # Keyboard drive controls and the manual heading test share this window.
 
         # Logging
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -302,13 +321,54 @@ class RobotGUI:
             fg='#bdc3c7', bg='#34495e', font=("Arial", 8))
         self.tof_age_label.grid(row=1, column=5, columnspan=4, sticky='e', padx=12, pady=(0, 2))
 
+        marker_frame = tk.Frame(self.root, bg='#34495e')
+        marker_frame.pack(padx=20, pady=2, fill='x')
+        for column, (title, value) in enumerate((
+                ("Current camera marker:", self.current_marker_text),
+                ("Lens distance:", self.marker_distance_text),
+                ("Bearing:", self.marker_bearing_text),
+                ("Last reached:", self.last_reached_marker_text),
+                ("DFS current node:", self.dfs_current_node_text))):
+            tk.Label(marker_frame, text=title, fg='white', bg='#34495e').grid(
+                row=0, column=column * 2, padx=(8, 4), sticky='w')
+            tk.Label(marker_frame, textvariable=value, fg='#3498db', bg='#34495e',
+                     font=("Arial", 10, "bold")).grid(
+                row=0, column=column * 2 + 1, padx=(0, 12), sticky='w')
+        self.marker_confirmation_label = tk.Label(
+            marker_frame, textvariable=self.marker_confirmation_text,
+            fg='#bdc3c7', bg='#34495e', anchor='w')
+        self.marker_confirmation_label.grid(row=1, column=0, columnspan=10,
+                                            padx=8, pady=(0, 2), sticky='w')
+        tk.Label(marker_frame, textvariable=self.node_confirmation_text,
+                 fg='#bdc3c7', bg='#34495e', anchor='w', justify='left', wraplength=1100).grid(
+                     row=2, column=0, columnspan=10, padx=8, pady=(0, 2), sticky='w')
+
         dfs_frame = tk.Frame(self.root, bg='#34495e')
         dfs_frame.pack(padx=20, pady=2, fill='x')
+        tk.Label(dfs_frame, text="Start node ID:", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Entry(dfs_frame, textvariable=self.start_node_id, width=4).pack(side='left')
+        tk.Button(dfs_frame, text="Set start node", command=self.set_start_node,
+                  bg='#2980b9', fg='white').pack(side='left', padx=6)
         tk.Label(dfs_frame, text="DFS target markers (1–36):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
-        tk.Label(dfs_frame, text="Open path ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Label(dfs_frame, text="Side opening ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
         tk.Label(dfs_frame, textvariable=self.dfs_status, fg='yellow', bg='#34495e').pack(side='left', padx=12)
+
+        turn_frame = tk.Frame(self.root, bg='#34495e')
+        turn_frame.pack(padx=20, pady=2, fill='x')
+        tk.Label(turn_frame, text="Target heading (0–359°):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        turn_entry = tk.Entry(turn_frame, textvariable=self.turn_heading, width=6)
+        turn_entry.pack(side='left')
+        turn_entry.bind('<Return>', lambda event: self.request_manual_turn())
+        tk.Button(turn_frame, text="Turn to heading", command=self.request_manual_turn,
+                  bg='#2980b9', fg='white', font=("Arial", 10, "bold")).pack(side='left', padx=8)
+        tk.Button(turn_frame, text="Stop turn", command=lambda: self.send_command("STOP"),
+                  bg='#e67e22', fg='white').pack(side='left', padx=4)
+        tk.Button(turn_frame, text="Set current heading to 0°", command=self.request_heading_zero,
+                  bg='#8e44ad', fg='white').pack(side='left', padx=8)
+        tk.Label(turn_frame, text="Absolute IMU heading; clockwise from the latest zero.",
+                 fg='#bdc3c7', bg='#34495e').pack(side='left', padx=8)
 
         # Main area with 3 columns
         main = tk.Frame(self.root, bg='#2c3e50')
@@ -370,10 +430,10 @@ class RobotGUI:
         self.ax.grid(True, color='#3498db', alpha=0.6, linewidth=1)
         self.ax.set_xlabel('Column (60 cm cells)', color='white', fontsize=10)
         self.ax.set_ylabel('Row (60 cm cells)', color='white', fontsize=10)
-        self.ax.set_title('Waiting for camera', color='white', pad=15, fontsize=12)
+        self.ax.set_title('Set start node ID to begin grid mapping', color='white', pad=15, fontsize=12)
         self.ax.tick_params(colors='white', labelsize=8)
-        self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
-                     'go', markersize=10, zorder=10)  # rover start
+        self.rover_dot, = self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
+                                      'go', markersize=10, zorder=10)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=live_tab)
         self.canvas.draw()
@@ -485,9 +545,14 @@ class RobotGUI:
         if blocked and changed:
             if self.active_command == "FORWARD":
                 self.stop_hold()
-            if self.navigator.active:
-                self.navigator.stop("Front obstacle")
-                self.auto_mode.set(False)
+            if self.navigator.active and self.navigator.phase == "drive":
+                handler = getattr(self.navigator, 'handle_front_obstacle', lambda: False)
+                if not handler():
+                    grid = getattr(self.navigator, 'grid', None)
+                    reason = ("Front obstacle: " + grid.confirmation_summary(self.navigator.clock())
+                              if grid is not None else "Front obstacle")
+                    self.navigator.stop(reason)
+                    self.auto_mode.set(False)
             self.log("Front obstacle: W disabled; other keys remain available.")
         elif changed:
             self.forward_requires_release = False
@@ -513,8 +578,142 @@ class RobotGUI:
             # Heading comes exclusively from healthy IMU telemetry. Rotation
             # commands provide no measured angle and must not overwrite it.
 
+    def request_heading_zero(self):
+        """Stop motion, then ask RoboPico to zero yaw after its braking interval."""
+        if self.heading_zero_pending:
+            self.log("Heading zero is already in progress.")
+            return
+        if not self.connected or self.robot_link != "live":
+            self.log("Cannot zero heading: connect and wait for live telemetry.")
+            return
+        if self.pressed_keys:
+            self.log("Release the control keys before zeroing the heading.")
+            return
+        sensor = self.navigator.sensor
+        if (sensor is None or self.navigator.clock() - sensor.received_at + sensor.age_s >
+                self.navigator.SENSOR_MAX_AGE_S):
+            self.log("Cannot zero heading: wait for a fresh, healthy IMU reading.")
+            return
+        if self.navigator.active:
+            self.navigator.stop("Setting current IMU heading to zero")
+        self.auto_mode.set(False)
+        self.cancel_heartbeat()
+        self.active_command = None
+        if not self.send_command("STOP", quiet=True):
+            return
+        self.heading_zero_pending = True
+        if not self.send_command("ZERO_HEADING"):
+            self.cancel_heading_zero()
+            return
+        self.heading_zero_job = self.root.after(5000, self.heading_zero_timeout)
+        self.log("Stopping briefly, then setting the current direction to 0°. Keep the rover still.")
+
+    def cancel_heading_zero(self):
+        if self.heading_zero_job is not None:
+            self.root.after_cancel(self.heading_zero_job)
+        self.heading_zero_job = None
+        self.heading_zero_pending = False
+
+    def heading_zero_timeout(self):
+        self.heading_zero_job = None
+        self.cancel_heading_zero()
+        self.send_command("STOP", quiet=True)
+        self.log("Heading zero was not acknowledged. Check that RoboPico has the updated firmware.")
+
+    def handle_heading_zero_status(self, status):
+        if status in ("HEADING_ZERO_PENDING", "HEADING_ZERO_BUSY"):
+            return
+        self.cancel_heading_zero()
+        if status == "HEADING_ZEROED":
+            self.navigator.sensor = None
+            self.navigator._sensor_timestamp = None
+            self.navigator.visible_marker = None
+            self.navigator._reset_arrival()
+            with self.odometry_lock:
+                self.robot_heading = 0.0
+            self.heading_label.config(text="0.0°")
+            self.turn_heading.set("0")
+            self.log("Current direction is now 0°. Heading turns use this new zero; reacquire the marker before DFS.")
+        elif status == "HEADING_ZERO_REFUSED":
+            self.log("Heading zero refused: RoboPico needs a fresh, healthy IMU reading.")
+        elif status == "HEADING_ZERO_CANCELLED":
+            self.log("Heading zero cancelled by a stop/reset command.")
+
+    def request_manual_turn(self):
+        """Start one local Pico heading turn, without requiring a camera marker."""
+        if getattr(self, 'heading_zero_pending', False):
+            self.log("Wait for heading zero to finish before turning.")
+            return
+        try:
+            heading = int(self.turn_heading.get().strip())
+            if not 0 <= heading <= 359:
+                raise ValueError
+        except ValueError:
+            self.log("Enter a whole-number target heading from 0 to 359 degrees.")
+            return
+        if not self.connected or self.robot_link != "live":
+            self.log("Cannot turn: connect to the rover and wait for live telemetry.")
+            return
+        if self.estop_active:
+            self.log("Cannot turn while E-STOP is active.")
+            return
+        if self.pressed_keys:
+            self.log("Release the control keys before starting a heading turn.")
+            return
+        sensor = self.navigator.sensor
+        if (sensor is None or self.navigator.clock() - sensor.received_at + sensor.age_s >
+                self.navigator.SENSOR_MAX_AGE_S):
+            self.log("Cannot turn: wait for a fresh, healthy IMU heading.")
+            return
+        if self.navigator.active:
+            self.navigator.stop("Manual heading turn requested")
+        self.auto_mode.set(False)
+        self.cancel_heartbeat()
+        self.active_command = None
+        # STOP also cancels a previous manual turn and leaves Pico ready for a new target.
+        if not self.send_command("STOP", quiet=True):
+            return
+        self.manual_turn_target = heading
+        self.manual_turn_acked = False
+        if not self.send_command("TURN_TO:%d" % heading):
+            self.cancel_manual_turn()
+            return
+        self.manual_turn_job = self.root.after(int(self.navigator.TURN_TIMEOUT_S * 1000),
+                                                self.manual_turn_timeout)
+        self.log("Turning to absolute IMU heading %d°. Stop turn or E-STOP cancels it." % heading)
+
+    def cancel_manual_turn(self):
+        if self.manual_turn_job is not None:
+            self.root.after_cancel(self.manual_turn_job)
+        self.manual_turn_job = None
+        self.manual_turn_target = None
+        self.manual_turn_acked = False
+
+    def manual_turn_timeout(self):
+        target = self.manual_turn_target
+        self.manual_turn_job = None
+        self.cancel_manual_turn()
+        if target is not None:
+            self.send_command("STOP", quiet=True)
+            self.log("Turn to %d° timed out; STOP sent." % target)
+
+    def handle_manual_turn_status(self, status):
+        target = self.manual_turn_target
+        if status == "AUTO_MOVE: TURN_TO:%d" % target:
+            self.manual_turn_acked = True
+        elif (status.startswith("AUTO_REFUSED: TURN_TO") or
+              status in ("SAFETY_LOCKED", "SAFETY_READY", "READY") or
+              (self.manual_turn_acked and (status.startswith("AUTO_RESULT:") or status == "STOPPED"))):
+            self.cancel_manual_turn()
+            if status == "AUTO_RESULT: HEADING_REACHED":
+                self.log("Turn to %d° complete." % target)
+
     def toggle_auto_mode(self):
         """The laptop owns exploration; never start the inherited Pico AUTO mode."""
+        if getattr(self, 'heading_zero_pending', False):
+            self.auto_mode.set(False)
+            self.log("Wait for heading zero to finish before starting DFS.")
+            return
         if self.auto_mode.get():
             self.stop_hold()
             self.cancel_heartbeat()
@@ -530,9 +729,45 @@ class RobotGUI:
         self.dfs_status.set(message)
         self.log(message)
 
+    def set_start_node(self):
+        if (self.active_command is not None or self.pressed_keys or
+                self.manual_turn_target is not None or self.heading_zero_pending):
+            self.log("Stop driving and release the keys before setting the starting node.")
+            return
+        try:
+            self.navigator.configure_grid_start(int(self.start_node_id.get()),
+                camera_height_mm=CAMERA_HEIGHT_CM * 10, camera_forward_mm=CAMERA_FORWARD_CM * 10)
+        except (TypeError, ValueError) as error:
+            self.log("Cannot set starting node: " + str(error))
+            return
+        self.found_markers.clear()
+        if self.mapping.bridge.ctrl.state.value != 'IDLE':
+            self.mapping.bridge.reset_map()
+        self.mapping.adapter.session = None
+        self.grid_map_signature = None
+        self.grid_marker_artists.clear()
+        self.grid_marker_labels.clear()
+        for artist in list(self.ax.patches) + list(self.ax.texts):
+            artist.remove()
+        self.update_current_marker()
+
     def send_navigation_command(self, command):
-        if command != "STOP" and (self.estop_active or self.robot_link != "live"):
-            return False
+        if command != 'STOP':
+            if self.estop_active:
+                self.log("Navigation command %s withheld: E-STOP active." % command)
+                return False
+            if self.robot_link != 'live':
+                sensor = self.navigator.sensor
+                age = (self.navigator.clock() - sensor.received_at + sensor.age_s
+                       if sensor is not None else float('inf'))
+                if sensor is not None and age <= self.navigator.SENSOR_MAX_AGE_S:
+                    # A fresh packet may beat the 250 ms label watchdog. Use the
+                    # validated telemetry now, rather than rejecting the command
+                    # because the label still says Lost.
+                    self.set_robot_link('live')
+                else:
+                    self.log("Navigation command %s withheld: robot telemetry unavailable/stale." % command)
+                    return False
         return self.send_command(command, quiet=True)
 
     def navigation_tick(self):
@@ -545,7 +780,112 @@ class RobotGUI:
         self.mapping.sync()              # Subsystem 4: read the DFS graph / drive routes
         if not self.navigator.active:
             self.auto_mode.set(False)
+        self.update_current_marker()
         self.root.after(100, self.navigation_tick)
+
+    def update_current_marker(self):
+        """Show the live marker selected by navigation, separately from a reached node."""
+        nav = self.navigator
+        now = nav.clock()
+        current = nav.last_reached_marker
+        self.last_reached_marker_text.set("--" if current is None else str(current))
+        node = nav.explorer.current
+        node_state = "confirmed" if nav.explorer.current_confirmed else "unconfirmed"
+        self.dfs_current_node_text.set("--" if node is None else "%d (%s)" % (node, node_state))
+        if nav.grid is not None:
+            self.update_grid_map()
+            sensor_age = (now - nav.sensor.received_at + nav.sensor.age_s
+                          if nav.sensor is not None else float('inf'))
+            camera_age = now - nav.last_camera_at if nav.last_camera_at is not None else float('inf')
+            self.node_confirmation_text.set('%s | Camera age %.2fs | Sensor age %.2fs' % (
+                nav.grid.confirmation_summary(now), camera_age, sensor_age))
+        fresh = (nav.last_camera_at is not None and
+                 now - nav.last_camera_at <= VisionFeed.MAX_AGE_MS / 1000)
+        marker = nav.visible_marker if fresh else None
+        self.current_marker_text.set("--" if marker is None else str(marker))
+        distance = nav.visible_distance_mm if marker is not None else None
+        bearing = nav.visible_bearing_deg if marker is not None else None
+        self.marker_distance_text.set("--" if distance is None else "%.0f mm" % distance)
+        self.marker_bearing_text.set("--" if bearing is None else "%+.1f°" % bearing)
+        colour = '#f39c12'
+        if nav.grid_required and nav.grid is None:
+            message = "Enter the marker under the rover in Start node ID; click Set start node."
+        elif nav.grid is not None:
+            grid = nav.grid
+            if not fresh:
+                message = "Camera data unavailable/stale; grid estimate held"
+            elif grid.approaching_wall and grid.current != grid.terminal:
+                message = "Wall <60 cm | Terminal node: %s | Confirm only at front stop <15 cm" % (
+                    grid.terminal if grid.terminal is not None else 'unknown')
+            else:
+                message = grid.message
+        elif not fresh:
+            message = ("Waiting for fresh camera data" if nav.last_camera_at is None
+                       else "Camera data stale; waiting for a fresh marker observation")
+        elif marker is None:
+            message = "No marker selected in the current camera frame"
+        elif distance is None or bearing is None:
+            message = "Marker seen; valid camera distance and bearing required for confirmation"
+        else:
+            count = (min(nav._arrival_count, nav.ARRIVAL_CONFIRM_FRAMES)
+                     if nav._arrival_marker == marker and
+                     now - nav._arrival_at <= VisionFeed.MAX_AGE_MS / 1000 else 0)
+            minimum = nav.ARRIVAL_DISTANCE_MM - nav.ARRIVAL_TOLERANCE_MM
+            maximum = nav.ARRIVAL_DISTANCE_MM + nav.ARRIVAL_TOLERANCE_MM
+            if not minimum <= distance <= maximum:
+                message = "Move to %.0f–%.0f mm from the lens | Confirmation: %d/%d frames" % (
+                    minimum, maximum, count, nav.ARRIVAL_CONFIRM_FRAMES)
+            elif abs(bearing) > nav.ARRIVAL_BEARING_DEG:
+                message = "Centre the marker within ±%.0f° | Confirmation: %d/%d frames" % (
+                    nav.ARRIVAL_BEARING_DEG, count, nav.ARRIVAL_CONFIRM_FRAMES)
+            elif nav.active:
+                message = "DFS: %s | Arrival confirmation: %d/%d frames" % (
+                    nav.phase.replace('_', ' '), count, nav.ARRIVAL_CONFIRM_FRAMES)
+            elif count < nav.ARRIVAL_CONFIRM_FRAMES:
+                message = "Hold steady | Confirmation: %d/%d frames" % (count, nav.ARRIVAL_CONFIRM_FRAMES)
+            else:
+                message = "Starting marker confirmed: %d/%d frames" % (count, nav.ARRIVAL_CONFIRM_FRAMES)
+                colour = '#2ecc71'
+        self.marker_confirmation_text.set(message)
+        self.marker_confirmation_label.config(fg=colour)
+
+    def update_grid_map(self):
+        nav = self.navigator
+        grid = nav.grid
+        # Sightings and visits share pinned positions. Rendering never reprojects
+        # an existing marker as its camera range changes.
+        positions = grid.cells
+        signature = (tuple(sorted(positions.items())), grid.current, tuple(sorted(grid.visited)))
+        if signature == self.grid_map_signature:
+            return
+        self.grid_map_signature = signature
+        sx, sy = self.map_start_cell
+        for marker, (x, y) in positions.items():
+            colour = '#27ae60' if marker in grid.visited else '#3498db'
+            col, row = sx + x, sy + y
+            self.found_markers[marker] = (col * 600.0, row * 600.0)
+            patch = self.grid_marker_artists.get(marker)
+            if patch is None:
+                patch = Rectangle((col, row), 1, 1, color=colour, alpha=0.7)
+                self.grid_marker_artists[marker] = patch
+                self.ax.add_patch(patch)
+                self.grid_marker_labels[marker] = self.ax.text(
+                    col + 0.5, row + 0.72, str(marker), ha='center', va='center',
+                    color='white', fontsize=14, fontweight='bold')
+            patch.set_facecolor(colour)
+            patch.set_alpha(.7 if marker in grid.visited else .4)
+        x, y = grid.cells[grid.current]
+        self.rover_dot.set_data([sx + x + 0.5], [sy + y + 0.5])
+        cells = [(sx + x, sy + y) for x, y in positions.values()]
+        xmin, xmax = min(0, min(x for x, y in cells)), max(GRID_SIZE, max(x + 1 for x, y in cells))
+        ymin, ymax = min(0, min(y for x, y in cells)), max(GRID_SIZE, max(y + 1 for x, y in cells))
+        self.ax.set_xlim(xmin, xmax)
+        self.ax.set_ylim(ymin, ymax)
+        self.ax.set_xticks(range(xmin, xmax + 1))
+        self.ax.set_yticks(range(ymin, ymax + 1))
+        self.ax.set_title('Grid estimate: node %d | Blue: seen estimates | Green: reached' % grid.current,
+                          color='white', pad=15)
+        self.canvas.draw_idle()
 
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
@@ -553,6 +893,8 @@ class RobotGUI:
 
     def update_marker_map(self, data):
         """Place fresh camera observations using the current healthy IMU heading."""
+        if self.navigator.grid is not None or self.navigator.grid_required:
+            return  # The calibrated grid tracker owns marker positions in this mode.
         frame = self.map_feed.decode(data, time.time() * 1000)
         if frame is None:
             return
@@ -694,6 +1036,9 @@ class RobotGUI:
 
     def start_hold(self, cmd):
         """Start driving with cmd and keep resending it while held"""
+        if getattr(self, 'heading_zero_pending', False):
+            self.log("Wait for heading zero to finish before moving.")
+            return
         if cmd == "FORWARD" and self.front_blocked:
             self.log("W disabled: front obstacle. Other movement keys remain available.")
             return
@@ -864,7 +1209,12 @@ class RobotGUI:
             if prev == "lost":
                 self.log(f"[{ts}] Robot link restored - movement enabled")
         elif state == "lost":
-            self.navigator.stop("RoboPico telemetry lost")
+            local_turn_or_settle = (self.navigator.active and
+                                   self.navigator.phase in ("turn", "scan_turn", "settle", "scan_settle", "arrival_settle", "input_wait", "align"))
+            if local_turn_or_settle:
+                self.log("RoboPico telemetry late: waiting for local turn result/fresh inputs; forward travel disabled.")
+            else:
+                self.navigator.stop("RoboPico telemetry lost")
             self.clear_tof_readings("Telemetry stale")
             self.robot_connected.set("Lost")
             self.robot_conn_label.config(fg='#e74c3c')
@@ -916,6 +1266,10 @@ class RobotGUI:
             self.connected = False
 
     def disconnect(self):
+        if self.heading_zero_pending:
+            self.send_command("STOP", quiet=True)
+        if self.manual_turn_target is not None:
+            self.send_command("STOP", quiet=True)
         self.navigator.stop("Dashboard disconnected")
         if self.active_command:
             self.stop_hold()
@@ -974,6 +1328,11 @@ class RobotGUI:
         self.msg_count += 1
 
         if topic == TOPIC_STATUS:
+            if payload.startswith("HEADING_ZERO_") or payload == "HEADING_ZEROED":
+                self.handle_heading_zero_status(payload)
+            if getattr(self, 'manual_turn_target', None) is not None:
+                self.handle_manual_turn_status(payload)
+            self.navigator.robot_status_received(payload)
             self.robot_status.set(payload)
             
             if payload in {"FRONT_STOPPED", "FORWARD_BLOCKED"}:
@@ -1113,6 +1472,10 @@ class RobotGUI:
             self.root.after(0, self.handle_mqtt_disconnect, rc)
             
     def handle_mqtt_disconnect(self, rc):
+        if self.heading_zero_pending:
+            self.cancel_heading_zero()
+        if self.manual_turn_target is not None:
+            self.cancel_manual_turn()
         self.navigator.stop("MQTT connection lost")
         self.clear_tof_readings("Disconnected")
         self.log(f"MQTT disconnected (code {rc})")
@@ -1120,14 +1483,26 @@ class RobotGUI:
         self.broker_status_label.config(fg='#e74c3c')
 
     def send_command(self, command, quiet=False):
+        if getattr(self, 'heading_zero_pending', False):
+            if command in ("STOP", "ESTOP", "RESET_SAFETY", "AUTO_STOP"):
+                self.cancel_heading_zero()
+            elif command != "ZERO_HEADING":
+                self.log("Wait for heading zero to finish before moving.")
+                return False
+        if getattr(self, 'manual_turn_target', None) is not None:
+            if command in KEYMAP.values():
+                # A fresh keyboard command takes over only after stopping the turn.
+                if not self.send_command("STOP", quiet=True):
+                    return False
+            elif command in ("STOP", "ESTOP", "RESET_SAFETY"):
+                self.cancel_manual_turn()
         if not self.connected or not self.mqtt_client:
             self.log("Not connected to broker")
             return False
         
         try:
             ts = datetime.now().strftime("%H:%M:%S")
-            # Speed per move is set on the robot (motor_config.h), so only
-            # the command word is sent.
+            # Movement speeds are set on the robot. TURN_TO carries its heading.
             payload = command
 
             if not quiet:
@@ -1140,6 +1515,9 @@ class RobotGUI:
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
                 self.log(f"Publish failed (code {result.rc})")
                 return False
+            observer = getattr(self.navigator, 'motion_received', None)
+            if observer is not None:
+                observer(command)
             return True
             
         except Exception as e:
@@ -1150,6 +1528,7 @@ class RobotGUI:
 
     def log(self, message):
         self.log_file.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {message}\n")
+        self.log_file.flush()
         self.log_text.config(state='normal')
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.config(state='disabled')

@@ -390,7 +390,10 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
 #endif
         if (absi(err) <= MC_HEADING_TOL_TENTHS) {                   /* FR-41 tolerance */
             set_result(m, out, MR_HEADING_REACHED, (uint8_t)m->active_seq);
-            begin_ramp_down(m); s = MS_RAMP_DOWN;
+            // Brake locally at the target instead of continuing to rotate
+            // through a ramp-down or waiting for a laptop STOP over MQTT.
+            hard_stop(m, MS_IDLE, now_ms, out);
+            return;
         } else {
             int mag = absi(err) > MC_ROT_SLOW_ZONE_TENTHS ? MC_ROT_FAST_PCT : MC_ROT_SLOW_PCT;
             wz = err > 0 ? mag : -mag;

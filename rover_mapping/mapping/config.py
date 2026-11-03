@@ -29,7 +29,7 @@ def turn_steps(a: int, b: int) -> int:
     return min(diff, 4 - diff)
 
 # ---- Occupancy grid and rover pose (see mapping/occupancy.py, mapping/pose.py) ----------------
-ARRIVAL_RANGE_CM = 45.0      # camera lens -> marker centre when the rover has stopped (Buddy 1: 450 mm)
+ARRIVAL_RANGE_CM = 50.0      # camera lens -> marker centre when the rover has stopped (500 mm)
 import math as _math
 import os as _os
 
@@ -49,8 +49,8 @@ def camera_ground_cm(range_mm: float) -> float:
     return _math.sqrt(max(r * r - CAMERA_HEIGHT_CM ** 2, 0.0))
 
 
-# Rover centre -> marker centre when it has stopped. From the geometry above (450 mm lens range, 32.5 cm up,
-# camera 12 cm ahead of the centre) this is about 43 cm, which matches the "about 45 cm" seen on the rover.
+# Rover centre -> marker centre when it has stopped. From the geometry above (500 mm lens range, 32.5 cm up,
+# camera 12 cm ahead of the centre) this is about 50 cm.
 # Replace with a MEASURED value; the occupancy map shifts by exactly that amount. The arrival rule itself
-# (450 mm) is being replaced by Buddy 1, see MAPPING_INTEGRATION.md. Env override is for simulations.
+# (500 mm) matches the laptop navigator. Env override is for simulations.
 STANDOFF_CM = float(_os.environ.get("MAPPING_STANDOFF_CM", camera_ground_cm(ARRIVAL_RANGE_CM * 10) + CAMERA_FORWARD_CM))

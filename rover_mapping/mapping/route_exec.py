@@ -1,7 +1,7 @@
 """Phase 2: drive the planned route with Buddy 1's existing turn / drive / arrival code.
 
 Her LaptopNavigator (dashboard/laptop_navigation.py) already knows how to turn to a map heading,
-drive forward, stop 450 mm from the camera lens to the marker, and confirm arrival with 5 frames.
+drive forward, stop 500 mm from the camera lens to the marker, and confirm arrival with 5 frames.
 It gets its next move from `navigator.explorer`. For a route we temporarily plug in a
 `RouteExplorer`, an object with the same interface as her DFSExplorer whose "next move" is the next
 segment of my A* route and whose "arrival" reports SegmentDone to my controller. None of her files
@@ -176,6 +176,7 @@ class RouteRunner:
             raise ValueError(f"Map is not complete (state {b.ctrl.state.value})")
         self._hook_blockage(nav)
         saved_explorer, saved_zero = nav.explorer, nav.map_zero_deg
+        saved_grid_origin = getattr(nav, 'grid_mission_origin', None)
         nav.explorer = RouteExplorer(b)
         try:
             nav.start(1, threshold_mm or nav.threshold_mm or 500)   # camera/sensor checks live here
@@ -183,6 +184,8 @@ class RouteRunner:
             nav.explorer = saved_explorer
             raise
         nav.map_zero_deg = saved_zero                    # keep the map frame of the exploration
+        if saved_grid_origin is not None:
+            nav.grid_mission_origin = saved_grid_origin
         if not b.set_target(target_id):
             nav.stop("Route could not be planned")
             nav.explorer = saved_explorer
@@ -215,6 +218,8 @@ class RouteRunner:
 
         def tick():
             ex, sensor = nav.explorer, nav.sensor
+            if getattr(nav, 'grid', None) is not None and nav.handle_front_obstacle():
+                return original()
             if not (isinstance(ex, RouteExplorer) and nav.active and sensor is not None
                     and sensor.stop_required):
                 return original()

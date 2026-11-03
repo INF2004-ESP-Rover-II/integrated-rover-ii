@@ -39,6 +39,7 @@ class FakeGUI:
         self.tof_state_labels = dict(self.tof_labels)
         self.tof_summary_label = self.tof_age_label = label
         self.update_estop_ui = lambda: None
+        self.update_current_marker = lambda: None
 
     def cancel_heartbeat(self):
         self.heartbeat = False
