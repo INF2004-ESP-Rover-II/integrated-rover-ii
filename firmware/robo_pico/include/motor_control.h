@@ -95,6 +95,12 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out);
 void mc_set_deadband(int wheel, int pct);
 int  mc_get_deadband(int wheel);
 
+/** Per-wheel trim 0..100 %, separately for forward and backward spin
+ *  (wheel -1 = all). Bench tuning: call while the rover is stopped. */
+void mc_set_trim(int wheel, int fwd_pct, int rev_pct);
+int  mc_get_trim_fwd(int wheel);
+int  mc_get_trim_rev(int wheel);
+
 /** Start boost: pct of power for ms when a wheel starts or reverses (0 = off). */
 void mc_set_kick(int pct, int ms);
 int  mc_get_kick_pct(void);
