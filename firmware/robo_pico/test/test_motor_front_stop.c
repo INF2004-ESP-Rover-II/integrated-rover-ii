@@ -9,6 +9,7 @@
 #include "motor_driver.h"
 #include "motor_hw.h"
 #include "safety_interlock.h"
+#include "../../common/obstacle_threshold.h"
 
 static uint32_t clock_ms = 100;
 static unsigned int applied;
@@ -34,50 +35,61 @@ void motor_hw_claw(mh_dir_t dir) { (void)dir; }
 
 int main(void) {
     assert(motor_init() == MOTOR_OK);
-    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_ERR_SAFETY);
-    motor_safety_receive(false, clock_ms);
-    assert(motor_safety_reset());
+    // No packets or IMU at startup must not lock manual movement.
+    assert(!motor_safety_is_latched());
     assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
     tick(NULL);
-    assert(motor_motion_state() == MS_MANUAL);
 
+    const uint16_t ranges[] = {0, 1, 149, 150, 151, 199, 200, 1000, 1023, 65535};
+    for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i) {
+        for (int fault = 0; fault <= 1; ++fault) {
+            bool detected = front_obstacle_detected(ranges[i], fault != 0);
+            bool expected = !fault && ranges[i] > 0 && ranges[i] < 150;
+            assert(detected == expected);
+            motor_safety_receive(detected, clock_ms);
+            assert(!motor_safety_is_latched());
+            assert(motor_set_direction(DIRECTION_FORWARD, 50) ==
+                   (expected ? MOTOR_ERR_FRONT_BLOCKED : MOTOR_OK));
+            for (int dir = DIRECTION_BACKWARD; dir < DIRECTION_STOP; ++dir)
+                assert(motor_set_direction((motor_direction_t)dir, 50) == MOTOR_OK);
+        }
+    }
+    motor_safety_receive(false, clock_ms);
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+    tick(NULL);
     motor_safety_receive(true, clock_ms);
-    assert(!motor_safety_is_latched());
     assert(motor_motion_state() == MS_IDLE);
     for (int i = 0; i < MC_WHEELS; ++i) assert(output.wheel[i] == 0);
-    assert(motor_take_front_stop());
-    assert(!motor_take_front_stop());
-    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_ERR_FRONT_BLOCKED);
-
-    for (int dir = DIRECTION_BACKWARD; dir < DIRECTION_STOP; ++dir) {
-        assert(motor_set_direction((motor_direction_t)dir, 50) == MOTOR_OK);
-        unsigned int before = applied;
-        motor_safety_receive(true, clock_ms);
-        assert(applied == before);  /* Continuing detection must not stop escape. */
-        assert(motor_motion_state() == MS_MANUAL);
-        assert(!motor_take_front_stop());
-    }
-    assert(arm_set_direction(ARM_UP) == MOTOR_OK);
-    assert(claw_set_direction(CLAW_OPEN) == MOTOR_OK);
-
+    assert(motor_set_direction(DIRECTION_BACKWARD, 50) == MOTOR_OK);
+    unsigned before = applied;
     motor_safety_receive(false, clock_ms);
-    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
     motor_safety_receive(true, clock_ms);
-    motor_safety_receive(false, clock_ms);
-    assert(motor_take_front_stop());  /* Report even a brief detection. */
-    assert(motor_motion_state() == MS_IDLE);
-    tick(NULL);
-    assert(motor_motion_state() == MS_IDLE); /* Clearing never resumes an old move. */
-    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+    assert(applied == before); // New front detections never interrupt reverse.
 
+    // Sensor silence removes old forward inhibition without creating a latch.
     clock_ms += SAFETY_PACKET_TIMEOUT_MS + 1;
     motor_safety_poll();
+    assert(!motor_safety_is_latched());
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+    // An expired command stops, and the next command works without reset.
+    clock_ms += 1000;
+    tick(NULL);
+    assert(motor_motion_state() == MS_IDLE);
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+
+    // Only explicit manual E-STOP locks every direction; readings cannot release it.
+    motor_manual_estop();
     assert(motor_safety_is_latched());
+    motor_safety_receive(false, clock_ms);
+    assert(motor_safety_is_latched());
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_ERR_SAFETY);
     assert(motor_set_direction(DIRECTION_BACKWARD, 50) == MOTOR_ERR_SAFETY);
-    motor_safety_receive(true, clock_ms);
     assert(motor_safety_reset());
-    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_ERR_FRONT_BLOCKED);
-    assert(motor_set_direction(DIRECTION_BACKWARD, 50) == MOTOR_OK);
-    puts("Front stop driver tests passed");
+    assert(!motor_safety_is_latched());
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+    motor_link_lost();
+    assert(!motor_safety_is_latched());
+    assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
+    puts("Front range, timeout and manual E-STOP tests passed");
     return 0;
 }

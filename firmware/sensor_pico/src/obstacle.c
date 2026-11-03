@@ -98,5 +98,7 @@ void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
 
     // Keep proximity flags for all directions, but only front proximity stops.
     // Missing/invalid readings do not participate in obstacle stopping.
-    state->stop_required = (state->urgent_mask & (1u << TOF_FRONT)) != 0;
+    state->stop_required = front_obstacle_detected(
+        tof_distance_get(state->distance_bits, TOF_FRONT),
+        (state->fault_mask & (1u << TOF_FRONT)) != 0);
 }

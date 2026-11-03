@@ -27,7 +27,8 @@
 
 // Provisional obstacle thresholds. Validate against measured stopping distance.
 // A blocked exit is a navigation event; only front urgency requests a proximity stop.
-#define OBSTACLE_URGENT_MM      150u
+#include "../../common/obstacle_threshold.h"
+#define OBSTACLE_URGENT_MM      FRONT_STOP_DISTANCE_MM
 #define OBSTACLE_BLOCKED_MM     400u
 #define OBSTACLE_HYSTERESIS_MM   50u
 #define OBSTACLE_STALE_MS       300u

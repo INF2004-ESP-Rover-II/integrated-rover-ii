@@ -190,7 +190,7 @@ static void test_ramp_and_normal_stop(void) {
 }
 
 static void test_command_timeout(void) {
-    puts("FR-42 command timeout -> SAFE STOP, refresh keeps it alive");
+    puts("FR-42 command timeout -> IDLE, refresh keeps it alive");
     sim_t s; sim_init(&s, 0); sim_tick(&s); mc_set_system_ready(&s.mc, true);
     uint32_t w = mc_pack_manual_drive(1, 60, 0, 0);
     sim_cmd(&s, w);
@@ -199,7 +199,7 @@ static void test_command_timeout(void) {
     int ticks = 0;
     while (mc_state(&s.mc) == MS_MANUAL && ticks < 100) { sim_tick(&s); ticks++; }
     uint32_t stopped_after = (uint32_t)ticks * MC_PERIOD_MS;
-    CHECK(mc_state(&s.mc) == MS_SAFE_STOP, "SAFE STOP after refresh stops");
+    CHECK(mc_state(&s.mc) == MS_IDLE, "IDLE after refresh stops");
     CHECK(stopped_after > MC_CMD_TIMEOUT_MS - 100 && stopped_after <= MC_CMD_TIMEOUT_MS + 2 * MC_PERIOD_MS + 100,
           "stopped about %u ms after last refresh window (got %u)", MC_CMD_TIMEOUT_MS, stopped_after);
     CHECK((s.out.fault_set & FAULT_CMD_TIMEOUT) && s.out.brake, "timeout fault + brake");
@@ -240,7 +240,7 @@ static void test_operator_stop(void) {
 }
 
 static void test_heading_stale_and_wrap(void) {
-    puts("stale heading -> SAFE STOP; 10-bit wrap can't make old heading look fresh");
+    puts("stale heading -> IDLE; 10-bit wrap can't make old heading look fresh");
     sim_t s; sim_init(&s, 0); sim_tick(&s);
     uint32_t w = mc_pack_auto_drive(1, 50, 0);
     sim_cmd(&s, w);
@@ -248,7 +248,7 @@ static void test_heading_stale_and_wrap(void) {
     s.imu_alive = false;                                   /* UART goes quiet */
     int ticks = 0;
     while (mc_state(&s.mc) == MS_AUTO_DRIVE && ticks < 50) { sim_tick(&s); if (ticks % 5 == 0) sim_cmd(&s, w); ticks++; }
-    CHECK(mc_state(&s.mc) == MS_SAFE_STOP, "SAFE STOP on stale heading");
+    CHECK(mc_state(&s.mc) == MS_IDLE, "IDLE on stale heading");
     CHECK(ticks * (int)MC_PERIOD_MS <= (int)MC_HEADING_STALE_MS + 60, "within ~%u ms (got %d)", MC_HEADING_STALE_MS, ticks * (int)MC_PERIOD_MS);
     /* keep the old word for > 1024 ms: the rolling stamp wraps, latch must hold */
     bool ever_fresh = false;

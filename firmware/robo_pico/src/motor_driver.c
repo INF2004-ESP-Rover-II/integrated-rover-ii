@@ -48,7 +48,9 @@
 #define REFRESH_WINDOW_MS (TIMEOUT_MS - MC_CMD_TIMEOUT_MS)
 
 static mc_t               s_mc;
-static safety_interlock_t s_safety = {.latched = true, .stop_requested = true};
+static bool s_manual_estop;
+static uint32_t s_last_sensor_ms;
+static bool s_forward_driving;
 static bool s_front_blocked;
 static bool s_front_stop_pending;
 static struct repeating_timer s_timer;
@@ -117,8 +119,9 @@ static void hard_stop(mc_stop_kind_t kind) {
     mc_immediate_stop(&s_mc, kind, now_ms(), &out);
     motor_hw_apply(&out);
     s_word = 0;
+    s_forward_driving = false;
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
-        s_safe_reason = (kind == MC_STOP_LINK_LOST) ? MOTOR_SAFE_LINK_LOST : MOTOR_SAFE_SENSOR_LOCK;
+        s_safe_reason = MOTOR_SAFE_MANUAL_ESTOP;
 }
 
 static int clamp100(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
@@ -154,8 +157,9 @@ motor_error_t motor_init(void) {
     motor_hw_dir_uart_init();
 #endif
     mc_init(&s_mc);
-    mc_set_system_ready(&s_mc, false); /* locked until the safety interlock is ready */
-    safety_interlock_init(&s_safety);
+    mc_set_system_ready(&s_mc, true);
+    s_manual_estop = false;
+    s_forward_driving = false;
     s_front_blocked = false;
     s_front_stop_pending = false;
     s_word = 0;
@@ -194,9 +198,9 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
 
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched && direction == DIRECTION_FORWARD && s_front_blocked) {
+    if (!s_manual_estop && direction == DIRECTION_FORWARD && s_front_blocked) {
         r = MOTOR_ERR_FRONT_BLOCKED;
-    } else if (!s_safety.latched) {
+    } else if (!s_manual_estop) {
         /* Same move again = refresh (same word). A different move gets a
          * new sequence number. */
         uint32_t word = 0;
@@ -207,6 +211,7 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
         r = submit(word);
         if (r == MOTOR_OK) {
             s_word = word;
+            s_forward_driving = direction == DIRECTION_FORWARD;
             s_last_call_ms = now_ms();
         }
     }
@@ -220,9 +225,10 @@ motor_error_t motor_parallel_park(int direction, int power_percent) {
     int p = power_percent > 0 ? clamp100(power_percent) : MC_PARK_PCT;
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched) {
+    if (!s_manual_estop) {
         uint32_t word = mc_pack_manual_park(next_seq(), (int8_t)(direction < 0 ? -p : p));
         r = submit(word);
+        if (r == MOTOR_OK) s_forward_driving = false;
         s_word = 0;                    /* park ends by itself: no auto refresh */
     }
     restore_interrupts(irq);
@@ -234,7 +240,7 @@ motor_error_t motor_parallel_park(int direction, int power_percent) {
 motor_error_t arm_set_direction(arm_direction_t direction) {
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched || direction == ARM_STOP) {
+    if (!s_manual_estop || direction == ARM_STOP) {
         motor_hw_arm(direction == ARM_DOWN ? MH_FWD : direction == ARM_UP ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
@@ -245,7 +251,7 @@ motor_error_t arm_set_direction(arm_direction_t direction) {
 motor_error_t claw_set_direction(claw_direction_t direction) {
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched || direction == CLAW_STOP) {
+    if (!s_manual_estop || direction == CLAW_STOP) {
         motor_hw_claw(direction == CLAW_CLOSE ? MH_FWD : direction == CLAW_OPEN ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
@@ -266,27 +272,24 @@ motor_error_t motor_emergency_stop(void) {
     return MOTOR_OK;
 }
 
-static void on_latched(void) {
-    /* Lost sensor link: SAFE STOP, no ramp. */
+void motor_manual_estop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    s_manual_estop = true;
     hard_stop(MC_STOP_ESTOP);
     motor_hw_arm(MH_OFF);
     motor_hw_claw(MH_OFF);
-    mc_set_system_ready(&s_mc, false);
+    restore_interrupts(irq);
 }
 
-/* Called from the UART interrupt: short, no printf. */
-void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
+/* Sensor packets only control the temporary forward guard. */
+void motor_safety_receive(bool front_blocked, uint32_t receive_ms) {
     uint32_t irq = save_and_disable_interrupts();
-    bool was = s_safety.latched;
-    // A front obstacle is a directional inhibition, not a global safety lock.
-    // Stop on its rising edge so subsequent escape commands remain usable.
-    if (stop_requested && !s_front_blocked) {
-        hard_stop(MC_STOP_OPERATOR);
+    if (front_blocked && !s_front_blocked) {
+        if (s_forward_driving) hard_stop(MC_STOP_OPERATOR);
         s_front_stop_pending = true;
     }
-    s_front_blocked = stop_requested;
-    safety_interlock_receive(&s_safety, false, receive_ms);
-    if (s_safety.latched && !was) on_latched();
+    s_front_blocked = front_blocked;
+    s_last_sensor_ms = receive_ms;
     restore_interrupts(irq);
 }
 
@@ -300,27 +303,22 @@ bool motor_take_front_stop(void) {
 
 void motor_safety_poll(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool was = s_safety.latched;
-    safety_interlock_poll(&s_safety, now_ms());
-    if (s_safety.latched && !was) on_latched();
+    // Missing readings mean no detected obstacle, never a safety latch.
+    if ((uint32_t)(now_ms() - s_last_sensor_ms) > SAFETY_PACKET_TIMEOUT_MS)
+        s_front_blocked = false;
     restore_interrupts(irq);
 }
 
-/* Laptop link lost (FR-08): stop at once. If the rover was moving this is
- * SAFE STOP (statechart 6.6): it will not move again until Reset Safety. */
 void motor_link_lost(void) {
-    uint32_t irq = save_and_disable_interrupts();
-    hard_stop(MC_STOP_LINK_LOST);
-    motor_hw_arm(MH_OFF);
-    motor_hw_claw(MH_OFF);
-    restore_interrupts(irq);
+    // Communications loss stops motion without requiring a safety reset.
+    motor_emergency_stop();
 }
 
 const char *motor_safe_stop_reason(void) {
     switch (s_safe_reason) {
     case MOTOR_SAFE_CMD_TIMEOUT:   return "no command for 0.8 s (link lost?)";
     case MOTOR_SAFE_LINK_LOST:     return "laptop link lost";
-    case MOTOR_SAFE_SENSOR_LOCK:   return "collision stop / sensor link lost";
+    case MOTOR_SAFE_MANUAL_ESTOP:  return "manual dashboard E-STOP";
     case MOTOR_SAFE_HEADING_STALE: return "heading too old";
     default:                       return "unknown";
     }
@@ -328,14 +326,15 @@ const char *motor_safe_stop_reason(void) {
 
 bool motor_safety_is_latched(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool l = s_safety.latched;
+    bool l = s_manual_estop;
     restore_interrupts(irq);
     return l;
 }
 
 bool motor_safety_reset(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool ready = safety_interlock_reset(&s_safety, now_ms());
+    bool ready = true;
+    s_manual_estop = false;
     hard_stop(MC_STOP_OPERATOR);       /* a reset never restarts an old move */
     if (ready) {
         mc_out_t out;

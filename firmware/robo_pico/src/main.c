@@ -6,6 +6,7 @@
 #include "hardware/pwm.h"
 #include "config.h"
 #include "motor_driver.h"
+#include "../../common/obstacle_threshold.h"
 #include "wifi_mqtt.h"
 #include "uart_protocol.h"
 #include "lwip/timeouts.h"
@@ -64,18 +65,10 @@ static bool link_lost = true; // FR-08: true until the first laptop heartbeat
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
     // Runs in the UART ISR: no MQTT, printf, sleeps, or reverse-thrust braking.
-    const uint8_t front_mask = 0x02u; // UART bits: left=1, front=2, right=4.
-    // Front proximity stops without a lock and inhibits FORWARD only.
-    // Unavailable/zero readings and reported ToF faults do not request a stop.
-    
-    // bool stop_requested = packet->stop_required != 0 || (packet->urgent_mask & front_mask) != 0;
-    uint8_t urgent_mask = (uint8_t)((packet->obstacle_flags >> 3u) & 0x07u);
-
-    bool explicit_stop = (packet->obstacle_flags & (1u << 9u)) != 0;
-
-    bool stop_requested = explicit_stop || (urgent_mask & front_mask) != 0;
-        
-    motor_safety_receive(stop_requested, receive_ms);
+    uint16_t front_mm = (uint16_t)((packet->tof_bits >> 10u) & 0x3FFu);
+    bool front_fault = (packet->obstacle_flags & (2u << 6u)) != 0;
+    // Read the actual range; old urgent/STOP flags may retain hysteresis.
+    motor_safety_receive(front_obstacle_detected(front_mm, front_fault), receive_ms);
     motor_heading_update(packet->heading, packet->imu_status == 0); // heading hold (FR-41)
 }
 
@@ -104,7 +97,7 @@ static void service_safety_stop(void)
         if (!safety_lock_reported)
         {
             safety_lock_reported = true;
-            printf("[SAFETY] Motors locked: restore sensor link and send RESET_SAFETY\n");
+            printf("[SAFETY] Manual dashboard E-STOP active\n");
             mqtt_publish_status("SAFETY_LOCKED");
         }
     }
@@ -183,6 +176,12 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+    if (strcmp(cmd_buffer, "ESTOP") == 0)
+    {
+        motor_manual_estop();
+        service_safety_stop();
+        return;
+    }
     if (strcmp(cmd_buffer, "RESET_SAFETY") == 0)
     {
         autonomous_mode = false;
@@ -205,21 +204,6 @@ static void process_command(const char *command)
     {
         mqtt_publish_status("SAFETY_LOCKED");
         return;
-    }
-
-    // Manual mode safety checks for ultrasonic obstacles
-    if (!autonomous_mode && sensor_data_valid)
-    {
-        if (strncmp(cmd_buffer, "FORWARD", 7) == 0 && latest_sensors.ultrasonic_front <= 30)
-        {
-            printf("[SAFETY] Forward blocked - front obstacle at %dmm\n", latest_sensors.ultrasonic_front);
-            return;
-        }
-        if (strncmp(cmd_buffer, "BACKWARD", 8) == 0 && latest_sensors.ultrasonic_back <= 30)
-        {
-            printf("[SAFETY] Backward blocked - back obstacle at %dmm\n", latest_sensors.ultrasonic_back);
-            return;
-        }
     }
 
     if (strncmp(cmd_buffer, "FORWARD", 7) == 0)
@@ -382,7 +366,8 @@ static void publish_sensor_data(void)
              "\"urgent_mask\":%u,"
              "\"fault_mask\":%u,"
              "\"stop_required\":%s,"
-             "\"age_ms\":%lu"
+             "\"age_ms\":%lu,"
+             "\"forward_threshold_mm\":%u"
              "}"
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
@@ -406,7 +391,8 @@ static void publish_sensor_data(void)
             (unsigned)((latest_sensors.obstacle_flags >> 3u) & 0x07u),
             (unsigned)((latest_sensors.obstacle_flags >> 6u) & 0x07u),
             (latest_sensors.obstacle_flags & (1u << 9u)) ? "true" : "false",
-             (unsigned long)(to_ms_since_boot(get_absolute_time()) - last_sensor_packet_ms));
+             (unsigned long)(to_ms_since_boot(get_absolute_time()) - last_sensor_packet_ms),
+             (unsigned)FRONT_STOP_DISTANCE_MM);
 
     mqtt_publish_telemetry(telemetry);
 }

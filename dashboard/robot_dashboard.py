@@ -462,8 +462,12 @@ class RobotGUI:
             self.tof_state_labels[direction].config(text=state, fg=color)
 
         stop = obstacle.get('stop_required')
-        if type(stop) is bool:
-            self.front_obstacle_snapshot = stop or (urgent is not None and bool(urgent & 2))
+        threshold = obstacle.get('forward_threshold_mm', 150)
+        if type(threshold) is not int or not 1 <= threshold <= 1000:
+            threshold = 150
+        front = distances.get('front')
+        self.front_obstacle_snapshot = (type(front) is int and 0 < front < threshold and
+                                       not (faults is not None and faults & 2))
         stop_text = "YES" if stop is True else ("NO" if stop is False else "--")
         blocked_text = f"0x{blocked:02X}" if blocked is not None else "--"
         urgent_text = f"0x{urgent:02X}" if urgent is not None else "--"
@@ -480,14 +484,14 @@ class RobotGUI:
         changed = blocked != self.front_blocked
         self.front_blocked = blocked
         if blocked and changed:
-            self.forward_requires_release = 'w' in self.pressed_keys
-            self.cancel_heartbeat()
-            self.active_command = None
-            self.navigator.stop("Front obstacle")
-            self.auto_mode.set(False)
-            self.send_command("STOP", quiet=True)
-            self.log("Front obstacle: stopped. W disabled; other keys remain available.")
+            if self.active_command == "FORWARD":
+                self.stop_hold()
+            if self.navigator.active:
+                self.navigator.stop("Front obstacle")
+                self.auto_mode.set(False)
+            self.log("Front obstacle: W disabled; other keys remain available.")
         elif changed:
+            self.forward_requires_release = False
             self.log("Front clear: W enabled. Press W again to drive forward.")
 
     def update_odometry(self, command, dt):
@@ -536,6 +540,8 @@ class RobotGUI:
         if (self.front_obstacle_snapshot is not None and self.last_tof_rx is not None and
                 time.time() - self.last_tof_rx <= TOF_UART_STALE_MS / 1000):
             self.set_front_blocked(self.front_obstacle_snapshot)
+        else:
+            self.set_front_blocked(False)
         self.navigator.tick()
         self.mapping.sync()              # Subsystem 4: read the DFS graph / drive routes
         if not self.navigator.active:
@@ -634,17 +640,17 @@ class RobotGUI:
         self.auto_mode.set(False)
         if status == "SAFETY_READY":
             self.last_refused = None
-            self.log("Safety reset accepted. Press a movement key to drive.")
+            self.log("Manual E-Stop released. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
-            self.log("Safety reset refused: check the Sensor Pico UART connection.")
+            self.log("Manual E-Stop reset refused.")
         else:
-            self.log("Safety locked: restore the sensor link, release control keys, then click Reset Safety.")
+            self.log("Manual E-Stop active.")
 
     def trigger_estop(self):
         """Trigger emergency stop with 3-second lockout"""
         self.navigator.stop("Emergency stop")
         # Immediately send STOP command
-        self.send_command("STOP")
+        self.send_command("ESTOP")
         
         # Cancel any active heartbeat
         self.cancel_heartbeat()
@@ -682,14 +688,14 @@ class RobotGUI:
             else:
                 # Lockout expired
                 self.estop_active = False
+                self.send_command("RESET_SAFETY", quiet=True)
                 self.estop_status_label.config(text="✓ Ready", fg='#2ecc71', bg='#34495e')
         else:
             self.estop_status_label.config(text="✓ Ready", fg='#2ecc71', bg='#34495e')
 
     def start_hold(self, cmd):
         """Start driving with cmd and keep resending it while held"""
-        if cmd == "FORWARD" and (self.front_blocked or self.forward_requires_release):
-            self.forward_requires_release = True
+        if cmd == "FORWARD" and self.front_blocked:
             self.log("W disabled: front obstacle. Other movement keys remain available.")
             return
         old = self.active_command
@@ -779,6 +785,7 @@ class RobotGUI:
             else:
                 # Lockout expired, clear E-Stop
                 self.estop_active = False
+                self.send_command("RESET_SAFETY", quiet=True)
                 self.update_estop_ui()
                 self.log("E-Stop lockout expired - movement enabled")
 
@@ -823,7 +830,7 @@ class RobotGUI:
 
         for other in self.pressed_keys:
             if other in KEYMAP and other not in self.release_jobs:
-                if KEYMAP[other] == "FORWARD" and (self.front_blocked or self.forward_requires_release):
+                if KEYMAP[other] == "FORWARD" and self.front_blocked:
                     continue
                 self.start_hold(KEYMAP[other])
                 return
@@ -972,8 +979,10 @@ class RobotGUI:
             
             if payload in {"FRONT_STOPPED", "FORWARD_BLOCKED"}:
                 self.robot_status_label.config(fg='#f39c12')
-                self.front_obstacle_snapshot = None  # Await telemetry newer than this stop.
-                self.set_front_blocked(True)
+                # Status messages can arrive after a newer clear range. Never
+                # latch W from an old status; ranges own the forward guard.
+                if self.active_command == "FORWARD":
+                    self.stop_hold()
             elif payload in {"SAFETY_LOCKED", "SAFETY_RESET_REFUSED", "SAFETY_READY"}:
                 self.robot_status_label.config(
                     fg='#27ae60' if payload == "SAFETY_READY" else '#e74c3c')

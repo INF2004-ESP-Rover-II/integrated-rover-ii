@@ -60,8 +60,11 @@ motor_error_t claw_set_direction(claw_direction_t direction);
 motor_error_t motor_emergency_stop(void);
 
 /** Front proximity stops once and inhibits FORWARD without latching a lock.
- *  Packet loss still uses the safety lock. Called from the UART interrupt. */
+ *  Sensor faults and packet loss never latch a safety lock.
+ *  Called from the UART interrupt. */
 void motor_safety_receive(bool stop_requested, uint32_t receive_ms);
+/** Latch a safety lock only for the explicit dashboard ESTOP command. */
+void motor_manual_estop(void);
 /** Consume a front-stop event for reporting outside the UART interrupt. */
 bool motor_take_front_stop(void);
 void motor_safety_poll(void);
@@ -78,7 +81,7 @@ void motor_heading_update(float heading_deg, bool valid);
 int motor_motion_state(void);
 #define MOTOR_STATE_SAFE_STOP 7
 
-/** Laptop link lost (FR-08): stop now; SAFE STOP if the rover was moving. */
+/** Laptop link lost: stop without latching a safety lock. */
 void motor_link_lost(void);
 
 /** Why the rover is in SAFE STOP, as short text for the dashboard. */
@@ -86,7 +89,7 @@ typedef enum {
     MOTOR_SAFE_NONE = 0,
     MOTOR_SAFE_CMD_TIMEOUT,    /* moving, then no command for 0.8 s (FR-42) */
     MOTOR_SAFE_LINK_LOST,      /* laptop heartbeat lost while moving (FR-08) */
-    MOTOR_SAFE_SENSOR_LOCK,    /* Collision Detection STOP / sensor link lost */
+    MOTOR_SAFE_MANUAL_ESTOP,   /* Explicit manual dashboard E-STOP */
     MOTOR_SAFE_HEADING_STALE   /* heading too old (auto moves)               */
 } motor_safe_reason_t;
 const char *motor_safe_stop_reason(void);

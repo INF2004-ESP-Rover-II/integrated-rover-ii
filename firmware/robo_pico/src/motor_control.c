@@ -300,7 +300,7 @@ void mc_immediate_stop(mc_t *m, mc_stop_kind_t kind, uint32_t now_ms, mc_out_t *
     motor_state_t s = (motor_state_t)m->state;
     bool moving = is_moving_state(s);
 
-    if (kind == MC_STOP_OPERATOR) {
+    if (kind != MC_STOP_ESTOP) {
         /* Operator stop: PWM 0 at once, back to IDLE, map/mission state untouched. */
         hard_stop(m, (s == MS_SAFE_STOP || s == MS_ZERO_GYRO) ? s : MS_IDLE, now_ms, out);
         return;
@@ -329,12 +329,12 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
         bool needs_heading = (s != MS_MANUAL) || !MC_ALLOW_MANUAL_WITHOUT_HEADING;
         if (needs_heading && !heading_ok(m)) {
             out->fault_set |= FAULT_HEADING_STALE;
-            hard_stop(m, MS_SAFE_STOP, now_ms, out);
+            hard_stop(m, MS_IDLE, now_ms, out);
             return;
         }
         if ((uint32_t)(now_ms - m->last_cmd_ms) > MC_CMD_TIMEOUT_MS) {   /* FR-42 */
             out->fault_set |= FAULT_CMD_TIMEOUT;
-            hard_stop(m, MS_SAFE_STOP, now_ms, out);
+            hard_stop(m, MS_IDLE, now_ms, out);
             return;
         }
     }
