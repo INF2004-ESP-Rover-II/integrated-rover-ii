@@ -86,6 +86,9 @@ class RobotGUI:
         # Press/hold state
         self.active_command = None
         self.heartbeat_job = None
+        self.front_blocked = False
+        self.front_obstacle_snapshot = None
+        self.forward_requires_release = False
         self.pressed_keys = set()
         self.release_jobs = {}
 
@@ -367,6 +370,7 @@ class RobotGUI:
     def clear_tof_readings(self, reason="Waiting"):
         """Remove old numerical readings rather than displaying them as live."""
         self.last_tof_rx = None
+        self.front_obstacle_snapshot = None
         for direction in ('left', 'front', 'right'):
             self.tof_labels[direction].config(text="--", fg='#95a5a6')
             self.tof_state_labels[direction].config(text=reason, fg='#95a5a6')
@@ -416,6 +420,8 @@ class RobotGUI:
             self.tof_state_labels[direction].config(text=state, fg=color)
 
         stop = obstacle.get('stop_required')
+        if type(stop) is bool:
+            self.front_obstacle_snapshot = stop or (urgent is not None and bool(urgent & 2))
         stop_text = "YES" if stop is True else ("NO" if stop is False else "--")
         blocked_text = f"0x{blocked:02X}" if blocked is not None else "--"
         urgent_text = f"0x{urgent:02X}" if urgent is not None else "--"
@@ -425,8 +431,22 @@ class RobotGUI:
         age_text = f"{age_ms:.0f} ms" if age_known else "unknown"
         self.tof_age_label.config(
             text=f"Sensor packet age: {age_text}   |   -- = no target / unavailable; see each label. "
-                 "Stop request is separate from the motor lock.")
+                 "Front stop disables W only; other movement keys remain available.")
         self.last_tof_rx = time.time()
+
+    def set_front_blocked(self, blocked):
+        changed = blocked != self.front_blocked
+        self.front_blocked = blocked
+        if blocked and changed:
+            self.forward_requires_release = 'w' in self.pressed_keys
+            self.cancel_heartbeat()
+            self.active_command = None
+            self.navigator.stop("Front obstacle")
+            self.auto_mode.set(False)
+            self.send_command("STOP", quiet=True)
+            self.log("Front obstacle: stopped. W disabled; other keys remain available.")
+        elif changed:
+            self.log("Front clear: W enabled. Press W again to drive forward.")
 
     def update_odometry(self, command, dt):
         """Update robot position based on movement command"""
@@ -499,6 +519,9 @@ class RobotGUI:
         return self.send_command(command, quiet=True)
 
     def navigation_tick(self):
+        if (self.front_obstacle_snapshot is not None and self.last_tof_rx is not None and
+                time.time() - self.last_tof_rx <= TOF_UART_STALE_MS / 1000):
+            self.set_front_blocked(self.front_obstacle_snapshot)
         self.navigator.tick()
         if not self.navigator.active:
             self.auto_mode.set(False)
@@ -594,9 +617,9 @@ class RobotGUI:
         if status == "SAFETY_READY":
             self.log("Safety reset accepted. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
-            self.log("Safety reset refused: check the front stop request and Sensor Pico UART connection.")
+            self.log("Safety reset refused: check the Sensor Pico UART connection.")
         else:
-            self.log("Safety locked: clear the front obstacle, release control keys, then click Reset Safety.")
+            self.log("Safety locked: restore the sensor link, release control keys, then click Reset Safety.")
 
     def trigger_estop(self):
         """Trigger emergency stop with 3-second lockout"""
@@ -646,6 +669,10 @@ class RobotGUI:
 
     def start_hold(self, cmd):
         """Start driving with cmd and keep resending it while held"""
+        if cmd == "FORWARD" and (self.front_blocked or self.forward_requires_release):
+            self.forward_requires_release = True
+            self.log("W disabled: front obstacle. Other movement keys remain available.")
+            return
         old = self.active_command
         if old and old != cmd and (old in ARM_COMMANDS or cmd in ARM_COMMANDS):
             # Drive <-> arm: stop the old one first
@@ -768,6 +795,8 @@ class RobotGUI:
         """A real key release (no press arrived during the debounce)"""
         self.release_jobs.pop(ch, None)
         self.pressed_keys.discard(ch)
+        if ch == 'w':
+            self.forward_requires_release = False
 
         cmd = KEYMAP.get(ch)
         if cmd is None or cmd != self.active_command:
@@ -775,6 +804,8 @@ class RobotGUI:
 
         for other in self.pressed_keys:
             if other in KEYMAP and other not in self.release_jobs:
+                if KEYMAP[other] == "FORWARD" and (self.front_blocked or self.forward_requires_release):
+                    continue
                 self.start_hold(KEYMAP[other])
                 return
 
@@ -912,7 +943,11 @@ class RobotGUI:
         if topic == TOPIC_STATUS:
             self.robot_status.set(payload)
             
-            if payload in {"SAFETY_LOCKED", "SAFETY_RESET_REFUSED", "SAFETY_READY"}:
+            if payload in {"FRONT_STOPPED", "FORWARD_BLOCKED"}:
+                self.robot_status_label.config(fg='#f39c12')
+                self.front_obstacle_snapshot = None  # Await telemetry newer than this stop.
+                self.set_front_blocked(True)
+            elif payload in {"SAFETY_LOCKED", "SAFETY_RESET_REFUSED", "SAFETY_READY"}:
                 self.robot_status_label.config(
                     fg='#27ae60' if payload == "SAFETY_READY" else '#e74c3c')
                 self.handle_safety_status(payload)

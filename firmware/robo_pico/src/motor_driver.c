@@ -49,6 +49,8 @@
 
 static mc_t               s_mc;
 static safety_interlock_t s_safety = {.latched = true, .stop_requested = true};
+static bool s_front_blocked;
+static bool s_front_stop_pending;
 static struct repeating_timer s_timer;
 static volatile uint32_t  s_heading_word;   /* one 32-bit store / load */
 static uint8_t            s_hdg_seq;
@@ -144,6 +146,8 @@ motor_error_t motor_init(void) {
     mc_init(&s_mc);
     mc_set_system_ready(&s_mc, false); /* locked until the safety interlock is ready */
     safety_interlock_init(&s_safety);
+    s_front_blocked = false;
+    s_front_stop_pending = false;
     s_word = 0;
 
     if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer))
@@ -180,7 +184,9 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
 
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched) {
+    if (!s_safety.latched && direction == DIRECTION_FORWARD && s_front_blocked) {
+        r = MOTOR_ERR_FRONT_BLOCKED;
+    } else if (!s_safety.latched) {
         /* Same move again = refresh (same word). A different move gets a
          * new sequence number. */
         uint32_t word = 0;
@@ -251,7 +257,7 @@ motor_error_t motor_emergency_stop(void) {
 }
 
 static void on_latched(void) {
-    /* Collision Detection STOP or lost sensor link: SAFE STOP, no ramp. */
+    /* Lost sensor link: SAFE STOP, no ramp. */
     hard_stop(MC_STOP_ESTOP);
     motor_hw_arm(MH_OFF);
     motor_hw_claw(MH_OFF);
@@ -262,9 +268,24 @@ static void on_latched(void) {
 void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
     uint32_t irq = save_and_disable_interrupts();
     bool was = s_safety.latched;
-    safety_interlock_receive(&s_safety, stop_requested, receive_ms);
+    // A front obstacle is a directional inhibition, not a global safety lock.
+    // Stop on its rising edge so subsequent escape commands remain usable.
+    if (stop_requested && !s_front_blocked) {
+        hard_stop(MC_STOP_OPERATOR);
+        s_front_stop_pending = true;
+    }
+    s_front_blocked = stop_requested;
+    safety_interlock_receive(&s_safety, false, receive_ms);
     if (s_safety.latched && !was) on_latched();
     restore_interrupts(irq);
+}
+
+bool motor_take_front_stop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool pending = s_front_stop_pending;
+    s_front_stop_pending = false;
+    restore_interrupts(irq);
+    return pending;
 }
 
 void motor_safety_poll(void) {

@@ -15,7 +15,8 @@ typedef enum {
     MOTOR_OK         =  0,
     MOTOR_ERR_INIT   = -1,
     MOTOR_ERR_PIN    = -2,   /* bad direction or speed */
-    MOTOR_ERR_SAFETY = -5    /* refused: safety lock or SAFE STOP */
+    MOTOR_ERR_SAFETY = -5,   /* refused: safety lock or SAFE STOP */
+    MOTOR_ERR_FRONT_BLOCKED = -6 /* front proximity blocks FORWARD only */
 } motor_error_t;
 
 typedef enum {
@@ -58,9 +59,11 @@ motor_error_t claw_set_direction(claw_direction_t direction);
 /** Stop now: PWM 0 + active brake, then idle (dashboard STOP, end of a turn). */
 motor_error_t motor_emergency_stop(void);
 
-/** Safety lock from the Sensor Pico (Collision Detection).
- *  motor_safety_receive() is called from the UART interrupt. */
+/** Front proximity stops once and inhibits FORWARD without latching a lock.
+ *  Packet loss still uses the safety lock. Called from the UART interrupt. */
 void motor_safety_receive(bool stop_requested, uint32_t receive_ms);
+/** Consume a front-stop event for reporting outside the UART interrupt. */
+bool motor_take_front_stop(void);
 void motor_safety_poll(void);
 bool motor_safety_is_latched(void);
 bool motor_safety_reset(void);
