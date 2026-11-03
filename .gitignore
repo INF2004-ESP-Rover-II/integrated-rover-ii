@@ -13,3 +13,10 @@
 !/tests/test_dashboard_front_stop.py
 !/tests/imu_stubs/
 !/tests/imu_stubs/**
+!/tests/imu_stubs/
+!/tests/imu_stubs/**
+__pycache__/
+dashboard/logs/
+.DS_Store
+build/
+.venv/

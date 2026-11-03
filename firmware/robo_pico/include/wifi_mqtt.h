@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include "lwip/apps/mqtt.h"  // <--- ADD THIS LINE
 
+uint32_t mqtt_last_link_rx_ms(void);
+
 // Error codes
 typedef enum {
     WIFI_OK = 0,

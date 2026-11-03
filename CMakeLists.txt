@@ -18,7 +18,8 @@ cmake_minimum_required(VERSION 3.13)
 set(PICO_BOARD pico_w)
 
 # Import Pico SDK
-include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+# Uses the copy in this repo: works with PICO_SDK_PATH (env or cmake var) or the VS Code extension
+include(${CMAKE_CURRENT_LIST_DIR}/pico_sdk_import.cmake)
 
 # Top-level project
 project(INF2004_Robot_System C CXX ASM)

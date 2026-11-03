@@ -3,16 +3,14 @@ cmake_minimum_required(VERSION 3.13)
 # Set default board type (can be overridden by subdirectories)
 set(PICO_BOARD pico_w)
 
-# Import Pico SDK
-include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
-
-# Top-level project
-project(sensor_node C CXX ASM)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-
-# Initialize SDK once at the top level
-pico_sdk_init()
+# Standalone build only; when added from the repo root the SDK is imported/initialised once there.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_LIST_DIR)
+    include(${CMAKE_CURRENT_LIST_DIR}/../../pico_sdk_import.cmake)
+    project(sensor_node C CXX ASM)
+    set(CMAKE_C_STANDARD 11)
+    set(CMAKE_CXX_STANDARD 17)
+    pico_sdk_init()
+endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/lib/vl53l1x/import.cmake)
 add_subdirectory(lib/fatfs/FatFs_SPI build_fatfs)

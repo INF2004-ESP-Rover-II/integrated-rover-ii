@@ -21,8 +21,24 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import gc
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
+from tkinter import ttk
+from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
+import os
 from laptop_navigation import LaptopNavigator
 from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
+
+
+
+def make_mqtt_client(client_id):
+    """paho-mqtt 1.x and 2.x both work (2.x needs an explicit callback API version)."""
+    try:
+        return mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=client_id)
+    except AttributeError:
+        return mqtt.Client(client_id=client_id)
+
 
 HEARTBEAT_MS = 300
 KEY_RELEASE_DEBOUNCE_MS = 50
@@ -37,6 +53,7 @@ TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
 
 ROBOT_LOST_S = 2.0
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 WATCHDOG_CHECK_MS = 250
 TOF_UART_STALE_MS = 500
 
@@ -65,7 +82,10 @@ class RobotGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Rover II Controller - MQTT + TOF")
-        self.root.geometry("1600x900")
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = min(1600, int(sw * 0.95)), min(900, int(sh * 0.9))
+        self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+0")
+        self.root.minsize(1000, 650)
         self.root.configure(bg='#2c3e50')
 
         # MQTT Client
@@ -105,6 +125,9 @@ class RobotGUI:
         self.estop_active = False
         self.estop_time = 0
         self.estop_cooldown = 3.0  # 3 seconds cooldown
+        self.stop_sent_at = None
+        self.stop_latencies = []
+        self.last_refused = None
 
         # Assumed speed (%) for the odometry estimate only
         self.current_speed = tk.IntVar(value=80)
@@ -144,6 +167,11 @@ class RobotGUI:
 
         # No on-screen control buttons (keyboard-only controls)
 
+        # Logging
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log_name = datetime.now().strftime("dashboard_%Y%m%d_%H%M%S.txt")
+        self.log_file = open(os.path.join(LOG_DIR, log_name), "a", encoding="utf-8", buffering=1)
+
         self.setup_ui()
         self.root.after(100, self.navigation_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -151,7 +179,7 @@ class RobotGUI:
     def setup_ui(self):
         # Header
         header = tk.Frame(self.root, bg='#2c3e50')
-        header.pack(fill='x', pady=(10, 0))
+        header.pack(fill='x', pady=(4, 0))
         header.grid_columnconfigure(0, weight=1)
         
         tk.Label(header, text="ROVER II CONTROLLER - MQTT + TOF",
@@ -166,7 +194,7 @@ class RobotGUI:
 
         # Connection bar
         conn_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
-        conn_frame.pack(pady=10, padx=20, fill='x')
+        conn_frame.pack(pady=3, padx=20, fill='x')
 
         tk.Label(conn_frame, text="Broker IP:", fg='white', bg='#34495e',
                  font=("Arial", 10)).grid(row=0, column=0, padx=6, pady=6, sticky='w')
@@ -185,7 +213,7 @@ class RobotGUI:
 
         # Status indicators
         status_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
-        status_frame.pack(pady=5, padx=20, fill='x')
+        status_frame.pack(pady=2, padx=20, fill='x')
 
         tk.Label(status_frame, text="Broker:", fg='white', bg='#34495e',
                  font=("Arial", 10, "bold")).grid(row=0, column=0, padx=10, pady=8, sticky='w')
@@ -249,33 +277,34 @@ class RobotGUI:
             bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
         self.reset_safety_btn.grid(row=1, column=14, padx=15, pady=(0, 8))
 
-        # Keep ToF readings on their own row so they do not crowd the controls.
-        tof_frame = tk.LabelFrame(self.root, text="ToF sensors (mm)",
-                                  fg='white', bg='#34495e', font=("Arial", 12, "bold"))
-        tof_frame.pack(padx=20, pady=5, fill='x')
+        # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
+        tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
+                                  fg='white', bg='#34495e', font=("Arial", 8, "bold"))
+        tof_frame.pack(padx=20, pady=(2, 2), fill='x')
         self.tof_labels = {}
         self.tof_state_labels = {}
         for column, direction in enumerate(('left', 'front', 'right')):
-            tof_frame.grid_columnconfigure(column, weight=1, uniform='tof')
+            base = column * 3
+            tof_frame.grid_columnconfigure(base + 1, weight=1)
             tk.Label(tof_frame, text=direction.title(), fg='white', bg='#34495e',
-                     font=("Arial", 10, "bold")).grid(row=0, column=column, pady=(5, 0))
+                     font=("Arial", 9, "bold")).grid(row=0, column=base, padx=(12, 4))
             self.tof_labels[direction] = tk.Label(
-                tof_frame, text="--", fg='#95a5a6', bg='#34495e', font=("Consolas", 22, "bold"))
-            self.tof_labels[direction].grid(row=1, column=column, padx=12)
+                tof_frame, text="--", fg='#95a5a6', bg='#34495e', font=("Consolas", 14, "bold"))
+            self.tof_labels[direction].grid(row=0, column=base + 1, sticky='w')
             self.tof_state_labels[direction] = tk.Label(
-                tof_frame, text="Waiting", fg='#95a5a6', bg='#34495e', font=("Arial", 10))
-            self.tof_state_labels[direction].grid(row=2, column=column, pady=(0, 5))
+                tof_frame, text="Waiting", fg='#95a5a6', bg='#34495e', font=("Arial", 9))
+            self.tof_state_labels[direction].grid(row=0, column=base + 2, padx=(4, 12), sticky='w')
         self.tof_summary_label = tk.Label(
             tof_frame, text="Stop request: --   |   Blocked: --   |   Urgent: --",
-            fg='#95a5a6', bg='#34495e', font=("Consolas", 11, "bold"))
-        self.tof_summary_label.grid(row=3, column=0, columnspan=3, sticky='w', padx=12)
+            fg='#95a5a6', bg='#34495e', font=("Consolas", 9, "bold"))
+        self.tof_summary_label.grid(row=1, column=0, columnspan=5, sticky='w', padx=12)
         self.tof_age_label = tk.Label(
             tof_frame, text="Waiting for ToF telemetry. Stop request is separate from the motor lock.",
-            fg='#bdc3c7', bg='#34495e', font=("Arial", 9))
-        self.tof_age_label.grid(row=4, column=0, columnspan=3, sticky='w', padx=12, pady=(3, 7))
+            fg='#bdc3c7', bg='#34495e', font=("Arial", 8))
+        self.tof_age_label.grid(row=1, column=5, columnspan=4, sticky='e', padx=12, pady=(0, 2))
 
         dfs_frame = tk.Frame(self.root, bg='#34495e')
-        dfs_frame.pack(padx=20, pady=5, fill='x')
+        dfs_frame.pack(padx=20, pady=2, fill='x')
         tk.Label(dfs_frame, text="DFS target markers (1–36):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
         tk.Label(dfs_frame, text="Open path ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
@@ -284,11 +313,11 @@ class RobotGUI:
 
         # Main area with 3 columns
         main = tk.Frame(self.root, bg='#2c3e50')
-        main.pack(fill='both', expand=True, padx=20, pady=10)
+        main.pack(fill='both', expand=True, padx=20, pady=(4, 8))
         # Make left column slimmer to free space for map and logs
-        main.grid_columnconfigure(0, weight=0, minsize=240)
-        main.grid_columnconfigure(1, weight=3, minsize=800)
-        main.grid_columnconfigure(2, weight=2, minsize=520)
+        main.grid_columnconfigure(0, weight=0, minsize=220)
+        main.grid_columnconfigure(1, weight=10, minsize=800)   # the map is the main focus
+        main.grid_columnconfigure(2, weight=1, minsize=300)
         main.grid_rowconfigure(0, weight=1)
 
         # LEFT COLUMN - Key mappings only (no movement buttons)
@@ -318,6 +347,18 @@ class RobotGUI:
                                        fg='white', bg='#34495e', font=("Arial", 14, "bold"))
         self.map_frame.pack(fill='both', expand=True)
 
+        # Subsystem 4: tabs inside the Map frame. "Live view" keeps the original ToF placeholder.
+        self.map_tabs = ttk.Notebook(self.map_frame)
+        self.map_tabs.pack(fill='both', expand=True)
+        live_tab = tk.Frame(self.map_tabs, bg='#2c3e50')
+        self.map_tabs.add(live_tab, text="Live view")
+        self.mapping = MappingPanel(
+            self.map_tabs, self.navigator,
+            get_threshold=lambda: int(self.dfs_threshold.get() or 0),
+            log=lambda m: self.log(m))
+        self.map_tabs.add(self.mapping, text="Mapping & path")
+        self.map_tabs.select(self.mapping)
+
         # !! ToF mapping display to be here
         self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
@@ -335,7 +376,7 @@ class RobotGUI:
         self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
                      'go', markersize=10, zorder=10)  # rover start
 
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.map_frame)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=live_tab)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=10)
 
@@ -496,6 +537,7 @@ class RobotGUI:
                 time.time() - self.last_tof_rx <= TOF_UART_STALE_MS / 1000):
             self.set_front_blocked(self.front_obstacle_snapshot)
         self.navigator.tick()
+        self.mapping.sync()              # Subsystem 4: read the DFS graph / drive routes
         if not self.navigator.active:
             self.auto_mode.set(False)
         self.root.after(100, self.navigation_tick)
@@ -560,6 +602,7 @@ class RobotGUI:
 
     def close(self):
         self.disconnect()
+        self.log_file.close()
         self.root.destroy()
 
     def reset_odometry(self):
@@ -590,6 +633,7 @@ class RobotGUI:
         self.active_command = None
         self.auto_mode.set(False)
         if status == "SAFETY_READY":
+            self.last_refused = None
             self.log("Safety reset accepted. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
             self.log("Safety reset refused: check the Sensor Pico UART connection.")
@@ -793,6 +837,9 @@ class RobotGUI:
             # Time since the last telemetry. If none yet, count from connect.
             ref = self.last_telemetry_rx or self.connect_time
             age = time.time() - ref
+            colour = '#95a5a6' if age > 0.5 else '#3498db'
+            self.heading_label.config(fg=colour)
+            self.pitch_label.config(fg=colour)
             if age > ROBOT_LOST_S and self.robot_link != "lost":
                 self.set_robot_link("lost", age)
             elif (age <= ROBOT_LOST_S and self.last_telemetry_rx
@@ -839,7 +886,7 @@ class RobotGUI:
             
             self.log(f"Connecting to MQTT broker at {broker}:{port}...")
             
-            self.mqtt_client = mqtt.Client(client_id=self.client_id)
+            self.mqtt_client = make_mqtt_client(self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -869,9 +916,14 @@ class RobotGUI:
         self.stop_link_heartbeat()
         self.cancel_heartbeat()
         if self.mqtt_client:
-            self.mqtt_client.disconnect()
-            self.mqtt_client.loop_stop()
+            client = self.mqtt_client
             self.mqtt_client = None
+            # Stop handing new messages to Tk, then stop paho without blocking the window
+            client.on_message = None
+            client.on_connect = None
+            client.on_disconnect = None
+            client.disconnect()
+            threading.Thread(target=client.loop_stop, daemon=True).start()
         self.connected = False
         self.broker_connected.set("Not Connected")
         self.broker_status_label.config(fg='#e74c3c')
@@ -931,6 +983,13 @@ class RobotGUI:
                 self.robot_status_label.config(fg='#27ae60')
                 self.log(f"[{ts}] Robot ready")
             elif payload == "STOPPED":
+                if self.stop_sent_at is not None:
+                    ms = (time.perf_counter() - self.stop_sent_at) * 1000
+                    if ms < 2000:
+                        self.stop_latencies.append(ms)
+                        s_ = sorted(self.stop_latencies)
+                        self.log(f"[{ts}] STOP confirmed in {ms:.0f} ms round trip "
+                                 f"(n={len(s_)}, min {s_[0]:.0f}, median {s_[len(s_)//2]:.0f}, max {s_[-1]:.0f})")
                 if self.robot_status != "SAFETY_LOCKED":
                     self.robot_status_label.config(fg='#f39c12')
                     self.log(f"[{ts}] Robot stopped")
@@ -940,6 +999,24 @@ class RobotGUI:
                 self.navigator.stop("RoboPico command error")
                 self.robot_status_label.config(fg='#e74c3c')
                 self.log(f"[{ts}] ⚠ Robot error")
+            elif payload.startswith("STOPPED: LINK LOST"):
+                self.navigator.stop("RoboPico lost the laptop link")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ Rover stopped itself: laptop link lost (FR-08)")
+            elif payload == "RECONNECTED":
+                self.robot_status_label.config(fg='#27ae60')
+                self.log(f"[{ts}] Rover reconnected to the broker (FR-12)")
+            elif payload.startswith("PITCH:"):
+                pass
+            elif payload.startswith("SAFE STOP"):
+                self.navigator.stop("Motion Control SAFE STOP")
+                self.robot_status_label.config(fg='#e74c3c')
+                self.log(f"[{ts}] ⚠ {payload}")
+            elif payload.startswith("REFUSED"):
+                self.robot_status_label.config(fg='#e74c3c')
+                if payload != getattr(self, 'last_refused', None):   # log once, not every 300 ms
+                    self.log(f"[{ts}] ⚠ {payload}")
+                self.last_refused = payload
             elif payload.startswith("AUTO:"):
                 # Autonomous mode status messages
                 self.robot_status_label.config(fg='#f39c12')
@@ -948,6 +1025,8 @@ class RobotGUI:
                 # Legacy auto status
                 self.robot_status_label.config(fg='#f39c12')
                 self.log(f"[{ts}] {payload}")
+            else:
+                self.log(f"[{ts}] Status: {payload}")
         elif topic == TOPIC_MARKER:
             try:
                 data = json.loads(payload)
@@ -1045,6 +1124,9 @@ class RobotGUI:
 
             if not quiet:
                 self.log(f"[{ts}] → {command}")
+            if command == "STOP":
+                self.stop_sent_at = time.perf_counter()
+
             result = self.mqtt_client.publish(TOPIC_COMMAND, payload, qos=0)
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -1059,6 +1141,7 @@ class RobotGUI:
     # Removed no-op connection monitor
 
     def log(self, message):
+        self.log_file.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {message}\n")
         self.log_text.config(state='normal')
         self.log_text.insert(tk.END, message + '\n')
         self.log_text.config(state='disabled')

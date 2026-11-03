@@ -325,7 +325,9 @@ static void test_direction_byte(void) {
     int sends = 0, last = -1;
     for (int i = 0; i < 25; i++) { sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, left); if (s.out.dir_send) { sends++; last = s.out.dir_byte & 0xF; } }
     CHECK(last == DIR_LEFT, "LEFT once settled");
-    CHECK(sends >= 4 && sends <= 6, "refreshed about every 100 ms (%d sends in 500 ms)", sends);
+    int expect_sends = 500 / (int)MC_DIR_REFRESH_MS;   /* 500 ms window */
+    CHECK(sends >= expect_sends && sends <= expect_sends + 2,
+          "refreshed about every %u ms (%d sends in 500 ms)", (unsigned)MC_DIR_REFRESH_MS, sends);
     sim_cmd(&s, mc_pack_manual_drive(3, 0, 0, 40));
     sim_tick(&s);
     CHECK((s.out.dir_byte & 0xF) == DIR_ALL, "rotate -> ALL");
