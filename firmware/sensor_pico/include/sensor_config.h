@@ -8,18 +8,19 @@
 #define UART_TX_PIN     16   // GP16 - connects to Robo Pico RX (GP1)
 #define UART_RX_PIN     17   // GP1 - connects to Robo Pico TX (GP0)
 
-// ====================== ACCELEROMETER CONFIG (LSM303DLHC) ======================
-#define I2C_PORT        i2c0
-#define SDA_PIN         4   // GP4
-#define SCL_PIN         5   // GP5
-
-// LSM303DLHC I2C Addresses
-#define LSM303_ACCEL_ADDR   0x19  // Accelerometer
-#define LSM303_MAG_ADDR     0x1E  // Magnetometer
+// ====================== MPU6500 IMU (I2C1) ======================
+#define IMU_I2C_PORT        i2c1
+#define IMU_SDA_PIN         6   // GP6
+#define IMU_SCL_PIN         7   // GP7
+#define MPU6500_ADDR        0x68  // AD0 -> GND; use 0x69 for AD0 -> 3V3
+#define MPU6500_YAW_SIGN   -1.0f // Clockwise heading about the startup gravity direction
 
 // ====================== VL53L1X TOF CONFIG ======================
+#define TOF_I2C_PORT        i2c0
+#define TOF_SDA_PIN         4   // GP4
+#define TOF_SCL_PIN         5   // GP5
 // Wire each XSHUT pin to the matching sensor before flashing this firmware.
-// GP6/GP7/GP8 from the standalone example are already used by other sensors.
+// GP6/GP7 belong to the IMU; GP8 is reserved for the legacy LIDAR UART.
 #define TOF_LEFT_XSHUT_PIN   18
 #define TOF_FRONT_XSHUT_PIN  19
 #define TOF_RIGHT_XSHUT_PIN  20
@@ -40,9 +41,18 @@
 #define ULTRA_BACK_TRIG_PIN     0
 #define ULTRA_BACK_ECHO_PIN     1
 
-// Left Sensor
-#define ULTRA_LEFT_TRIG_PIN     6
-#define ULTRA_LEFT_ECHO_PIN     7
+// The old left sensor's GP6/GP7 are now the IMU bus. Do not initialize or
+// trigger ultrasonic GPIO there. To restore it, wire unused pins and define
+// ULTRA_LEFT_TRIG_PIN / ULTRA_LEFT_ECHO_PIN before enabling this option.
+#define ULTRA_LEFT_ENABLED      0
+#if ULTRA_LEFT_ENABLED
+#if !defined(ULTRA_LEFT_TRIG_PIN) || !defined(ULTRA_LEFT_ECHO_PIN)
+#error "Reassign the left ultrasonic pins before enabling it"
+#elif ULTRA_LEFT_TRIG_PIN == IMU_SDA_PIN || ULTRA_LEFT_TRIG_PIN == IMU_SCL_PIN || \
+      ULTRA_LEFT_ECHO_PIN == IMU_SDA_PIN || ULTRA_LEFT_ECHO_PIN == IMU_SCL_PIN
+#error "Left ultrasonic pins overlap the MPU6500 I2C bus"
+#endif
+#endif
 
 // Right Sensor
 #define ULTRA_RIGHT_TRIG_PIN    2

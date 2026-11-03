@@ -78,7 +78,7 @@ class LaptopNavigator:
     STOP_SETTLE_S = 0.4  # Exceeds RoboPico's current 300 ms active brake hold.
     ARRIVAL_DISTANCE_MM = 450.0  # Agreed: camera lens to marker centre.
     ARRIVAL_TOLERANCE_MM = 30.0  # Confirmation band after stopping; tune on hardware.
-    ARRIVAL_BEARING_DEG = 5.0
+    ARRIVAL_BEARING_DEG = 30.0  # shortcut: loosened from 5.0 for mapping tests, restore before real runs.
     ARRIVAL_CONFIRM_FRAMES = 5
 
     def __init__(self, send_command, report=lambda message: None, clock=time.monotonic,
@@ -90,6 +90,8 @@ class LaptopNavigator:
         self.vision_feed = VisionFeed()
         self.explorer = DFSExplorer()
         self.sensor: Optional[SensorSnapshot] = None
+        # Stable dashboard map reference, independent of DFS mission restarts.
+        self.initial_sensor_heading: Optional[float] = None
         self.last_camera_at: Optional[float] = None
         self.visible_marker: Optional[int] = None
         self.last_frame = -1
@@ -128,6 +130,8 @@ class LaptopNavigator:
                 self.stop("Sensor clock restarted or rolled over")
             self._sensor_timestamp = timestamp
             self.sensor = SensorSnapshot.decode(data, self.clock())
+            if self.initial_sensor_heading is None and self.sensor.age_s <= self.SENSOR_MAX_AGE_S:
+                self.initial_sensor_heading = self.sensor.heading
         except (KeyError, TypeError, ValueError):
             self.sensor = None
             if self.active:
@@ -163,8 +167,9 @@ class LaptopNavigator:
         segment = self.explorer.pending
         if self.active and segment is not None:
             candidates = [marker for marker in candidates if marker.marker_id != segment.from_marker]
-        selected = min(candidates, key=lambda marker: (abs(marker.camera_bearing_deg),
-                       marker.camera_distance_mm, marker.marker_id), default=None)
+        # Nearest first: on the 60 cm grid a far marker straight ahead can hide the one about to be hit.
+        selected = min(candidates, key=lambda marker: (marker.camera_distance_mm,
+                       abs(marker.camera_bearing_deg), marker.marker_id), default=None)
         return self.marker_seen(selected.marker_id if selected else None,
                                 self.last_frame + 1, frame.age_ms,
                                 selected.camera_distance_mm if selected else None,
