@@ -10,6 +10,9 @@
 !/tests/test_mpu6500.c
 !/tests/test_imu_sampler.c
 !/tests/test_dashboard_heading.py
+!/tests/test_dashboard_front_stop.py
+!/tests/imu_stubs/
+!/tests/imu_stubs/**
 !/tests/imu_stubs/
 !/tests/imu_stubs/**
 __pycache__/

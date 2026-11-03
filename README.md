@@ -6,34 +6,6 @@ See [MPU6500 integration](MPU6500.md) for current IMU wiring, calibration and fi
 
 ---
 
-## Merge summary (30 Oct 2026)
-
-This branch merges the Jia Hui (Subsystem 1 safety/fault handling), Vivi (vision, marker map, MPU6500) and Buddy 2 (Subsystem 4 mapping and path planning) work into one repo. Details: [MERGE_NOTES.md](MERGE_NOTES.md), [MAPPING_INTEGRATION.md](MAPPING_INTEGRATION.md).
-
-**Changes**
-- **Dashboard** (`dashboard/robot_dashboard.py`): Vivi's live marker grid, IMU roll and strafe-odometry fix, plus Jia Hui's link-lost / SAFE STOP / REFUSED / RECONNECTED handling, STOP latency, log files and clean disconnect. New **Mapping & path** tab (DFS graph, A* routes, probable links, ToF obstacle layer). Works with paho-mqtt 1.x and 2.x. Default broker is `localhost`.
-- **Fake rover** (`dashboard/fake_rover.py`): Jia Hui's safety-aware fake rover, now with `--maze [--geometry]` which simulates a 6x6 marker maze, camera markers and box obstacles.
-- **Mapping** (`rover_mapping/`): mapping statechart, marker graph with probable links, A* planner, route runner with blockage hook, 5 cm occupancy (obstacle) grid. 80 tests, no hardware needed.
-- **Firmware**: `sensor_pico` is Vivi's MPU6500 version (sends roll; required by the `robo_pico` packet). `robo_pico` is Jia Hui's safety/link-loss firmware plus Vivi's telemetry fields (roll, accel, gyro, IMU status), telemetry every 100 ms, pitch baseline 0.
-- **Build**: root and firmware `CMakeLists.txt` now import the Pico SDK once through the repo's `pico_sdk_import.cmake` (fixes a cpu-flag build failure and the VS Code extension path error).
-
-**Run it (no hardware)**
-```
-mosquitto -c mosquitto-rover.conf -v
-cd dashboard && python fake_rover.py --maze --geometry      # keep --speed 1
-MAPPING_STANDOFF_CM=0 MAPPING_CAMERA_HEIGHT_CM=0 python robot_dashboard.py
-```
-Connect (`localhost`), **Reset Safety**, DFS target markers `36`, open path `500`, tick **LAPTOP DFS**. Real rover: see "Test 5" below.
-
-**Known issues / not yet verified**
-- Firmware merge builds in CMake but is untested on the rover; confirm 100 ms telemetry is stable.
-- `ARRIVAL_BEARING_DEG` is Vivi's loosened 30 deg (restore to 5 before real runs).
-- Next-marker arrival, DFS-phase blockage handling and the DFS blocked-return `from_marker` bug are not done.
-- Stand-off, ToF forward offset and camera tilt are unmeasured defaults.
-- Wi-Fi SSID in `config.h` must be plain ASCII (no emoji) and 2.4 GHz.
-
----
-
 ## 📁 Project Structure
 
 ```

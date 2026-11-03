@@ -16,7 +16,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 10 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -65,8 +65,8 @@ static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
     // Runs in the UART ISR: no MQTT, printf, sleeps, or reverse-thrust braking.
     const uint8_t front_mask = 0x02u; // UART bits: left=1, front=2, right=4.
-    // Only front proximity or an explicit Sensor-side stop requests this lock.
-    // Unavailable/zero readings and reported ToF faults do not request this lock.
+    // Front proximity stops without a lock and inhibits FORWARD only.
+    // Unavailable/zero readings and reported ToF faults do not request a stop.
     
     // bool stop_requested = packet->stop_required != 0 || (packet->urgent_mask & front_mask) != 0;
     uint8_t urgent_mask = (uint8_t)((packet->obstacle_flags >> 3u) & 0x07u);
@@ -89,6 +89,13 @@ static bool safety_watchdog_tick(struct repeating_timer *timer)
 static void service_safety_stop(void)
 {
     motor_safety_poll();
+    if (motor_take_front_stop())
+    {
+        autonomous_mode = false;
+        autonomous_state = AUTO_STATE_IDLE;
+        forward_boost_active = false;
+        mqtt_publish_status("FRONT_STOPPED");
+    }
     if (motor_safety_is_latched())
     {
         autonomous_mode = false;
@@ -97,7 +104,7 @@ static void service_safety_stop(void)
         if (!safety_lock_reported)
         {
             safety_lock_reported = true;
-            printf("[SAFETY] Motors locked: clear sensors and send RESET_SAFETY\n");
+            printf("[SAFETY] Motors locked: restore sensor link and send RESET_SAFETY\n");
             mqtt_publish_status("SAFETY_LOCKED");
         }
     }
@@ -328,12 +335,9 @@ static void process_command(const char *command)
             strncpy(last_reported, cmd_buffer, sizeof(last_reported) - 1);
         }
     }
-    else if (motor_motion_state() == MOTOR_STATE_SAFE_STOP)
+    else if (result == MOTOR_ERR_FRONT_BLOCKED)
     {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "REFUSED: SAFE STOP (%s) - press Reset Safety",
-                 motor_safe_stop_reason());
-        mqtt_publish_status(msg);
+        mqtt_publish_status("FORWARD_BLOCKED");
     }
     else
     {
@@ -608,25 +612,9 @@ int main()
             {
                 printf("No sensor data");
             }
-            
             printf("\n");
             last_stats_print = now;
         }
-        // Tell the dashboard once when the rover enters SAFE STOP, and why
-        {
-            static bool safe_stop_reported = false;
-            bool safe_stop = motor_motion_state() == MOTOR_STATE_SAFE_STOP;
-            if (safe_stop && !safe_stop_reported)
-            {
-                char msg[96];
-                snprintf(msg, sizeof(msg), "SAFE STOP: %s - press Reset Safety",
-                         motor_safe_stop_reason());
-                printf("[MOTOR] %s\n", msg);
-                mqtt_publish_status(msg);
-            }
-            safe_stop_reported = safe_stop;
-        }
-
         // FR-08: stop on our own if the laptop goes quiet
         {
             uint32_t last_rx = mqtt_last_link_rx_ms();
@@ -638,7 +626,7 @@ int main()
                 link_lost = true;
                 autonomous_mode = false;
                 autonomous_state = AUTO_STATE_IDLE;
-                motor_link_lost();
+                motor_emergency_stop();
                 printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
                        (unsigned long)now, (unsigned long)last_rx);
                 mqtt_publish_status("STOPPED: LINK LOST");
