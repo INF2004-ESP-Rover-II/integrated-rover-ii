@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from dfs_explorer import DFSExplorer, Direction, MarkerType, State
+from dfs_explorer import DFSExplorer, Direction, MarkerType, MoveKind, State
 from vision_feed import VisionFeed, finite_number
 from vision_feed import MarkerObservation
 from grid_localization import GridLocalizer, VECTORS
@@ -53,6 +53,11 @@ class SensorSnapshot:
             raise ValueError("Invalid sensor stop/fault flags")
         return cls(heading % 360, dict(distances), faults, stop, now, age / 1000)
 
+    def too_far(self, name):
+        """A healthy sensor reading 0 ranged nothing, normally because space is too far."""
+        bit = ("left", "front", "right").index(name)
+        return not self.faults & (1 << bit) and self.distances.get(name) == 0
+
     def exits(self, heading, threshold_mm, front_threshold_mm=None):
         """Rotate L/F/R sensor directions into the fixed map frame.
 
@@ -81,7 +86,8 @@ class SensorSnapshot:
 
 
 class LaptopNavigator:
-    SENSOR_MAX_AGE_S = 0.75
+    SENSOR_MAX_AGE_S = 0.75  # Also decides whether a heading may place markers on the map.
+    SENSOR_HOLD_AGE_S = 1.0  # Pause DFS beyond this; telemetry only arrives every 500 ms.
     CAMERA_MAX_AGE_S = 1.0
     COMMAND_REFRESH_S = 0.2
     TURN_TIMEOUT_S = 15.0
@@ -99,6 +105,7 @@ class LaptopNavigator:
     ALIGN_CONFIRM_FRAMES = 3
     ALIGN_PULSE_S = .4  # One default Q/E zigzag cycle (two 200 ms halves).
     ALIGN_SIDE_CLEARANCE_MM = 150
+    FAR_SAMPLES = 3  # Fresh readings in a row before 0 means "too far", not a one-off dropout.
 
     def __init__(self, send_command, report=lambda message: None, clock=time.monotonic,
                  wall_clock=time.time):
@@ -151,9 +158,13 @@ class LaptopNavigator:
         self._arrival_count = 0
         self._arrival_at = -float("inf")
         self._hold_marker: Optional[int] = None
+        self._await_marker = False
+        self._turn_braked_until = 0.0
         self._reset_turn()
 
     def _reset_turn(self):
+        self._far_counts: Dict[str, int] = {}
+        self._far_at = None
         self._turn_target: Optional[int] = None
         self._turn_acked = False
         self._turn_reached = False
@@ -174,9 +185,33 @@ class LaptopNavigator:
         if not self._send('STOP', now, force=True):
             return
         self.phase = 'scan_settle' if scan_turn else 'settle'
-        self.ready_at = now + self.STOP_SETTLE_S
+        self.ready_at = self._turn_braked_until = now + self.STOP_SETTLE_S
         self._reset_turn()
         self._status(message)
+
+    def _far_exits(self, sensor, heading, blocked):
+        """Exits from healthy sensors with nothing close enough to range.
+
+        Front counts on a straight run. Sides count only once a real obstacle
+        blocks the way ahead, so open floor beside a straight run never diverts
+        the rover. Returns None until FAR_SAMPLES fresh readings in a row agree.
+        """
+        if sensor.received_at != self._far_at:
+            self._far_at = sensor.received_at
+            for name in ("left", "front", "right"):
+                self._far_counts[name] = self._far_counts.get(name, 0) + 1 if sensor.too_far(name) else 0
+        names = (("left", 3), ("right", 1)) if blocked & (1 << heading) else (("front", 0),)
+        opened = 0
+        for name, offset in names:
+            if sensor.too_far(name):
+                if self._far_counts[name] < self.FAR_SAMPLES:
+                    return None
+                opened |= 1 << ((heading + offset) % 4)
+        return opened
+
+    def _side_clearance(self, side):
+        """Strafe clearance; a side too far to range has nothing close to hit."""
+        return 1023 if self.sensor.too_far(side) else GridLocalizer.reading(self.sensor, side)
 
     def _retry_turn(self, target, actual, now, scan=False):
         self._drive_turn_corrections += 1
@@ -220,6 +255,14 @@ class LaptopNavigator:
                            'BACK_LEFT', 'BACK_RIGHT', 'ZERO_HEADING') or command.startswith('TURN_TO:'):
                 self._grid_pending = None
 
+    def _heading_unsettled(self):
+        """Telemetry heading lags a turn, so a marker placed from it lands in the wrong cell.
+
+        shortcut: covers DFS turns only, manual A/D or Turn to heading can still misplace a marker.
+        """
+        return self.active and (self.phase in ('turn', 'scan_turn') or
+                                self.sensor.received_at < self._turn_braked_until)
+
     def _grid_camera(self, markers, age_ms):
         now = self.clock()
         self.last_camera_at = now - age_ms / 1000
@@ -233,7 +276,7 @@ class LaptopNavigator:
         if (self.sensor is not None and now - self.sensor.received_at + self.sensor.age_s <= self.SENSOR_MAX_AGE_S
                 and age_ms <= VisionFeed.MAX_AGE_MS):
             self.camera_heading = self.sensor.heading
-            if self._shimmy is None:
+            if self._shimmy is None and not self._heading_unsettled():
                 self.grid.observe(markers, now - age_ms / 1000, self.sensor.heading)
             if self.grid.fault is not None and self.active:
                 self.stop(self.grid.fault)
@@ -305,7 +348,7 @@ class LaptopNavigator:
         marker = self._bearing_target(state['marker'])
         if state['stage'] == 'pulse':
             side = 'right' if state['command'] == 'RIGHT' else 'left'
-            clearance = GridLocalizer.reading(self.sensor, side)
+            clearance = self._side_clearance(side)
             if clearance is None or clearance < self.ALIGN_SIDE_CLEARANCE_MM:
                 self.stop('Lateral centring stopped: %s side clearance is %s' %
                           (side, 'unavailable' if clearance is None else '%d mm' % clearance))
@@ -350,7 +393,7 @@ class LaptopNavigator:
         state['centred'] = 0
         command = 'RIGHT' if bearing > 0 else 'LEFT'
         side = 'right' if bearing > 0 else 'left'
-        distance = GridLocalizer.reading(self.sensor, side)
+        distance = self._side_clearance(side)
         if distance is None or distance < self.ALIGN_SIDE_CLEARANCE_MM:
             self.stop('Cannot centre %s: %s ToF %s; need valid side clearance ≥%d mm' %
                       (command, side, 'unavailable' if distance is None else '%d mm' % distance,
@@ -743,8 +786,8 @@ class LaptopNavigator:
             problems.append("sensor telemetry unavailable")
         else:
             age = now - sensor.received_at + sensor.age_s
-            if age > self.SENSOR_MAX_AGE_S:
-                problems.append("sensor telemetry age %.2fs > %.2fs" % (age, self.SENSOR_MAX_AGE_S))
+            if age > self.SENSOR_HOLD_AGE_S:
+                problems.append("sensor telemetry age %.2fs > %.2fs" % (age, self.SENSOR_HOLD_AGE_S))
         if last_camera_at is None:
             problems.append("camera frames unavailable")
         elif now - last_camera_at > self.CAMERA_MAX_AGE_S:
@@ -792,6 +835,7 @@ class LaptopNavigator:
         self._drive_turn_corrections = 0
         self._turn_budget_at = None
         self._shimmy = None
+        self._await_marker = False
         self.scan_attempted = {}
         self._hold_marker = None
         self._reset_arrival()
@@ -929,6 +973,15 @@ class LaptopNavigator:
             # exit. Keep approaching a wall until the existing 15 cm motor stop.
             opened, blocked = sensor.exits(heading, self.threshold_mm,
                 front_threshold_mm=self.grid.WALL_STOP_MM if self.grid is not None else None)
+            if self.grid is not None:
+                far = self._far_exits(sensor, heading, blocked)
+                if far is None:
+                    self._status("Marker %d: confirming out-of-range ToF readings "
+                                 "(left=%s, front=%s, right=%s)" %
+                                 (current, sensor.distances.get('left'), sensor.distances.get('front'),
+                                  sensor.distances.get('right')))
+                    return
+                opened |= far
             self.explorer.observe_exits(current, opened, blocked)
             attempted = self.scan_attempted.get(current, 0)
             for offset in (3, 0, 1):
@@ -941,6 +994,7 @@ class LaptopNavigator:
                     self.stop("DFS move is missing its segment")
                     return
                 self.phase = "turn"
+                self._await_marker = False
                 self._drive_turn_corrections = 0
                 self._turn_budget_at = now
                 self._reset_turn()
@@ -1005,6 +1059,8 @@ class LaptopNavigator:
                                      (direction.name, sensor.heading, target))
                     return
                 self._turn_target = target
+                if self.grid is not None and not scan_turn and segment.kind == MoveKind.EXPLORE:
+                    self._await_marker = True  # Only drive a new leg once the camera sees it.
                 self._turn_acked = self._turn_reached = False
                 self._turn_deadline = now + self.TURN_TIMEOUT_S
                 if scan_turn:
@@ -1026,6 +1082,12 @@ class LaptopNavigator:
                 if abs(error) > self.TURN_TOLERANCE_DEG:
                     self._retry_turn(target, sensor.heading, now)
                     return  # Braking drift must be corrected before driving.
+                if self._await_marker:
+                    if self._bearing_target() is None:
+                        self._status("Turned %s; holding STOP until the camera sees a marker ahead" %
+                                     segment.direction.name)
+                        return
+                    self._await_marker = False
                 if self.grid is not None:
                     marker, reason = self.grid.candidate(now)
                     if (marker is not None and marker != self.grid.current and

@@ -105,8 +105,13 @@ class BearingTests(unittest.TestCase):
         self.step(0, seconds=.41)
         self.assertEqual(self.commands[-1], 'FORWARD')
 
+    def test_side_too_far_to_range_allows_strafe(self):
+        self.begin()
+        self.step(12, seconds=.41, right=0)
+        self.assertEqual(self.commands[-1], 'RIGHT')
+
     def test_unavailable_or_close_side_reading_prevents_automatic_strafe(self):
-        for distance in (0, 100):
+        for distance in (65535, 100):
             with self.subTest(distance=distance):
                 self.setUp()
                 self.begin()

@@ -91,7 +91,7 @@ class RobotGUI:
         # MQTT Client
         self.mqtt_client = None
         self.connected = False
-        self.broker_ip = tk.StringVar(value="192.168.50.11")
+        self.broker_ip = tk.StringVar(value="192.168.50.236")
         self.broker_port = tk.IntVar(value=1883)
         self.client_id = "robot_dashboard"
 
@@ -228,6 +228,9 @@ class RobotGUI:
                                      command=self.toggle_connection, bg='#27ae60',
                                      fg='white', font=("Arial", 10, "bold"), width=12)
         self.connect_btn.grid(row=0, column=4, padx=10, pady=6)
+
+        tk.Button(conn_frame, text="Restart", command=self.restart, bg='#7f8c8d',
+                  fg='white', font=("Arial", 10, "bold"), width=12).grid(row=0, column=5, padx=10, pady=6)
 
         # Status indicators
         status_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
@@ -951,6 +954,10 @@ class RobotGUI:
         self.disconnect()
         self.log_file.close()
         self.root.destroy()
+
+    def restart(self):
+        self.close()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def reset_odometry(self):
         """Reset robot position to origin"""

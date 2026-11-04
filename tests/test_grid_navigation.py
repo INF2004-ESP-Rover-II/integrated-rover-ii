@@ -6,7 +6,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'dashboard'))
 sys.path.insert(0, str(ROOT / 'rover_mapping'))
-from dfs_explorer import State
+from dfs_explorer import Direction, State
 from grid_localization import GridLocalizer
 from laptop_navigation import LaptopNavigator, SensorSnapshot
 from vision_feed import MarkerObservation
@@ -353,6 +353,10 @@ class NavigationTests(unittest.TestCase):
         self.nav.robot_status_received('AUTO_RESULT: HEADING_REACHED')
         self.nav.tick()
         self.settle()
+        self.assertNotEqual(self.commands[-1], 'FORWARD')  # Holds until the new leg is visible.
+        self.sensor(seconds=.41)
+        self.camera(((5, 600), (31, 1200)))
+        self.nav.tick()
         self.assertEqual(self.commands[-1], 'FORWARD')
         self.frames(((5, 600), (31, 1200)))
         self.frames(((31, 600), (2, 1200)))
@@ -417,15 +421,99 @@ class NavigationTests(unittest.TestCase):
                 self.assertNotIn('TURN_TO:0', self.commands)
                 self.assertNotIn('TURN_TO:180', self.commands)
 
+    def scan(self, samples=3, **readings):
+        self.camera()
+        self.nav.start(36, 500)
+        for _ in range(samples):
+            self.sensor(seconds=.41, **readings)
+            self.camera(())
+            self.nav.tick()
+
     def test_invalid_front_reading_does_not_trigger_blind_rear_scan(self):
         self.camera()
         self.nav.start(36, 500)
-        self.sensor(front=0, seconds=.41)
+        self.sensor(front=65535, seconds=.41)
         self.camera()
         self.nav.tick()
         self.assertEqual(self.nav.phase, 'scan')
         self.assertNotIn('TURN_TO:180', self.commands)
         self.assertIn('waiting for a valid front ToF', self.nav.status)
+
+    def test_front_too_far_goes_straight_even_with_open_side(self):
+        self.scan(samples=2, front=0, left=1023, right=300)
+        self.assertEqual(self.nav.phase, 'scan')  # A short dropout must not choose the side.
+        self.assertIsNone(self.nav.explorer.pending)
+        self.sensor(front=0, left=1023, right=300, seconds=.41)
+        self.nav.tick()
+        self.assertEqual(self.nav.explorer.pending.direction, Direction.NORTH)
+
+    def test_open_side_too_far_is_ignored_until_an_obstacle_blocks_ahead(self):
+        self.scan(front=1023, left=0, right=300)
+        self.assertEqual(self.nav.explorer.pending.direction, Direction.NORTH)
+
+    def test_obstacle_turns_to_side_too_far_then_waits_for_camera(self):
+        self.scan(samples=2, front=120, left=0, right=300)
+        self.assertIsNone(self.nav.explorer.pending)
+        self.sensor(front=120, left=0, right=300, seconds=.41)
+        self.nav.tick()
+        self.assertEqual(self.nav.explorer.pending.direction, Direction.WEST)
+        self.nav.tick()
+        self.assertEqual(self.commands[-1], 'TURN_TO:270')
+        self.nav.robot_status_received('AUTO_MOVE: TURN_TO:270')
+        self.nav.robot_status_received('AUTO_RESULT: HEADING_REACHED')
+        self.nav.tick()
+        self.heading = 270
+        for _ in range(3):
+            self.sensor(seconds=.41)
+            self.camera(())
+            self.nav.tick()
+            self.assertEqual(self.nav.phase, 'settle')
+        self.assertNotIn('FORWARD', self.commands)
+        self.assertIn('until the camera sees a marker', self.nav.status)
+        self.sensor(seconds=.41)
+        self.camera(((6, 600),))
+        self.nav.tick()
+        self.assertEqual(self.commands[-1], 'FORWARD')
+
+    def test_marker_seen_mid_turn_is_placed_from_the_settled_heading(self):
+        self.camera(())
+        self.nav.start(36, 500)
+        self.sensor(front=120, left=200, right=1023, seconds=.41)
+        self.camera(())
+        self.nav.tick()
+        self.nav.tick()
+        self.assertEqual(self.commands[-1], 'TURN_TO:90')
+        self.sensor(left=200, right=1023)  # Telemetry still says 0° while the rover is rotating.
+        self.camera(((20, 620),), bearing=30)
+        self.assertNotIn(20, self.nav.grid.cells)
+        self.nav.robot_status_received('AUTO_MOVE: TURN_TO:90')
+        self.nav.robot_status_received('AUTO_RESULT: HEADING_REACHED')
+        self.nav.tick()
+        self.camera(((20, 620),), bearing=30)  # Braking, before a fresh heading arrives.
+        self.assertNotIn(20, self.nav.grid.cells)
+        self.heading = 90
+        self.sensor(seconds=.41)
+        self.camera(((20, 600),))
+        self.assertEqual(self.nav.grid.cells[20], (1, 0))
+        self.nav.tick()
+        self.assertEqual(self.commands[-1], 'FORWARD')
+
+    def test_obstacle_prefers_left_and_uses_right_when_left_is_a_wall(self):
+        self.scan(samples=1, front=120, left=200, right=1023)
+        self.assertEqual(self.nav.explorer.pending.direction, Direction.EAST)
+
+    def test_side_dropout_beside_a_wall_is_not_an_exit(self):
+        self.scan(samples=1, front=120, left=0, right=300)
+        for left in (200, 0, 0, 0):
+            self.sensor(front=120, left=left, right=300, seconds=.41)
+            self.camera(())
+            self.nav.tick()
+        self.assertFalse(self.nav.explorer.nodes[8].open_exits & (1 << Direction.WEST))
+
+    def test_faulted_side_is_never_treated_as_too_far(self):
+        sensor = SensorSnapshot(0, dict(left=0, front=120, right=0), 0b001, True, 0, 0)
+        self.assertFalse(sensor.too_far('left'))
+        self.assertTrue(sensor.too_far('right'))
 
     def test_real_front_stop_still_allows_rear_inspection_and_logs_readings(self):
         self.camera()
@@ -437,6 +525,18 @@ class NavigationTests(unittest.TestCase):
         self.assertIn('front=149', self.nav.status)
         self.nav.tick()
         self.assertEqual(self.commands[-1], 'TURN_TO:180')
+
+    def test_sensor_age_pauses_dfs_only_past_one_second(self):
+        self.drive()
+        self.now += .95
+        self.camera()
+        self.nav.tick()
+        self.assertIsNone(self.nav._input_hold)
+        self.now += .1
+        self.camera()
+        self.nav.tick()
+        self.assertIsNotNone(self.nav._input_hold)
+        self.assertIn('sensor telemetry age 1.05s > 1.00s', self.nav.status)
 
     def test_camera_gap_stops_then_resumes_same_dfs_without_reactivation(self):
         self.drive()
