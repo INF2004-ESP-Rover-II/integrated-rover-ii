@@ -526,6 +526,103 @@ class NavigationTests(unittest.TestCase):
         self.nav.tick()
         self.assertEqual(self.commands[-1], 'TURN_TO:180')
 
+    def jam_step(self, distance=600, seconds=.1):
+        self.sensor(seconds=seconds)
+        self.camera(((14, distance), (17, distance + 600)))
+        self.nav.tick()
+
+    def test_jammed_forward_restarts_with_stop_then_forward(self):
+        self.drive()
+        for _ in range(15):
+            self.jam_step()
+        self.assertEqual(self.nav.phase, 'drive')  # Not yet: 1.4 s since the first check.
+        self.assertNotIn('STOP', self.commands[-1:])
+        self.jam_step()
+        self.jam_step()
+        self.assertEqual(self.commands[-1], 'STOP')
+        self.assertEqual(self.nav.phase, 'settle')
+        self.assertIn('not getting closer', self.nav.status)
+        self.jam_step(seconds=.41)
+        self.assertEqual(self.commands[-1], 'FORWARD')
+        self.assertEqual(self.nav.phase, 'drive')
+
+    def test_slow_progress_is_not_a_jam(self):
+        self.drive()
+        stops = self.commands.count('STOP')
+        for step in range(30):
+            self.jam_step(distance=600 - step * 3)  # 30 mm/s
+        self.assertEqual(self.commands.count('STOP'), stops)
+
+    def test_no_marker_in_view_cannot_trigger_a_jam(self):
+        self.drive()
+        stops = self.commands.count('STOP')
+        for _ in range(30):
+            self.sensor(seconds=.1)
+            self.camera(())
+            self.nav.tick()
+        self.assertEqual(self.commands.count('STOP'), stops)
+        self.assertEqual(self.nav.phase, 'drive')
+
+    def tof_step(self, front, seconds=.1):
+        self.sensor(front=front, seconds=seconds)
+        self.camera(())
+        self.nav.tick()
+
+    def test_front_tof_detects_a_jam_once_no_marker_is_visible(self):
+        self.drive()
+        for _ in range(17):
+            self.tof_step(500)
+        self.assertEqual(self.commands[-1], 'STOP')
+        self.assertEqual(self.nav.phase, 'settle')
+        self.assertIn('Front ToF not getting closer (500 mm)', self.nav.status)
+        self.tof_step(500, seconds=.41)
+        self.assertEqual(self.commands[-1], 'FORWARD')
+
+    def test_front_tof_closing_on_an_obstacle_is_not_a_jam(self):
+        self.drive()
+        stops = self.commands.count('STOP')
+        for step in range(30):
+            self.tof_step(700 - step * 3)  # 30 mm/s
+        self.assertEqual(self.commands.count('STOP'), stops)
+        self.assertEqual(self.nav.phase, 'drive')
+
+    def test_front_tof_without_a_real_distance_cannot_trigger_a_jam(self):
+        for front in (1023, 0, 65535):
+            with self.subTest(front=front):
+                self.setUp()
+                self.drive()
+                stops = self.commands.count('STOP')
+                for _ in range(30):
+                    self.tof_step(front)
+                self.assertEqual(self.commands.count('STOP'), stops)
+
+    def test_switching_from_marker_to_front_tof_restarts_the_jam_timer(self):
+        self.drive()
+        for _ in range(10):
+            self.jam_step()
+        for _ in range(10):
+            self.tof_step(500)
+        self.assertEqual(self.nav.phase, 'drive')
+        self.assertNotIn('not getting closer', self.nav.status)
+
+    def test_gap_in_checks_restarts_the_jam_timer(self):
+        self.drive()
+        self.jam_step()
+        self.jam_step(seconds=.6)
+        self.jam_step(seconds=.4)
+        self.jam_step(seconds=.4)
+        self.jam_step(seconds=.4)
+        self.assertEqual(self.nav.phase, 'drive')
+
+    def test_real_jam_still_ends_at_the_travel_limit(self):
+        self.drive()
+        for _ in range(600):
+            self.jam_step()
+            if not self.nav.active:
+                break
+        self.assertFalse(self.nav.active)
+        self.assertIn('TIMEOUT', self.nav.status)
+
     def test_sensor_age_pauses_dfs_only_past_one_second(self):
         self.drive()
         self.now += .95

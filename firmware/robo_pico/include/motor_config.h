@@ -29,8 +29,8 @@
 /* Heading is carried in tenths of a degree (0..3599) = 12 bits. */
 #define MC_HEADING_TOL_TENTHS   30    /* +/-3.0 deg: rotation counts as done      */
 #define MC_ROT_SLOW_ZONE_TENTHS 250   /* within 25 deg of target: rotate slowly   */
-#define MC_ROT_FAST_PCT         55    /* rotate-on-spot effort, far from target (floor calibration 30 Oct) */
-#define MC_ROT_SLOW_PCT         35    /* rotate-on-spot effort, near target        */
+#define MC_ROT_FAST_PCT         60    /* rotate-on-spot effort, far from target (floor calibration 30 Oct) */
+#define MC_ROT_SLOW_PCT         40    /* rotate-on-spot effort, near target        */
 
 /* Heading hold: turn trim = KP * error, error in tenths of a degree.
  * KP_NUM/KP_DEN = 2/10 -> 2 % turn effort per 1 deg of error. */

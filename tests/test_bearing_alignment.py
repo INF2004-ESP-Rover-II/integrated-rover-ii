@@ -33,27 +33,27 @@ class BearingTests(unittest.TestCase):
                 self.assertEqual(self.commands[-1], expected)
                 self.assertFalse(any(command.startswith('ROTATE_') for command in self.commands))
 
-    def test_trigger_and_completion_bands_are_five_degrees(self):
+    def test_trigger_and_completion_bands_are_ten_degrees(self):
         self.drive()
-        self.step(5)
-        self.step(-5)
+        self.step(10)
+        self.step(-10)
         self.assertEqual(self.nav.phase, 'drive')
-        self.step(5.1)
+        self.step(10.1)
         self.assertEqual(self.nav.phase, 'align')
-        self.step(5.1, seconds=.41)
+        self.step(10.1, seconds=.41)
         self.assertEqual(self.commands[-1], 'RIGHT')
-        self.step(5)
+        self.step(10)
         self.assertEqual(self.commands[-1], 'STOP')
 
     def test_short_pulse_stops_before_another_camera_based_adjustment(self):
         self.begin()
         self.step(12, seconds=.41)
         self.assertEqual(self.commands[-1], 'RIGHT')
-        self.step(8, seconds=self.nav.ALIGN_PULSE_S + .01)
+        self.step(11, seconds=self.nav.ALIGN_PULSE_S + .01)
         self.assertEqual(self.commands[-1], 'STOP')
-        self.step(8, seconds=.2)
+        self.step(11, seconds=.2)
         self.assertEqual(self.commands[-1], 'STOP')
-        self.step(8, seconds=.21)
+        self.step(11, seconds=.21)
         self.assertEqual(self.commands[-1], 'RIGHT')
 
     def test_three_distinct_centred_frames_then_resume_forward(self):
@@ -76,12 +76,12 @@ class BearingTests(unittest.TestCase):
     def test_overshoot_changes_direction_only_after_stopping_and_braking(self):
         self.begin()
         self.step(12, seconds=.41)
-        self.step(-7, seconds=self.nav.ALIGN_PULSE_S + .01)
+        self.step(-12, seconds=self.nav.ALIGN_PULSE_S + .01)
         self.assertEqual(self.commands[-1], 'STOP')
-        self.step(-7, seconds=.41)
+        self.step(-12, seconds=.41)
         self.assertEqual(self.commands[-2:], ['STOP', 'LEFT'])
 
-    def test_missing_target_holds_stop_instead_of_switching_markers(self):
+    def lose_target(self):
         self.begin()
         self.step(12, seconds=.41)
         self.step(12, markers=((17, 1200),))  # Original anchor 14 disappears.
@@ -90,13 +90,26 @@ class BearingTests(unittest.TestCase):
         self.step(12, seconds=.41, markers=((17, 1200),))
         self.assertEqual(len(self.commands), count)
         self.assertIn('fresh view of marker 14', self.nav.status)
-        self.step(12, seconds=120, markers=())
-        self.assertTrue(self.nav.active)
-        self.assertEqual(self.nav.phase, 'align')
-        self.assertEqual(len(self.commands), count)
-        self.assertEqual(self.commands[-1], 'STOP')
-        self.step(12)  # The same target returns; resume correction automatically.
+
+    def test_short_camera_blip_holds_stop_without_reversing(self):
+        self.lose_target()
+        self.step(12, seconds=.9, markers=((17, 1200),))
+        self.assertNotIn('BACKWARD', self.commands)
+        self.step(12)
         self.assertEqual(self.commands[-1], 'RIGHT')
+
+    def test_lost_target_reverses_until_it_returns_then_centres(self):
+        self.lose_target()
+        self.step(12, seconds=1.01, markers=((17, 1200),))
+        self.assertEqual(self.commands[-1], 'BACKWARD')
+        self.assertIn('Overshot marker 14', self.nav.status)
+        self.step(12, seconds=.1, markers=((17, 1200),))  # Refreshes the 300 ms watchdog.
+        self.assertEqual(self.commands[-1], 'BACKWARD')
+        self.step(12, seconds=.1)  # Back in view: brake at once, never switch marker.
+        self.assertEqual(self.commands[-1], 'STOP')
+        self.step(12, seconds=.41)
+        self.assertEqual(self.commands[-1], 'RIGHT')
+        self.assertEqual(self.nav._shimmy['marker'], 14)
         self.step(2)
         self.step(2, seconds=.41)
         self.step(1)
@@ -104,6 +117,40 @@ class BearingTests(unittest.TestCase):
         self.assertEqual(self.nav.phase, 'settle')
         self.step(0, seconds=.41)
         self.assertEqual(self.commands[-1], 'FORWARD')
+
+    def test_reversing_is_limited_then_holds_stop(self):
+        self.lose_target()
+        for _ in range(25):
+            self.step(12, seconds=1.01, markers=())
+        self.assertEqual(self.commands.count('BACKWARD'), self.nav.ALIGN_BACK_MAX_PULSES)
+        self.assertEqual(self.commands[-1], 'STOP')
+        self.assertTrue(self.nav.active)
+        self.assertIn('fresh view of marker 14', self.nav.status)
+
+    def test_stale_camera_never_reverses(self):
+        self.lose_target()
+        for _ in range(4):
+            self.sensor(seconds=.6)
+            self.nav.tick()
+        self.assertNotIn('BACKWARD', self.commands)
+
+    def test_reversing_does_not_change_map_or_leg(self):
+        self.lose_target()
+        cells, visited, direction = dict(self.nav.grid.cells), set(self.nav.grid.visited), self.nav.grid.direction
+        self.step(12, seconds=1.01, markers=((17, 1200),))
+        self.assertEqual(self.commands[-1], 'BACKWARD')
+        self.assertEqual(self.nav.grid.cells, cells)
+        self.assertEqual(self.nav.grid.visited, visited)
+        self.assertEqual(self.nav.grid.direction, direction)
+
+    def test_stop_cancels_reversing(self):
+        self.lose_target()
+        self.step(12, seconds=1.01, markers=((17, 1200),))
+        self.nav.stop('Emergency stop')
+        count = self.commands.count('BACKWARD')
+        self.step(12, seconds=2, markers=((17, 1200),))
+        self.assertEqual(self.commands.count('BACKWARD'), count)
+        self.assertEqual(self.commands[-1], 'STOP')
 
     def test_side_too_far_to_range_allows_strafe(self):
         self.begin()
@@ -186,10 +233,10 @@ class BearingTests(unittest.TestCase):
         self.begin()
         forward_count = self.commands.count('FORWARD')
         for pulse in range(1, 41):
-            self.step(8, seconds=.41)
+            self.step(11, seconds=.41)
             self.assertEqual(self.commands[-1], 'RIGHT')
             self.assertIn('pulse %d,' % pulse, self.nav.status)
-            self.step(8, seconds=self.nav.ALIGN_PULSE_S + .01)
+            self.step(11, seconds=self.nav.ALIGN_PULSE_S + .01)
             self.assertEqual(self.commands[-1], 'STOP')
             self.assertTrue(self.nav.active)
             self.assertEqual(self.nav._shimmy['pulses'], pulse)
@@ -236,7 +283,7 @@ class BearingTests(unittest.TestCase):
         self.begin()
         self.step(12, seconds=.41)
         count = self.commands.count('RIGHT')
-        self.step(10, seconds=.1)
+        self.step(11, seconds=.1)
         self.assertEqual(self.commands.count('RIGHT'), count + 1)
 
     def test_healthy_out_of_range_side_allows_correction(self):

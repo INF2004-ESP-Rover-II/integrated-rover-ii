@@ -90,7 +90,7 @@ class LaptopNavigator:
     SENSOR_HOLD_AGE_S = 1.0  # Pause DFS beyond this; telemetry only arrives every 500 ms.
     CAMERA_MAX_AGE_S = 1.0
     COMMAND_REFRESH_S = 0.2
-    TURN_TIMEOUT_S = 15.0
+    TURN_TIMEOUT_S = 3.0  # Per attempt: a stall brakes and retries, and the retry's start boost frees it.
     POST_TURN_INPUT_WAIT_S = 3.0
     INPUT_RECOVERY_WAIT_S = 5.0
     TURN_TOLERANCE_DEG = 5.0  # Pico reaches 3 deg; allow a small post-braking margin.
@@ -100,11 +100,15 @@ class LaptopNavigator:
     ARRIVAL_TOLERANCE_MM = 30.0  # Confirmation band after stopping; tune on hardware.
     ARRIVAL_BEARING_DEG = 30.0  # shortcut: loosened from 5.0 for mapping tests, restore before real runs.
     ARRIVAL_CONFIRM_FRAMES = 5
-    ALIGN_TRIGGER_DEG = 5.0
-    ALIGN_TARGET_DEG = 5.0
+    ALIGN_TRIGGER_DEG = 10.0
+    ALIGN_TARGET_DEG = 10.0
     ALIGN_CONFIRM_FRAMES = 3
     ALIGN_PULSE_S = .4  # One default Q/E zigzag cycle (two 200 ms halves).
     ALIGN_SIDE_CLEARANCE_MM = 150
+    JAM_WAIT_S = 1.5  # No encoders: a marker that stops getting closer means the wheels jammed.
+    JAM_MIN_PROGRESS_MM = 25.0  # Above camera range noise, below a slow leg's travel in JAM_WAIT_S.
+    ALIGN_BACK_WAIT_S = 1.0  # Ride out short camera blips before assuming an overshoot.
+    ALIGN_BACK_MAX_PULSES = 5  # No usable rear sensor, so limit how far it can reverse blind.
     FAR_SAMPLES = 3  # Fresh readings in a row before 0 means "too far", not a one-off dropout.
 
     def __init__(self, send_command, report=lambda message: None, clock=time.monotonic,
@@ -159,6 +163,7 @@ class LaptopNavigator:
         self._arrival_at = -float("inf")
         self._hold_marker: Optional[int] = None
         self._await_marker = False
+        self._jam_ref = None
         self._turn_braked_until = 0.0
         self._reset_turn()
 
@@ -209,6 +214,38 @@ class LaptopNavigator:
                 opened |= 1 << ((heading + offset) % 4)
         return opened
 
+    def _restart_if_jammed(self, now):
+        """STOP then FORWARD gives the wheels a new start boost when travel stalls.
+
+        Progress comes from the marker ahead, or the front ToF once none is visible.
+        """
+        marker = self._bearing_target()
+        front = GridLocalizer.reading(self.sensor, 'front')
+        if marker is not None:
+            source, distance = 'Marker %d' % marker.marker_id, marker.camera_distance_mm
+        elif front is not None and front <= 1000:  # 1023 is a range category, not a distance.
+            source, distance = 'Front ToF', front
+        else:
+            self._jam_ref = None
+            return False
+        ref = self._jam_ref
+        # A gap in checks (pause, centring) or a new source restarts the measurement.
+        if (ref is None or ref['source'] != source or
+                now - ref['checked'] > self.JAM_WAIT_S / 3 or
+                distance <= ref['distance'] - self.JAM_MIN_PROGRESS_MM):
+            self._jam_ref = dict(source=source, distance=distance, since=now, checked=now)
+            return False
+        ref['checked'] = now
+        if now - ref['since'] < self.JAM_WAIT_S:
+            return False
+        self._jam_ref = None
+        if self._send('STOP', now, force=True):
+            self.phase = 'settle'
+            self.ready_at = now + self.STOP_SETTLE_S
+            self._status('%s not getting closer (%.0f mm); restarting forward travel' %
+                         (source, distance))
+        return True
+
     def _side_clearance(self, side):
         """Strafe clearance; a side too far to range has nothing close to hit."""
         return 1023 if self.sensor.too_far(side) else GridLocalizer.reading(self.sensor, side)
@@ -240,7 +277,7 @@ class LaptopNavigator:
 
     def motion_received(self, command):
         if self.grid is not None:
-            if self._shimmy is not None and command in ('LEFT', 'RIGHT'):
+            if self._shimmy is not None and command in ('LEFT', 'RIGHT', 'BACKWARD'):
                 # This is a bounded lateral adjustment on the current leg, not
                 # a new DFS direction or a node arrival.
                 self.grid.forward = False
@@ -325,7 +362,8 @@ class LaptopNavigator:
             return False
         self._shimmy = dict(marker=marker.marker_id, started=now,
                             paused=0.0,
-                            stage='brake', pulses=0, centred=0, last_frame=-1)
+                            stage='brake', pulses=0, centred=0, last_frame=-1,
+                            missing_since=None, back_pulses=0)
         if not self._send('STOP', now, force=True):
             self._shimmy = None
             return True
@@ -347,15 +385,19 @@ class LaptopNavigator:
             return
         marker = self._bearing_target(state['marker'])
         if state['stage'] == 'pulse':
-            side = 'right' if state['command'] == 'RIGHT' else 'left'
-            clearance = self._side_clearance(side)
-            if clearance is None or clearance < self.ALIGN_SIDE_CLEARANCE_MM:
-                self.stop('Lateral centring stopped: %s side clearance is %s' %
-                          (side, 'unavailable' if clearance is None else '%d mm' % clearance))
-                return
-            # End a pulse immediately if the target disappears or reaches the band.
-            if (now >= self.ready_at or marker is None or
-                    abs(marker.camera_bearing_deg) <= self.ALIGN_TARGET_DEG):
+            backing = state['command'] == 'BACKWARD'
+            if not backing:
+                side = 'right' if state['command'] == 'RIGHT' else 'left'
+                clearance = self._side_clearance(side)
+                if clearance is None or clearance < self.ALIGN_SIDE_CLEARANCE_MM:
+                    self.stop('Lateral centring stopped: %s side clearance is %s' %
+                              (side, 'unavailable' if clearance is None else '%d mm' % clearance))
+                    return
+            # End a strafe if the target disappears or reaches the band; end a
+            # reverse as soon as the target is back in view.
+            if (now >= self.ready_at or
+                    (marker is not None if backing else
+                     marker is None or abs(marker.camera_bearing_deg) <= self.ALIGN_TARGET_DEG)):
                 if self._send('STOP', now, force=True):
                     state['stage'] = 'brake'
                     state['centred'] = 0
@@ -372,8 +414,24 @@ class LaptopNavigator:
             if state['last_frame'] != self.last_frame:
                 state['centred'] = 0
                 state['last_frame'] = self.last_frame
+            if now - self.last_camera_at > VisionFeed.MAX_AGE_MS / 1000:
+                state['missing_since'] = None  # No fresh frame: this says nothing about the marker.
+            elif state['missing_since'] is None:
+                state['missing_since'] = now
+            elif (now - state['missing_since'] >= self.ALIGN_BACK_WAIT_S and
+                    state['back_pulses'] < self.ALIGN_BACK_MAX_PULSES):
+                # The marker has passed under the camera: an overshoot.
+                state.update(command='BACKWARD', missing_since=None,
+                             back_pulses=state['back_pulses'] + 1)
+                if self._send('BACKWARD', now, force=True):
+                    state['stage'] = 'pulse'
+                    self.ready_at = now + self.ALIGN_PULSE_S
+                    self._status('Overshot marker %d: reversing, pulse %d of %d' %
+                                 (state['marker'], state['back_pulses'], self.ALIGN_BACK_MAX_PULSES))
+                return
             self._status('Centring waiting: need a fresh view of marker %d; holding STOP' % state['marker'])
             return
+        state['missing_since'] = None
         if self.last_camera_at < self.ready_at or self.sensor.received_at < self.ready_at:
             return  # Require a post-braking observation, not a queued pre-strafe frame.
         bearing = marker.camera_bearing_deg
@@ -921,6 +979,8 @@ class LaptopNavigator:
             self._grid_tick(now)
             if not self.active or self.phase != 'drive':
                 return
+            if not self.grid.wall_stop and self._restart_if_jammed(now):
+                return
         if self.grid is None and sensor is not None and sensor.stop_required and self.phase == "drive":
             self.stop("Sensor stop request")
             return
@@ -1018,7 +1078,7 @@ class LaptopNavigator:
                     self.phase = "scan_turn"
                     self._drive_turn_corrections = 0
                     self._reset_turn()
-                    self.scan_turn_deadline = now + 15.0
+                    self.scan_turn_deadline = now + self.TURN_TIMEOUT_S
                     self._status("Marker %d: turning to inspect %s | ToF front=%s, left=%s, "
                                  "right=%s mm; faults=0x%02x; forward stop < %d mm" %
                                  (current, scan_direction.name, sensor.distances.get('front'),

@@ -681,8 +681,8 @@ class RobotGUI:
         if not self.send_command("TURN_TO:%d" % heading):
             self.cancel_manual_turn()
             return
-        self.manual_turn_job = self.root.after(int(self.navigator.TURN_TIMEOUT_S * 1000),
-                                                self.manual_turn_timeout)
+        # Longer than a DFS attempt: a manual turn has no automatic retry.
+        self.manual_turn_job = self.root.after(15000, self.manual_turn_timeout)
         self.log("Turning to absolute IMU heading %d°. Stop turn or E-STOP cancels it." % heading)
 
     def cancel_manual_turn(self):
