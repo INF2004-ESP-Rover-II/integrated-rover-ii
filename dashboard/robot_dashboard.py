@@ -13,21 +13,15 @@ import time
 import json
 from datetime import datetime
 import math
-import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from collections import deque
-import gc
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
 from tkinter import ttk
 from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
 from mapping.config import CAMERA_HEIGHT_CM, CAMERA_FORWARD_CM
-import os
 from laptop_navigation import LaptopNavigator
 from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
 
@@ -56,6 +50,9 @@ ROBOT_LOST_S = 2.0
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 WATCHDOG_CHECK_MS = 250
 TOF_UART_STALE_MS = 500
+FRONT_CLEAR_MARGIN_MM = 50
+
+SHOW_STOP_LATENCY = False
 
 ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
@@ -99,9 +96,6 @@ class RobotGUI:
         self.broker_connected = tk.StringVar(value="Not Connected")
         self.robot_connected = tk.StringVar(value="Unknown")
         self.robot_status = tk.StringVar(value="Unknown")
-        self.robot_ip = tk.StringVar(value="N/A")
-        self.last_msg_time = tk.StringVar(value="Never")
-        self.msg_count = 0
 
         # Press/hold state
         self.active_command = None
@@ -152,9 +146,6 @@ class RobotGUI:
 
         # ToF values arrive in the obstacle object of robot/telemetry.
         self.last_tof_rx = None
-
-        # Map following mode
-        self.follow_robot = tk.BooleanVar(value=True)
         
         # Autonomous mode
         self.auto_mode = tk.BooleanVar(value=False)
@@ -194,6 +185,16 @@ class RobotGUI:
         self.root.after(100, self.navigation_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
+    def style_tabs(self):
+        style = ttk.Style(self.root)
+        style.theme_use('clam')
+        style.configure('Dash.TNotebook', background='#34495e', borderwidth=0, tabmargins=(8, 8, 8, 0), bordercolor='#34495e', lightcolor='#2c3e50', darkcolor='#2c3e50')
+        style.configure('Dash.TNotebook.Tab', background='#2c3e50', foreground='#bdc3c7', padding=(16, 6), font=('Arial', 10, 'bold'), borderwidth=0, bordercolor='#34495e', lightcolor='#2c3e50', darkcolor='#2c3e50')
+        style.map('Dash.TNotebook.Tab', background=[('selected', '#3498db'), ('active', '#3d566e')], foreground=[('selected', 'white'), ('active', 'white')], lightcolor=[('selected', '#3498db')], bordercolor=[('selected', '#3498db')], padding=[('selected', (16, 6))], expand=[('selected', (0, 0, 0, 0))])
+        style.layout('Dash.TNotebook.Tab', [('Notebook.tab', {'sticky': 'nswe', 'children': [
+            ('Notebook.padding', {'side': 'top', 'sticky': 'nswe', 'children': [
+                ('Notebook.label', {'side': 'top', 'sticky': ''})]})]})])
+
     def setup_ui(self):
         # Header
         header = tk.Frame(self.root, bg='#2c3e50')
@@ -229,75 +230,44 @@ class RobotGUI:
                                      fg='white', font=("Arial", 10, "bold"), width=12)
         self.connect_btn.grid(row=0, column=4, padx=10, pady=6)
 
-        # Status indicators
+        # Status bar
         status_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
         status_frame.pack(pady=2, padx=20, fill='x')
+        safety = tk.Frame(status_frame, bg='#34495e')
+        safety.pack(side='right', padx=10, pady=4)
 
-        tk.Label(status_frame, text="Broker:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=0, padx=10, pady=8, sticky='w')
-        self.broker_status_label = tk.Label(status_frame, textvariable=self.broker_connected,
-                                            fg='#e74c3c', bg='#34495e', font=("Arial", 10, "bold"))
-        self.broker_status_label.grid(row=0, column=1, padx=5, pady=8, sticky='w')
+            # E-Stop button
+        self.estop_btn = tk.Button(safety, text="⚠ E-STOP", command=self.trigger_estop, bg='#c0392b', fg='white', font=("Arial", 12, "bold"), width=10, relief='raised', bd=3)
+        self.estop_btn.grid(row=0, column=0, sticky='ew', pady=(0, 4))
+        self.estop_status_label = tk.Label(safety, text="", width=14, anchor='w', fg='white', bg='#34495e', font=("Arial", 9, "bold"))
+        self.estop_status_label.grid(row=0, column=1, padx=(8, 0))
+            # Reset Safety button
+        self.reset_safety_btn = tk.Button(safety, text="Reset Safety", command=self.request_safety_reset, bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
+        self.reset_safety_btn.grid(row=1, column=0, sticky='ew')
 
-        tk.Label(status_frame, text="Robot:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=2, padx=10, pady=8, sticky='w')
-        self.robot_conn_label = tk.Label(status_frame, textvariable=self.robot_connected,
-                                         fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"))
-        self.robot_conn_label.grid(row=0, column=3, padx=5, pady=8, sticky='w')
+        readings = tk.Frame(status_frame, bg='#34495e')
+        readings.pack(side='left', fill='x', expand=True, padx=4, pady=2)
 
-        tk.Label(status_frame, text="Status:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=4, padx=10, pady=8, sticky='w')
-        self.robot_status_label = tk.Label(status_frame, textvariable=self.robot_status,
-                                           fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"))
-        self.robot_status_label.grid(row=0, column=5, padx=5, pady=8, sticky='w')
+        def reading(row, col, title, value_colour, textvariable=None, text=None):
+            tk.Label(readings, text=title, fg='white', bg='#34495e',
+                     font=("Arial", 10, "bold")).grid(row=row, column=col * 2, padx=(10, 4), pady=2, sticky='w')
+            label = tk.Label(readings, textvariable=textvariable, text=text, fg=value_colour,
+                             bg='#34495e', font=("Arial", 10, "bold"), anchor='w', justify='left')
+            label.grid(row=row, column=col * 2 + 1, padx=(0, 10), pady=2, sticky='w')
+            return label
 
-        # Heading display
-        tk.Label(status_frame, text="Heading:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=6, padx=10, pady=8, sticky='w')
-        self.heading_label = tk.Label(status_frame, text="N/A",
-                                      fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.heading_label.grid(row=0, column=7, padx=5, pady=8, sticky='w')
+        # Status readings
+        self.broker_status_label = reading(0, 0, "Broker:", '#e74c3c', textvariable=self.broker_connected)
+        self.robot_conn_label = reading(0, 1, "Robot:", '#95a5a6', textvariable=self.robot_connected)
+        self.robot_status_label = reading(0, 2, "Status:", '#95a5a6', textvariable=self.robot_status)
+        self.robot_status_label.config(wraplength=260)
+        self.heading_label = reading(1, 0, "Heading:", '#3498db', text="N/A")
+        self.pitch_label = reading(1, 1, "Pitch:", '#3498db', text="N/A")
+        self.roll_label = reading(1, 2, "Roll:", '#3498db', text="N/A")
+        self.ultrasonic_label = reading(1, 3, "Ultrasonic (mm):", '#3498db', text="Front:0 Back:0")
 
-        # Pitch display
-        tk.Label(status_frame, text="Pitch:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=8, padx=10, pady=8, sticky='w')
-        self.pitch_label = tk.Label(status_frame, text="N/A",
-                                    fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.pitch_label.grid(row=0, column=9, padx=5, pady=8, sticky='w')
-
-        tk.Label(status_frame, text="Roll:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=10, padx=10, pady=8, sticky='w')
-        self.roll_label = tk.Label(status_frame, text="N/A",
-                                   fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.roll_label.grid(row=0, column=11, padx=5, pady=8, sticky='w')
-
-        # Add ultrasonic readings display
-        tk.Label(status_frame, text="Ultrasonic (mm):", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=12, padx=10, pady=8, sticky='w')
-        self.ultrasonic_label = tk.Label(status_frame, text="Front:0 Back:0",
-                                        fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.ultrasonic_label.grid(row=0, column=13, padx=5, pady=8, sticky='w')
-        
-        # E-Stop button and status (prominent position)
-        self.estop_btn = tk.Button(status_frame, text="⚠ E-STOP", 
-                                   command=self.trigger_estop,
-                                   bg='#c0392b', fg='white', font=("Arial", 12, "bold"),
-                                   width=10, relief='raised', bd=3)
-        self.estop_btn.grid(row=0, column=14, padx=15, pady=8)
-        
-        # E-Stop status indicator
-        self.estop_status_label = tk.Label(status_frame, text="",
-                                          fg='white', bg='#34495e', font=("Arial", 9, "bold"))
-        self.estop_status_label.grid(row=0, column=15, padx=5, pady=8, sticky='w')
-
-        self.reset_safety_btn = tk.Button(
-            status_frame, text="Reset Safety", command=self.request_safety_reset,
-            bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
-        self.reset_safety_btn.grid(row=1, column=14, padx=15, pady=(0, 8))
-
-        # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
-        tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
-                                  fg='white', bg='#34495e', font=("Arial", 8, "bold"))
+        # ToF readings
+        tof_frame = tk.LabelFrame(self.root, text="ToF (mm)", fg='white', bg='#34495e', font=("Arial", 8, "bold"))
         tof_frame.pack(padx=20, pady=(2, 2), fill='x')
         self.tof_labels = {}
         self.tof_state_labels = {}
@@ -353,7 +323,9 @@ class RobotGUI:
         tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
         tk.Label(dfs_frame, text="Side opening ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
-        tk.Label(dfs_frame, textvariable=self.dfs_status, fg='yellow', bg='#34495e').pack(side='left', padx=12)
+        dfs_status_label = tk.Label(dfs_frame, textvariable=self.dfs_status, fg='yellow', bg='#34495e', anchor='w', justify='left')
+        dfs_status_label.pack(side='left', padx=12, fill='x', expand=True)
+        dfs_status_label.bind('<Configure>', lambda e: e.widget.config(wraplength=max(e.width - 4, 100)))
 
         turn_frame = tk.Frame(self.root, bg='#34495e')
         turn_frame.pack(padx=20, pady=2, fill='x')
@@ -373,10 +345,9 @@ class RobotGUI:
         # Main area with 3 columns
         main = tk.Frame(self.root, bg='#2c3e50')
         main.pack(fill='both', expand=True, padx=20, pady=(4, 8))
-        # Make left column slimmer to free space for map and logs
         main.grid_columnconfigure(0, weight=0, minsize=220)
-        main.grid_columnconfigure(1, weight=10, minsize=800)   # the map is the main focus
-        main.grid_columnconfigure(2, weight=1, minsize=300)
+        main.grid_columnconfigure(1, weight=10, minsize=400)
+        main.grid_columnconfigure(2, weight=1, minsize=260)
         main.grid_rowconfigure(0, weight=1)
 
         # LEFT COLUMN - Key mappings only (no movement buttons)
@@ -407,7 +378,8 @@ class RobotGUI:
         self.map_frame.pack(fill='both', expand=True)
 
         # Subsystem 4: tabs inside the Map frame. "Live view" keeps the original ToF placeholder.
-        self.map_tabs = ttk.Notebook(self.map_frame)
+        self.style_tabs()
+        self.map_tabs = ttk.Notebook(self.map_frame, style='Dash.TNotebook', takefocus=False)
         self.map_tabs.pack(fill='both', expand=True)
         live_tab = tk.Frame(self.map_tabs, bg='#2c3e50')
         self.map_tabs.add(live_tab, text="Live view")
@@ -418,7 +390,7 @@ class RobotGUI:
         self.map_tabs.add(self.mapping, text="Mapping & path")
         self.map_tabs.select(self.mapping)
 
-        # !! ToF mapping display to be here
+        # Live view: Matplotlib grid with rover dot and markers
         self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
         # Initial 6x6 grid of 60 cm cells; expand for markers beyond its edges.
@@ -525,8 +497,9 @@ class RobotGUI:
         if type(threshold) is not int or not 1 <= threshold <= 1000:
             threshold = 150
         front = distances.get('front')
-        self.front_obstacle_snapshot = (type(front) is int and 0 < front < threshold and
-                                       not (faults is not None and faults & 2))
+        front_seen = type(front) is int and 0 < front and not (faults is not None and faults & 2)
+        limit = threshold + FRONT_CLEAR_MARGIN_MM if self.front_blocked else threshold
+        self.front_obstacle_snapshot = (front_seen and front < limit) or stop is True
         stop_text = "YES" if stop is True else ("NO" if stop is False else "--")
         blocked_text = f"0x{blocked:02X}" if blocked is not None else "--"
         urgent_text = f"0x{urgent:02X}" if urgent is not None else "--"
@@ -1021,7 +994,7 @@ class RobotGUI:
             if remaining > 0:
                 self.estop_status_label.config(
                     text=f"🔒 LOCKED ({remaining:.1f}s)",
-                    fg='#e74c3c',
+                    fg='white',
                     bg='#c0392b'
                 )
                 # Schedule next update
@@ -1095,11 +1068,9 @@ class RobotGUI:
         self.mqtt_client.publish(TOPIC_HEARTBEAT, str(self.link_heartbeat_seq), qos=0)
         self.link_heartbeat_job = self.root.after(LINK_HEARTBEAT_MS, self.link_heartbeat_tick)
 
-    # Removed reset_all_buttons (no on-screen movement buttons to manage)
-
     def on_key_press(self, event):
         if isinstance(event.widget, tk.Entry):
-                    return
+            return
         
         ch = event.char.lower() if event.char else ''
 
@@ -1292,7 +1263,6 @@ class RobotGUI:
         self.clear_tof_readings("Disconnected")
         self.robot_status.set("Unknown")
         self.robot_status_label.config(fg='#95a5a6')
-        self.robot_ip.set("N/A")
         self.connect_btn.config(text="Connect", bg='#27ae60')
         self.log("Disconnected from MQTT broker")
 
@@ -1324,8 +1294,6 @@ class RobotGUI:
 
     def handle_mqtt_message(self, topic, payload):
         ts = datetime.now().strftime("%H:%M:%S")
-        self.last_msg_time.set(ts)
-        self.msg_count += 1
 
         if topic == TOPIC_STATUS:
             if payload.startswith("HEADING_ZERO_") or payload == "HEADING_ZEROED":
@@ -1352,12 +1320,12 @@ class RobotGUI:
             elif payload == "STOPPED":
                 if self.stop_sent_at is not None:
                     ms = (time.perf_counter() - self.stop_sent_at) * 1000
-                    if ms < 2000:
+                    if ms < 2000 and SHOW_STOP_LATENCY:
                         self.stop_latencies.append(ms)
                         s_ = sorted(self.stop_latencies)
                         self.log(f"[{ts}] STOP confirmed in {ms:.0f} ms round trip "
                                  f"(n={len(s_)}, min {s_[0]:.0f}, median {s_[len(s_)//2]:.0f}, max {s_[-1]:.0f})")
-                if self.robot_status != "SAFETY_LOCKED":
+                if self.robot_status.get() != "SAFETY_LOCKED":
                     self.robot_status_label.config(fg='#f39c12')
                     self.log(f"[{ts}] Robot stopped")
             elif payload == "RUNNING":
@@ -1413,6 +1381,7 @@ class RobotGUI:
                 data = json.loads(payload)
                 if not isinstance(data, dict):
                     return
+                self.last_telemetry_rx = time.time()
                 self.navigator.sensor_received(data)
                 self.update_tof_readings(data.get("obstacle"))
                 imu = data.get("imu", {})
@@ -1462,9 +1431,7 @@ class RobotGUI:
                 self.ultrasonic_label.config(
                     text=f"Front:{front_str} Back:{back_str}")
 
-                self.last_telemetry_rx = time.time()
-
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, AttributeError):
                 pass
 
     def on_mqtt_disconnect(self, client, userdata, rc):
@@ -1523,8 +1490,6 @@ class RobotGUI:
         except Exception as e:
             self.log(f"Send failed: {e}")
             return False
-
-    # Removed no-op connection monitor
 
     def log(self, message):
         self.log_file.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {message}\n")
