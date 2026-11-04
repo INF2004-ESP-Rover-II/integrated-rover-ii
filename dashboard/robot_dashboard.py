@@ -768,7 +768,7 @@ class RobotGUI:
                 else:
                     self.log("Navigation command %s withheld: robot telemetry unavailable/stale." % command)
                     return False
-        return self.send_command(command, quiet=True)
+        return self.send_command(command, quiet=True, auto=True)
 
     def navigation_tick(self):
         if (self.front_obstacle_snapshot is not None and self.last_tof_rx is not None and
@@ -1482,7 +1482,7 @@ class RobotGUI:
         self.broker_connected.set("Disconnected")
         self.broker_status_label.config(fg='#e74c3c')
 
-    def send_command(self, command, quiet=False):
+    def send_command(self, command, quiet=False, auto=False):
         if getattr(self, 'heading_zero_pending', False):
             if command in ("STOP", "ESTOP", "RESET_SAFETY", "AUTO_STOP"):
                 self.cancel_heading_zero()
@@ -1503,7 +1503,10 @@ class RobotGUI:
         try:
             ts = datetime.now().strftime("%H:%M:%S")
             # Movement speeds are set on the robot. TURN_TO carries its heading.
-            payload = command
+            # DFS forward goes out as MOVE_FORWARD: an autonomous move (FR-40) that
+            # the RoboPico keeps going itself and can tell apart from the W key.
+            # The navigator still sees "FORWARD" below for its grid tracking.
+            payload = "MOVE_FORWARD" if (auto and command == "FORWARD") else command
 
             if not quiet:
                 self.log(f"[{ts}] → {command}")

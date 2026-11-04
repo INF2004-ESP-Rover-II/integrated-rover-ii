@@ -348,12 +348,18 @@ motor_error_t motor_auto_drive(int speed_percent) {
     if (speed_percent < -100 || speed_percent > 100) return MOTOR_ERR_PIN;
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = auto_checks();
-    if (r == MOTOR_OK) {
+    if (r == MOTOR_OK && speed_percent > 0 && s_front_blocked)
+        r = MOTOR_ERR_FRONT_BLOCKED;             /* obstacle ahead: only forward is blocked */
+    if (r == MOTOR_OK && s_auto_word && mc_state(&s_mc) == MS_AUTO_DRIVE &&
+        mc_s8(s_auto_word, 8) == speed_percent) {
+        /* Same move sent again (the laptop repeats it): keep going, no restart. */
+    } else if (r == MOTOR_OK) {
         /* Hold the heading the rover has now; if it is already driving
          * straight, keep the same target so a speed change doesn't re-aim. */
         int hold = (mc_state(&s_mc) == MS_AUTO_DRIVE && s_auto_word)
                    ? (int)mc_hdg9(s_auto_word, 16) : heading_deg_now();
         r = start_auto(mc_pack_auto_drive(next_seq(), (int8_t)speed_percent, (uint16_t)hold));
+        if (r == MOTOR_OK) s_forward_driving = speed_percent > 0;  /* a front obstacle stops it */
     }
     restore_interrupts(irq);
     return r;
@@ -364,7 +370,10 @@ motor_error_t motor_auto_rotate_to(int heading_deg) {
     if (heading_deg < 0) heading_deg += 360;
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = auto_checks();
-    if (r == MOTOR_OK) r = start_auto(mc_pack_auto_rotate(next_seq(), (uint16_t)heading_deg));
+    if (r == MOTOR_OK) {
+        r = start_auto(mc_pack_auto_rotate(next_seq(), (uint16_t)heading_deg));
+        if (r == MOTOR_OK) s_forward_driving = false;   /* turning is not stopped by a front obstacle */
+    }
     restore_interrupts(irq);
     return r;
 }

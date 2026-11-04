@@ -233,7 +233,7 @@ class TurnTests(unittest.TestCase):
         sent, links, logs = [], [], []
         gui = SimpleNamespace(navigator=self.nav, estop_active=False, robot_link='lost',
                               log=logs.append,
-                              send_command=lambda command, quiet: sent.append(command) or True)
+                              send_command=lambda command, quiet, auto=False: sent.append(command) or True)
         def set_link(state):
             links.append(state)
             gui.robot_link = state
