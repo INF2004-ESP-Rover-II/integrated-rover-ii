@@ -350,10 +350,20 @@ static void process_command(const char *command)
             result = motor_auto_stop();
 
         char msg[80];
+        static char last_move[32] = "";
+        if (result == MOTOR_OK && strncmp(cmd_buffer, "MOVE_", 5) == 0 &&
+            strcmp(last_move, command) == 0 && motor_auto_status() == MOTOR_AUTO_RUNNING) {
+            return;   // the laptop repeats MOVE_FORWARD: still running, no new reply
+        }
+        strncpy(last_move, command, sizeof(last_move) - 1);
         if (result == MOTOR_OK) {
             // Also report consecutive short turns that finish between loop polls.
             last_auto_reported = MOTOR_AUTO_RUNNING;
             snprintf(msg, sizeof(msg), "AUTO_MOVE: %s", command);
+        }
+        else if (result == MOTOR_ERR_FRONT_BLOCKED) {
+            last_move[0] = '\0';
+            snprintf(msg, sizeof(msg), "FORWARD_BLOCKED");   // same reply as the W key
         }
         else if (result == MOTOR_ERR_NO_HEADING)
             snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (no fresh heading from IMU)", cmd_buffer);
