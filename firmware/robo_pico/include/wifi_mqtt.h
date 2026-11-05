@@ -68,6 +68,7 @@ wifi_mqtt_error_t mqtt_publish_status(const char *status);
  * At most one telemetry publish is awaiting completion; poll the network before retrying.
  */
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
+wifi_mqtt_error_t mqtt_publish_telemetry_bin(const uint8_t *data, size_t len);
 
 /**
  * @brief Check MQTT connection status

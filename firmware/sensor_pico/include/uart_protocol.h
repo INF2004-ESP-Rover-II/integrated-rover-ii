@@ -25,14 +25,10 @@ typedef struct {
     float gyro_y;
     float gyro_z;
     
-    // IMU - Magnetometer (gauss)
-    float mag_x;
-    float mag_y;
-    float mag_z;
-    
-    // Calculated heading (degrees, 0-360)
+    // MPU6500 relative heading (degrees, 0-360 clockwise from startup)
     float heading;
-    float pitch;
+    float pitch;               // Degrees, +X forward/+Z up: negative nose-up
+    float roll;                // Degrees, rotation about +X
     
     // Ultrasonic distances (cm)
     uint16_t ultrasonic_front;
@@ -54,7 +50,7 @@ typedef struct {
 
     // uint8_t blocked_mask;
     // uint8_t urgent_mask;
-    // uint8_t fault_mask;         // Now packed: offline/accepted-result timeout.
+    // uint8_t fault_mask;         // Now packed: initialization/result-read timeout.
     // uint8_t stop_required;      // 0 or 1; a status flag, not a motor command.
     // Blocked, Urgent and Fault masks need only 3 bits each (1 for each ToF)
     // stop_required only needs 1 bit

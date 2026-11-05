@@ -151,7 +151,7 @@ static void mqtt_publish_cb(void *arg, err_t result) {
     }
 }
 
-static wifi_mqtt_error_t publish_message(const char *topic, const char *data, bool telemetry) {
+static wifi_mqtt_error_t publish_message(const char *topic, const void *data, size_t length, bool telemetry) {
     if (!mqtt_connected_flag || mqtt_client == NULL || !mqtt_client_is_connected(mqtt_client)) {
         return MQTT_ERR_CONNECT_FAILED;
     }
@@ -165,7 +165,6 @@ static wifi_mqtt_error_t publish_message(const char *topic, const char *data, bo
         return MQTT_ERR_BUSY;
     }
 
-    size_t length = strlen(data);
     // QoS 0 needs topic length + topic + payload + up to five fixed-header bytes.
     if (length > UINT16_MAX || length + strlen(topic) + 7u > MQTT_OUTPUT_RINGBUF_SIZE) {
         if (publish_warning_due()) {
@@ -377,11 +376,15 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
 }
 
 wifi_mqtt_error_t mqtt_publish_status(const char *status) {
-    return publish_message(MQTT_TOPIC_STATUS, status, false);
+    return publish_message(MQTT_TOPIC_STATUS, status, strlen(status), false);
 }
 
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
-    return publish_message(MQTT_TOPIC_TELEMETRY, data, true);
+    return publish_message(MQTT_TOPIC_TELEMETRY, data, strlen(data), true);
+}
+
+wifi_mqtt_error_t mqtt_publish_telemetry_bin(const uint8_t *data, size_t len) {
+    return publish_message(MQTT_TOPIC_TELEMETRY, data, len, true);
 }
 
 bool mqtt_is_connected(void) {

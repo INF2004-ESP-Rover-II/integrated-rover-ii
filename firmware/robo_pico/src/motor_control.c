@@ -17,7 +17,8 @@ static int8_t k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;   /* adjustable on the be
 static int     k_kick_pct = MC_KICK_PCT;                  /* adjustable on the bench */
 static int     k_kick_ms  = (int)MC_KICK_MS;
 static int     k_zigzag_ms = (int)MC_STRAFE_ZIGZAG_MS;          /* adjustable on the bench */
-static const int8_t k_trim[MC_WHEELS]     = MC_TRIM_PCT;
+static int8_t k_trim_fwd[MC_WHEELS] = MC_TRIM_FWD_PCT;   /* adjustable on the bench */
+static int8_t k_trim_rev[MC_WHEELS] = MC_TRIM_REV_PCT;   /* adjustable on the bench */
 static const int8_t k_invert[MC_WHEELS]   = MC_INVERT;
 
 /* ============================== helpers ============================== */
@@ -177,6 +178,17 @@ void mc_set_deadband(int wheel, int pct) {
 }
 int mc_get_deadband(int wheel) { return k_deadband[clampi(wheel, 0, MC_WHEELS - 1)]; }
 
+void mc_set_trim(int wheel, int fwd_pct, int rev_pct) {
+    fwd_pct = clampi(fwd_pct, 0, 100);
+    rev_pct = clampi(rev_pct, 0, 100);
+    for (int i = 0; i < MC_WHEELS; i++) if (wheel < 0 || wheel == i) {
+        k_trim_fwd[i] = (int8_t)fwd_pct;
+        k_trim_rev[i] = (int8_t)rev_pct;
+    }
+}
+int mc_get_trim_fwd(int wheel) { return k_trim_fwd[clampi(wheel, 0, MC_WHEELS - 1)]; }
+int mc_get_trim_rev(int wheel) { return k_trim_rev[clampi(wheel, 0, MC_WHEELS - 1)]; }
+
 void mc_set_kick(int pct, int ms) { k_kick_pct = clampi(pct, 0, 100); k_kick_ms = clampi(ms, 0, 1000); }
 int  mc_get_kick_pct(void) { return k_kick_pct; }
 int  mc_get_kick_ms(void)  { return k_kick_ms; }
@@ -300,7 +312,7 @@ void mc_immediate_stop(mc_t *m, mc_stop_kind_t kind, uint32_t now_ms, mc_out_t *
     motor_state_t s = (motor_state_t)m->state;
     bool moving = is_moving_state(s);
 
-    if (kind == MC_STOP_OPERATOR) {
+    if (kind != MC_STOP_ESTOP) {
         /* Operator stop: PWM 0 at once, back to IDLE, map/mission state untouched. */
         hard_stop(m, (s == MS_SAFE_STOP || s == MS_ZERO_GYRO) ? s : MS_IDLE, now_ms, out);
         return;
@@ -329,12 +341,12 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
         bool needs_heading = (s != MS_MANUAL) || !MC_ALLOW_MANUAL_WITHOUT_HEADING;
         if (needs_heading && !heading_ok(m)) {
             out->fault_set |= FAULT_HEADING_STALE;
-            hard_stop(m, MS_SAFE_STOP, now_ms, out);
+            hard_stop(m, MS_IDLE, now_ms, out);
             return;
         }
         if ((uint32_t)(now_ms - m->last_cmd_ms) > MC_CMD_TIMEOUT_MS) {   /* FR-42 */
             out->fault_set |= FAULT_CMD_TIMEOUT;
-            hard_stop(m, MS_SAFE_STOP, now_ms, out);
+            hard_stop(m, MS_IDLE, now_ms, out);
             return;
         }
     }
@@ -378,7 +390,10 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
 #endif
         if (absi(err) <= MC_HEADING_TOL_TENTHS) {                   /* FR-41 tolerance */
             set_result(m, out, MR_HEADING_REACHED, (uint8_t)m->active_seq);
-            begin_ramp_down(m); s = MS_RAMP_DOWN;
+            // Brake locally at the target instead of continuing to rotate
+            // through a ramp-down or waiting for a laptop STOP over MQTT.
+            hard_stop(m, MS_IDLE, now_ms, out);
+            return;
         } else {
             int mag = absi(err) > MC_ROT_SLOW_ZONE_TENTHS ? MC_ROT_FAST_PCT : MC_ROT_SLOW_PCT;
             wz = err > 0 ? mag : -mag;
@@ -431,7 +446,7 @@ void mc_step(mc_t *m, uint32_t now_ms, uint32_t heading_word, mc_out_t *out) {
 
     /* ---- final duty per wheel: trim, invert, deadband ---- */
     for (int i = 0; i < MC_WHEELS; i++) {
-        int d = m->duty[i] * k_trim[i] / 100;
+        int d = m->duty[i] * (m->duty[i] > 0 ? k_trim_fwd[i] : k_trim_rev[i]) / 100;
         if (k_invert[i]) d = -d;
         if (d != 0) {
             int mag = k_deadband[i] + (100 - k_deadband[i]) * absi(d) / 100;

@@ -190,7 +190,7 @@ static void test_ramp_and_normal_stop(void) {
 }
 
 static void test_command_timeout(void) {
-    puts("FR-42 command timeout -> SAFE STOP, refresh keeps it alive");
+    puts("FR-42 command timeout -> IDLE, refresh keeps it alive");
     sim_t s; sim_init(&s, 0); sim_tick(&s); mc_set_system_ready(&s.mc, true);
     uint32_t w = mc_pack_manual_drive(1, 60, 0, 0);
     sim_cmd(&s, w);
@@ -199,7 +199,7 @@ static void test_command_timeout(void) {
     int ticks = 0;
     while (mc_state(&s.mc) == MS_MANUAL && ticks < 100) { sim_tick(&s); ticks++; }
     uint32_t stopped_after = (uint32_t)ticks * MC_PERIOD_MS;
-    CHECK(mc_state(&s.mc) == MS_SAFE_STOP, "SAFE STOP after refresh stops");
+    CHECK(mc_state(&s.mc) == MS_IDLE, "IDLE after refresh stops");
     CHECK(stopped_after > MC_CMD_TIMEOUT_MS - 100 && stopped_after <= MC_CMD_TIMEOUT_MS + 2 * MC_PERIOD_MS + 100,
           "stopped about %u ms after last refresh window (got %u)", MC_CMD_TIMEOUT_MS, stopped_after);
     CHECK((s.out.fault_set & FAULT_CMD_TIMEOUT) && s.out.brake, "timeout fault + brake");
@@ -240,7 +240,7 @@ static void test_operator_stop(void) {
 }
 
 static void test_heading_stale_and_wrap(void) {
-    puts("stale heading -> SAFE STOP; 10-bit wrap can't make old heading look fresh");
+    puts("stale heading -> IDLE; 10-bit wrap can't make old heading look fresh");
     sim_t s; sim_init(&s, 0); sim_tick(&s);
     uint32_t w = mc_pack_auto_drive(1, 50, 0);
     sim_cmd(&s, w);
@@ -248,7 +248,7 @@ static void test_heading_stale_and_wrap(void) {
     s.imu_alive = false;                                   /* UART goes quiet */
     int ticks = 0;
     while (mc_state(&s.mc) == MS_AUTO_DRIVE && ticks < 50) { sim_tick(&s); if (ticks % 5 == 0) sim_cmd(&s, w); ticks++; }
-    CHECK(mc_state(&s.mc) == MS_SAFE_STOP, "SAFE STOP on stale heading");
+    CHECK(mc_state(&s.mc) == MS_IDLE, "IDLE on stale heading");
     CHECK(ticks * (int)MC_PERIOD_MS <= (int)MC_HEADING_STALE_MS + 60, "within ~%u ms (got %d)", MC_HEADING_STALE_MS, ticks * (int)MC_PERIOD_MS);
     /* keep the old word for > 1024 ms: the rolling stamp wraps, latch must hold */
     bool ever_fresh = false;
@@ -270,6 +270,9 @@ static void test_rotate_to_heading(void) {
         int ticks = 0;
         while (s.results[MR_HEADING_REACHED] == 0 && ticks < 400) {
             sim_tick(&s); ticks++;
+            if (s.results[MR_HEADING_REACHED])
+                CHECK(s.out.brake && mc_state(&s.mc) == MS_IDLE && s.out.wheel[0] == 0,
+                      "target reached: immediate brake, PWM zero and IDLE");
             if (ticks % 5 == 0) sim_cmd(&s, w);               /* Exploration refreshes */
             if (first_dir == 0 && s.mc.duty[0] != 0) first_dir = s.mc.duty[0];
         }
@@ -280,7 +283,7 @@ static void test_rotate_to_heading(void) {
               cases[c][0], cases[c][1], s.results[MR_HEADING_REACHED]);
         CHECK(fabs(expect_dir) < 1 || fabs(expect_dir) > 179 || (first_dir > 0) == (expect_dir > 0), "%.0f->%.0f turns the short way", cases[c][0], cases[c][1]);
         CHECK(mc_state(&s.mc) == MS_IDLE, "%.0f->%.0f back to IDLE", cases[c][0], cases[c][1]);
-        printf("  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg (incl. ramp-down overshoot)\n",
+        printf("  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg (local brake)\n",
                cases[c][0], cases[c][1], ticks * (int)MC_PERIOD_MS, err);
         CHECK(fabs(err) <= 5.0, "final error within 5 deg");
     }
@@ -383,8 +386,27 @@ static void test_zigzag_strafe(void) {
     mc_set_zigzag(0);
 }
 
+static void test_direction_trim(void) {
+    puts("per-wheel trim: separate forward / backward values");
+    mc_set_trim(1, 80, 100);                                  /* FR weaker forward only */
+    sim_t s; sim_init(&s, 0); sim_tick(&s); mc_set_system_ready(&s.mc, true);
+    uint32_t f = mc_pack_manual_drive(1, 100, 0, 0);
+    for (int i = 0; i < 40; i++) { sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, f); }
+    CHECK(s.out.wheel[1] < s.out.wheel[0], "forward: FR trimmed (FL %d, FR %d)", s.out.wheel[0], s.out.wheel[1]);
+    sim_cmd(&s, mc_pack_simple(MC_STOP, MC_SRC_MANUAL, 2));
+    for (int i = 0; i < 40; i++) sim_tick(&s);
+    uint32_t b = mc_pack_manual_drive(3, -100, 0, 0);
+    for (int i = 0; i < 40; i++) { sim_tick(&s); if (i % 5 == 0) sim_cmd(&s, b); }
+    CHECK(s.out.wheel[1] == s.out.wheel[0], "backward: FR not trimmed (FL %d, FR %d)", s.out.wheel[0], s.out.wheel[1]);
+    mc_set_trim(-1, 100, 100);
+}
+
 int main(void) {
     mc_set_zigzag(0);   /* the older tests check the normal 4-wheel strafe */
+    /* The logic tests use neutral calibration (deadband 20, no trim), so they
+     * don't change every time the rover's motor_config.h numbers are tuned. */
+    mc_set_deadband(-1, 20);
+    mc_set_trim(-1, 100, 100);
     test_packing();
     test_helpers();
     test_zero_gyro_and_ready_gate();
@@ -400,6 +422,7 @@ int main(void) {
     test_start_boost();
     test_park();
     test_zigzag_strafe();
+    test_direction_trim();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

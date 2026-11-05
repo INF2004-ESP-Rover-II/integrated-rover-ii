@@ -25,7 +25,15 @@ Type in this window (then Enter) to change the fake world:
   h  help
 
 Run:   python fake_rover.py              (broker on localhost:1883)
+       python fake_rover.py --binary     (telemetry in the 18-byte binary format, docs/MQTT_BINARY.md;
+                                          binary commands are always accepted, text ones too)
        python fake_rover.py 192.168.50.10
+       python fake_rover.py --maze       (also drives a simulated 6x6 maze: ToF from real walls,
+                                          camera/marker frames, so DFS + the Mapping tab can run
+                                          with NO hardware; keeps all the safety behaviour above)
+       python fake_rover.py --maze --geometry --obstacles 10 --speed 2
+                                         (ray-cast ToF + box obstacles for the obstacle map)
+       With --maze set  MAPPING_STANDOFF_CM=0 MAPPING_CAMERA_HEIGHT_CM=0  before the dashboard.
 Stop:  Ctrl+C  ("unplugs" the rover)
 """
 import json
@@ -36,8 +44,37 @@ import time
 
 import paho.mqtt.client as mqtt
 
-BROKER = sys.argv[1] if len(sys.argv) > 1 else "localhost"
+import argparse
+import os
+
+_ap = argparse.ArgumentParser(description="Fake RoboPico")
+_ap.add_argument("broker", nargs="?", default="localhost")
+_ap.add_argument("--maze", action="store_true", help="simulate a 6x6 marker maze + camera")
+_ap.add_argument("--geometry", action="store_true", help="with --maze: ray-cast ToF + box obstacles")
+_ap.add_argument("--obstacles", type=int, default=10)
+_ap.add_argument("--seed", type=int, default=3)
+_ap.add_argument("--binary", action="store_true", help="send telemetry in the binary format")
+_ap.add_argument("--speed", type=float, default=1.0, help="maze speed factor (1 = real pace; above 1 the 30 mm arrival band can be skipped at 10 Hz)")
+ARGS = _ap.parse_args()
+BROKER = ARGS.broker
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mqtt_binary as mb  # noqa: E402  (same folder as this file)
 PORT = 1883
+
+PHYS = None
+if ARGS.maze:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rover_mapping"))
+    from sim.maze import Maze
+    from sim.rover_physics import RoverPhysics
+    from sim.world import World, add_corridor_boxes
+    _maze = Maze.random(6, 6, extra_links=8, seed=ARGS.seed)
+    _kw = {}
+    if ARGS.geometry:
+        _world = World(_maze)
+        add_corridor_boxes(_world, _maze, ARGS.obstacles, ARGS.seed + 2)
+        _kw = dict(world=_world, standoff_cm=0.0, no_target_code=1000)
+    PHYS = RoverPhysics(_maze, 0, rotate_dps=45 * ARGS.speed, drive_mm_s=200 * ARGS.speed, **_kw)
+TOPIC_MARKER = "camera/marker"
 
 TOPIC_COMMAND = "robot/command"
 TOPIC_STATUS = "robot/status"
@@ -88,6 +125,8 @@ def tof_reading(mm):
 
 
 def obstacle_block():
+    if PHYS:
+        return PHYS.telemetry()["obstacle"]
     front = s["front_mm"] + random.randint(-5, 5)
     left = 450 + random.randint(-10, 10)
     right = 1200
@@ -127,6 +166,8 @@ def obstacle_block():
 def stop_motors(reason):
     if s["moving"]:
         log(f"MOTORS STOP ({reason})")
+    if PHYS:
+        PHYS.command("STOP")
     s["moving"] = None
     s["last_reported"] = ""
 
@@ -138,7 +179,7 @@ def enter_safe_stop(reason):
 
 
 def on_message(client, userdata, msg):
-    payload = msg.payload.decode(errors="replace")
+    raw = bytes(msg.payload)
     with lock:
         if msg.topic == TOPIC_HEARTBEAT:
             s["last_hb"] = time.time()
@@ -149,8 +190,17 @@ def on_message(client, userdata, msg):
         if msg.topic != TOPIC_COMMAND:
             return
         s["last_hb"] = time.time()          # a command also proves the link
+        if mb.is_binary_command(raw):        # 1-2 bytes: binary; text commands are >= 4
+            try:
+                payload = mb.decode_command(raw)
+            except ValueError:
+                log(f"<- rejected binary command {raw.hex()}")
+                return
+            log(f"<- {payload}  (binary {raw.hex()})")
+        else:
+            payload = raw.decode(errors="replace")
+            log(f"<- {payload}")
         cmd = payload.split(":")[0]
-        log(f"<- {payload}")
 
         if cmd == "RESET_SAFETY":
             stop_motors("reset")
@@ -160,6 +210,12 @@ def on_message(client, userdata, msg):
                 s["interlock"] = False
                 s["safe_stop"] = None
                 status("SAFETY_READY")
+            return
+        if cmd == "ESTOP":
+            # Like the firmware: stop now and latch until RESET_SAFETY.
+            stop_motors("E-STOP")
+            s["interlock"] = True
+            status("SAFETY_LOCKED")
             return
         if cmd in ("STOP", "AUTO_STOP"):
             stop_motors("STOP command")
@@ -180,6 +236,8 @@ def on_message(client, userdata, msg):
 
         s["moving"] = cmd
         s["last_cmd"] = time.time()
+        if PHYS:
+            PHYS.command(cmd)
         if s["last_reported"] != cmd:
             s["last_reported"] = cmd
             status("RUNNING")
@@ -221,6 +279,7 @@ client.subscribe(TOPIC_HEARTBEAT)
 client.loop_start()
 status("READY")
 log("Fake rover READY, safety LOCKED until Reset Safety. Type h + Enter for keys, Ctrl+C to unplug.")
+log(f"Telemetry format: {'binary, ' + str(mb.TELEMETRY_BYTES) + ' bytes' if ARGS.binary else 'JSON'}")
 threading.Thread(target=keyboard, daemon=True).start()
 
 last_telemetry = 0.0
@@ -246,8 +305,10 @@ try:
                 log(f"[LINK] LOST, last laptop msg {now - (hb or now):.2f} s ago")
                 status("STOPPED: LINK LOST")
 
+            if PHYS:
+                PHYS.step(dt)                    # maze world drives everything below
             # Simple world: driving forward closes the gap, backward opens it
-            if s["moving"] == "FORWARD":
+            elif s["moving"] == "FORWARD":
                 s["front_mm"] = max(60, s["front_mm"] - SPEED_MM_S * dt)
             elif s["moving"] == "BACKWARD":
                 s["front_mm"] = min(1500, s["front_mm"] + SPEED_MM_S * dt)
@@ -256,7 +317,12 @@ try:
             elif s["moving"] == "ROTATE_RIGHT":
                 s["heading"] = (s["heading"] + 90 * dt) % 360
 
-            obstacle = obstacle_block()
+            if PHYS:
+                maze_tel = PHYS.telemetry()
+                obstacle = maze_tel["obstacle"]
+                s["heading"] = PHYS.heading
+            else:
+                obstacle = obstacle_block()
             # Collision interlock: front urgent locks it
             if obstacle["stop_required"] and not s["interlock"]:
                 s["interlock"] = True
@@ -268,12 +334,15 @@ try:
                 last_telemetry = now
                 telemetry = {
                     "timestamp": int(now * 1000) % 2**32,
-                    "imu": {"heading": round(s["heading"], 1), "pitch": 77.0, "status": 0},
+                    "imu": {"heading": round(s["heading"], 1), "pitch": 0.0, "roll": 0.0, "status": 0},
                     "ultrasonic": {"front": min(400, int(s["front_mm"]) // 10), "back": 400},
                     "obstacle": obstacle,
                 }
         if send:
-            client.publish(TOPIC_TELEMETRY, json.dumps(telemetry, separators=(",", ":")))
+            client.publish(TOPIC_TELEMETRY, mb.encode_telemetry(telemetry) if ARGS.binary
+                           else json.dumps(telemetry, separators=(",", ":")))
+            if PHYS:
+                client.publish(TOPIC_MARKER, json.dumps(PHYS.camera_frame(now * 1000)))
         time.sleep(0.02)
 except KeyboardInterrupt:
     log("Fake rover unplugged.")

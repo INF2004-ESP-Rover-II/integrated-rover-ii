@@ -1,12 +1,15 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "hardware/pwm.h"
 #include "config.h"
 #include "motor_driver.h"
+#include "../../common/obstacle_threshold.h"
 #include "wifi_mqtt.h"
+#include "mqtt_binary.h"
 #include "uart_protocol.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
@@ -16,7 +19,7 @@
 #define SENSOR_UART_BAUD 115200
 #define SENSOR_UART_RX_PIN 13
 #define SENSOR_UART_TX_PIN -1
-#define SENSOR_TELEMETRY_INTERVAL_MS 100u // 10 Hz feedback for laptop navigation.
+#define SENSOR_TELEMETRY_INTERVAL_MS 500u // 2 Hz feedback for laptop navigation.
 
 // Buzzer configuration (piezo buzzer - PWM)
 #define BUZZER_PIN 22
@@ -60,22 +63,33 @@ static uint32_t last_successful_forward_time = 0; // Track when we last moved fo
 static uint32_t entered_moving_forward_time = 0;  // When we entered MOVING_FORWARD state
 static bool safety_lock_reported = false;
 static bool link_lost = true; // FR-08: true until the first laptop heartbeat
+static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
+static bool heading_zero_pending;
+static uint32_t heading_zero_ready_ms;
+
+static void service_heading_zero(void)
+{
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!heading_zero_pending || (int32_t)(now - heading_zero_ready_ms) < 0) return;
+    // Capture a new healthy sample after braking, rather than zeroing a cached
+    // heading measured while the rover was still rotating.
+    if (!motor_heading_sample_since(heading_zero_ready_ms)) {
+        if ((uint32_t)(now - heading_zero_ready_ms) <= 1000u) return;
+        heading_zero_pending = false;
+        mqtt_publish_status("HEADING_ZERO_REFUSED");
+        return;
+    }
+    heading_zero_pending = false;
+    mqtt_publish_status(motor_zero_heading() == MOTOR_OK ? "HEADING_ZEROED" : "HEADING_ZERO_REFUSED");
+}
 
 static void on_sensor_packet(const sensor_packet_t *packet, uint32_t receive_ms)
 {
     // Runs in the UART ISR: no MQTT, printf, sleeps, or reverse-thrust braking.
-    const uint8_t front_mask = 0x02u; // UART bits: left=1, front=2, right=4.
-    // Only front proximity or an explicit Sensor-side stop requests this lock.
-    // Unavailable/zero readings and reported ToF faults do not request this lock.
-    
-    // bool stop_requested = packet->stop_required != 0 || (packet->urgent_mask & front_mask) != 0;
-    uint8_t urgent_mask = (uint8_t)((packet->obstacle_flags >> 3u) & 0x07u);
-
-    bool explicit_stop = (packet->obstacle_flags & (1u << 9u)) != 0;
-
-    bool stop_requested = explicit_stop || (urgent_mask & front_mask) != 0;
-        
-    motor_safety_receive(stop_requested, receive_ms);
+    uint16_t front_mm = (uint16_t)((packet->tof_bits >> 10u) & 0x3FFu);
+    bool front_fault = (packet->obstacle_flags & (2u << 6u)) != 0;
+    // Read the actual range; old urgent/STOP flags may retain hysteresis.
+    motor_safety_receive(front_obstacle_detected(front_mm, front_fault), receive_ms);
     motor_heading_update(packet->heading, packet->imu_status == 0); // heading hold (FR-41)
 }
 
@@ -89,6 +103,13 @@ static bool safety_watchdog_tick(struct repeating_timer *timer)
 static void service_safety_stop(void)
 {
     motor_safety_poll();
+    if (motor_take_front_stop())
+    {
+        autonomous_mode = false;
+        autonomous_state = AUTO_STATE_IDLE;
+        forward_boost_active = false;
+        mqtt_publish_status("FRONT_STOPPED");
+    }
     if (motor_safety_is_latched())
     {
         autonomous_mode = false;
@@ -97,7 +118,7 @@ static void service_safety_stop(void)
         if (!safety_lock_reported)
         {
             safety_lock_reported = true;
-            printf("[SAFETY] Motors locked: clear sensors and send RESET_SAFETY\n");
+            printf("[SAFETY] Manual dashboard E-STOP active\n");
             mqtt_publish_status("SAFETY_LOCKED");
         }
     }
@@ -125,18 +146,18 @@ static void service_safety_stop(void)
 #define AUTO_MIN_FORWARD_CLEAR_RATIO 0.40f // Require 40% of front rays free to resume
 
 // Pitch compensation for upslope detection
-#define PITCH_BASELINE 77.0f      // Flat ground pitch from MPU6050 (77.0°) - calibrate per robot
-#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15° pitch drop
+#define PITCH_BASELINE 0.0f       // MPU6500 mounted +X forward, +Z up: flat = 0 degrees
+#define PITCH_BOOST_PER_15_DEG 10 // Speed boost: +10% per 15 degrees nose-up
 #define PITCH_MAX_BOOST 30        // Maximum boost capped at +30%
 
 static int apply_pitch_compensation(int base_speed, float current_pitch)
 {
-    // Calculate pitch drop from baseline (upslope detected when pitch < baseline)
+    // Sketch convention with +X forward/+Z up: nose-up pitch is negative.
     float pitch_drop = PITCH_BASELINE - current_pitch;
 
     if (pitch_drop > 0)
     {
-        // Apply boost: Every 15° drop adds 10% speed
+        // Apply boost: every 15 degrees nose-up adds 10% speed
         int boost_percent = (int)(pitch_drop / 15.0f) * PITCH_BOOST_PER_15_DEG;
 
         // Apply boost cap at 30%
@@ -176,6 +197,33 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+    if (strcmp(cmd_buffer, "ZERO_HEADING") == 0)
+    {
+        autonomous_mode = false;
+        autonomous_state = AUTO_STATE_IDLE;
+        motor_emergency_stop();
+        heading_zero_pending = true;
+        heading_zero_ready_ms = to_ms_since_boot(get_absolute_time()) + 400u;
+        mqtt_publish_status("HEADING_ZERO_PENDING");
+        return;
+    }
+    if (heading_zero_pending)
+    {
+        if (strcmp(cmd_buffer, "STOP") == 0 || strcmp(cmd_buffer, "ESTOP") == 0 ||
+            strcmp(cmd_buffer, "RESET_SAFETY") == 0 || strcmp(cmd_buffer, "AUTO_STOP") == 0) {
+            heading_zero_pending = false;
+            mqtt_publish_status("HEADING_ZERO_CANCELLED");
+        } else {
+            mqtt_publish_status("HEADING_ZERO_BUSY");
+            return;
+        }
+    }
+    if (strcmp(cmd_buffer, "ESTOP") == 0)
+    {
+        motor_manual_estop();
+        service_safety_stop();
+        return;
+    }
     if (strcmp(cmd_buffer, "RESET_SAFETY") == 0)
     {
         autonomous_mode = false;
@@ -200,32 +248,19 @@ static void process_command(const char *command)
         return;
     }
 
-    // Manual mode safety checks for ultrasonic obstacles
-    if (!autonomous_mode && sensor_data_valid)
-    {
-        if (strncmp(cmd_buffer, "FORWARD", 7) == 0 && latest_sensors.ultrasonic_front <= 30)
-        {
-            printf("[SAFETY] Forward blocked - front obstacle at %dmm\n", latest_sensors.ultrasonic_front);
-            return;
-        }
-        if (strncmp(cmd_buffer, "BACKWARD", 8) == 0 && latest_sensors.ultrasonic_back <= 30)
-        {
-            printf("[SAFETY] Backward blocked - back obstacle at %dmm\n", latest_sensors.ultrasonic_back);
-            return;
-        }
-    }
-
     if (strncmp(cmd_buffer, "FORWARD", 7) == 0)
     {
         // Apply pitch compensation for upslope
         int speed = motor_move_speed(DIRECTION_FORWARD);
-        int compensated_speed = apply_pitch_compensation(speed, latest_sensors.pitch);
+        int compensated_speed = (sensor_data_valid && latest_sensors.imu_status == 0)
+                                    ? apply_pitch_compensation(speed, latest_sensors.pitch) : speed;
         if (compensated_speed != speed)
         {
             char msg[128];
             snprintf(msg, sizeof(msg), "PITCH: Upslope %.1f° - boost %d%% -> %d%%",
                      latest_sensors.pitch, speed, compensated_speed);
             printf("[%s]\n", msg);
+            mqtt_publish_status(msg);
         }
         result = motor_set_direction(DIRECTION_FORWARD, compensated_speed);
     }
@@ -285,6 +320,62 @@ static void process_command(const char *command)
         // Direct mapping per corrected wiring
         result = claw_set_direction(CLAW_CLOSE);
     }
+    // ---- Autonomous moves for the mapping / Exploration side (Subsystem 6) ----
+    // One command starts the move; it keeps going until MOVE_STOP, STOP
+    // (operator) or a safety stop. Rotations end by themselves.
+    //   MOVE_FORWARD:30   MOVE_BACKWARD:30   (speed %, default = W/S key speed)
+    //   TURN_TO:90        absolute heading 0..359
+    //   TURN_BY:-90       relative: + right, - left
+    //   MOVE_STOP         normal stop (ramp down)
+    // Replies on robot/status: "AUTO_MOVE: ..." now, "AUTO_RESULT: ..." when it ends.
+    else if (strncmp(cmd_buffer, "MOVE_FORWARD", 12) == 0 ||
+             strncmp(cmd_buffer, "MOVE_BACKWARD", 13) == 0 ||
+             strncmp(cmd_buffer, "TURN_TO", 7) == 0 ||
+             strncmp(cmd_buffer, "TURN_BY", 7) == 0 ||
+             strncmp(cmd_buffer, "MOVE_STOP", 9) == 0) {
+        const char *arg = strchr(command, ':');
+        bool has_arg = arg != NULL && arg[1] != '\0';
+        int value = has_arg ? atoi(arg + 1) : 0;
+        autonomous_mode = false;           // the old LIDAR auto mode must not drive too
+        autonomous_state = AUTO_STATE_IDLE;
+
+        if (strncmp(cmd_buffer, "MOVE_FORWARD", 12) == 0)
+            result = motor_auto_drive(has_arg ? abs(value) : motor_move_speed(DIRECTION_FORWARD));
+        else if (strncmp(cmd_buffer, "MOVE_BACKWARD", 13) == 0)
+            result = motor_auto_drive(-(has_arg ? abs(value) : motor_move_speed(DIRECTION_BACKWARD)));
+        else if (strncmp(cmd_buffer, "TURN_TO", 7) == 0)
+            result = has_arg ? motor_auto_rotate_to(value) : MOTOR_ERR_PIN;
+        else if (strncmp(cmd_buffer, "TURN_BY", 7) == 0)
+            result = has_arg ? motor_auto_rotate_by(value) : MOTOR_ERR_PIN;
+        else
+            result = motor_auto_stop();
+
+        char msg[80];
+        static char last_move[32] = "";
+        if (result == MOTOR_OK && strncmp(cmd_buffer, "MOVE_", 5) == 0 &&
+            strcmp(last_move, command) == 0 && motor_auto_status() == MOTOR_AUTO_RUNNING) {
+            return;   // the laptop repeats MOVE_FORWARD: still running, no new reply
+        }
+        strncpy(last_move, command, sizeof(last_move) - 1);
+        if (result == MOTOR_OK) {
+            // Also report consecutive short turns that finish between loop polls.
+            last_auto_reported = MOTOR_AUTO_RUNNING;
+            snprintf(msg, sizeof(msg), "AUTO_MOVE: %s", command);
+        }
+        else if (result == MOTOR_ERR_FRONT_BLOCKED) {
+            last_move[0] = '\0';
+            snprintf(msg, sizeof(msg), "FORWARD_BLOCKED");   // same reply as the W key
+        }
+        else if (result == MOTOR_ERR_NO_HEADING)
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (no fresh heading from IMU)", cmd_buffer);
+        else if (result == MOTOR_ERR_PIN)
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (bad or missing value)", cmd_buffer);
+        else
+            snprintf(msg, sizeof(msg), "AUTO_REFUSED: %s (safety lock / SAFE STOP / busy)", cmd_buffer);
+        printf("[AUTO] %s\n", msg);
+        mqtt_publish_status(msg);
+        return;
+    }
     else if (strncmp(cmd_buffer, "AUTO_START", 10) == 0)
     {
         // Exploration decisions belong to Python. RoboPico executes movement
@@ -326,12 +417,9 @@ static void process_command(const char *command)
             strncpy(last_reported, cmd_buffer, sizeof(last_reported) - 1);
         }
     }
-    else if (motor_motion_state() == MOTOR_STATE_SAFE_STOP)
+    else if (result == MOTOR_ERR_FRONT_BLOCKED)
     {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "REFUSED: SAFE STOP (%s) - press Reset Safety",
-                 motor_safe_stop_reason());
-        mqtt_publish_status(msg);
+        mqtt_publish_status("FORWARD_BLOCKED");
     }
     else
     {
@@ -343,45 +431,27 @@ static void process_command(const char *command)
 
 static void publish_sensor_data(void)
 {
-
     if (!sensor_data_valid)
         return;
 
-    static char telemetry[512]; // ← Reduced size since no LIDAR
-
-    memset(telemetry, 0, sizeof(telemetry));
-
-    snprintf(telemetry, sizeof(telemetry),
-             "{"
-             "\"timestamp\":%lu,"
-             "\"imu\":{"
-             "\"heading\":%.1f,"
-             "\"pitch\":%.1f,"
-             "\"status\":%d"
-             "},"
-             "\"ultrasonic\":{\"front\":%d,\"back\":%d},"
-             "\"obstacle\":{"
-             "\"distance_mm\":{\"left\":%u,\"front\":%u,\"right\":%u},"
-             "\"blocked_mask\":%u,"
-             "\"urgent_mask\":%u,"
-             "\"fault_mask\":%u,"
-             "\"stop_required\":%s,"
-             "\"age_ms\":%lu"
-             "}"
-             "}",
-             (unsigned long)latest_sensors.timestamp_ms,
-             latest_sensors.heading, latest_sensors.pitch, latest_sensors.imu_status,
-             latest_sensors.ultrasonic_front, latest_sensors.ultrasonic_back,
-             (unsigned)(latest_sensors.tof_bits & 0x3FFu),          // left
-             (unsigned)((latest_sensors.tof_bits >> 10u) & 0x3FFu), // front
-             (unsigned)((latest_sensors.tof_bits >> 20u) & 0x3FFu), // right
-             (unsigned)(latest_sensors.obstacle_flags & 0x07u),
-             (unsigned)((latest_sensors.obstacle_flags >> 3u) & 0x07u),
-             (unsigned)((latest_sensors.obstacle_flags >> 6u) & 0x07u),
-             (latest_sensors.obstacle_flags & (1u << 9u)) ? "true" : "false",
-             (unsigned long)(to_ms_since_boot(get_absolute_time()) - last_sensor_packet_ms));
-
-    mqtt_publish_telemetry(telemetry);
+    mqtt_telemetry_t t = {
+        .timestamp_ms         = latest_sensors.timestamp_ms,
+        .heading_deg          = motor_heading_relative(latest_sensors.heading),
+        .pitch_deg            = latest_sensors.pitch,
+        .roll_deg             = latest_sensors.roll,
+        .imu_ok               = (latest_sensors.imu_status == 0),
+        .us_front_cm          = (uint16_t)latest_sensors.ultrasonic_front,
+        .us_back_cm           = (uint16_t)latest_sensors.ultrasonic_back,
+        .tof_bits             = latest_sensors.tof_bits,
+        .obstacle_flags       = latest_sensors.obstacle_flags,
+        .age_ms               = to_ms_since_boot(get_absolute_time()) - last_sensor_packet_ms,
+        .heading_epoch        = motor_heading_epoch(),
+        .heading_offset_deg   = motor_heading_offset(),
+        .forward_threshold_mm = FRONT_STOP_DISTANCE_MM,
+    };
+    uint8_t packet[MQTT_TELEMETRY_BYTES];
+    size_t len = mqtt_pack_telemetry(&t, packet);
+    mqtt_publish_telemetry_bin(packet, len);
 }
 
 int main()
@@ -488,6 +558,7 @@ int main()
         service_safety_stop();
         cyw43_arch_poll();
         service_safety_stop();
+        service_heading_zero();
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         if (now - last_timeout_check >= 100)
@@ -557,6 +628,18 @@ int main()
 
         // IMU-tied arm PID removed (manual control only)
 
+        // Subsystem 6: tell the mapping side once when an auto move ends
+        {
+            motor_auto_status_t st = motor_auto_status();
+            if (st != last_auto_reported && st != MOTOR_AUTO_RUNNING && st != MOTOR_AUTO_IDLE) {
+                char msg[48];
+                snprintf(msg, sizeof(msg), "AUTO_RESULT: %s", motor_auto_status_name(st));
+                printf("[AUTO] %s\n", msg);
+                mqtt_publish_status(msg);
+            }
+            last_auto_reported = st;
+        }
+
         // --- Sensor & status publishing ---
         if (sensor_data_valid && (now - last_sensor_publish >= SENSOR_TELEMETRY_INTERVAL_MS))
         {
@@ -585,25 +668,9 @@ int main()
             {
                 printf("No sensor data");
             }
-            
             printf("\n");
             last_stats_print = now;
         }
-        // Tell the dashboard once when the rover enters SAFE STOP, and why
-        {
-            static bool safe_stop_reported = false;
-            bool safe_stop = motor_motion_state() == MOTOR_STATE_SAFE_STOP;
-            if (safe_stop && !safe_stop_reported)
-            {
-                char msg[96];
-                snprintf(msg, sizeof(msg), "SAFE STOP: %s - press Reset Safety",
-                         motor_safe_stop_reason());
-                printf("[MOTOR] %s\n", msg);
-                mqtt_publish_status(msg);
-            }
-            safe_stop_reported = safe_stop;
-        }
-
         // FR-08: stop on our own if the laptop goes quiet
         {
             uint32_t last_rx = mqtt_last_link_rx_ms();
@@ -615,7 +682,7 @@ int main()
                 link_lost = true;
                 autonomous_mode = false;
                 autonomous_state = AUTO_STATE_IDLE;
-                motor_link_lost();
+                motor_emergency_stop();
                 printf("[LINK] LOST at t=%lu ms (last laptop msg at t=%lu ms), MOTORS STOPPED\n",
                        (unsigned long)now, (unsigned long)last_rx);
                 mqtt_publish_status("STOPPED: LINK LOST");

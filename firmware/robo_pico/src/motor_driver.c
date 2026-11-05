@@ -30,6 +30,7 @@
 #include "motor_types.h"
 
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/sync.h"
 
@@ -48,18 +49,47 @@
 #define REFRESH_WINDOW_MS (TIMEOUT_MS - MC_CMD_TIMEOUT_MS)
 
 static mc_t               s_mc;
-static safety_interlock_t s_safety = {.latched = true, .stop_requested = true};
+static bool s_manual_estop;
+static uint32_t s_last_sensor_ms;
+static bool s_forward_driving;
+static bool s_front_blocked;
+static bool s_front_stop_pending;
 static struct repeating_timer s_timer;
 static volatile uint32_t  s_heading_word;   /* one 32-bit store / load */
 static uint8_t            s_hdg_seq;
 static uint32_t           s_word;           /* move being held (0 = none) */
 static uint32_t           s_last_call_ms;
 static uint8_t            s_seq;
+static float              s_raw_heading;
+static float              s_heading_offset;
+static uint32_t           s_raw_heading_ms;
+static uint32_t           s_heading_epoch;
+static bool               s_have_raw_heading;
 
 /* Why Motion Control last entered SAFE STOP (state 7), for the dashboard. */
 static volatile uint8_t   s_safe_reason = MOTOR_SAFE_NONE;
 
+/* Autonomous move (mapping / Exploration). The driver refreshes it itself,
+ * so it keeps going until motor_auto_stop(), an operator STOP or a safety
+ * stop. A rotation also ends by itself when the heading is reached. */
+static uint32_t           s_auto_word;      /* auto move being held (0 = none) */
+static uint8_t            s_auto_seq;
+static volatile uint8_t   s_auto_status = MOTOR_AUTO_IDLE;
+
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
+/* Turn a move result for the running auto command into its status. */
+static void note_result(const mc_out_t *o) {
+    if (!o->result_valid || s_auto_status != MOTOR_AUTO_RUNNING) return;
+    if (((o->result_byte >> 2) & 0xFu) != s_auto_seq) return;   /* not the auto move */
+    switch ((move_result_t)(o->result_byte & 0x3u)) {
+    case MR_DONE:            s_auto_status = MOTOR_AUTO_DONE;            break;
+    case MR_HEADING_REACHED: s_auto_status = MOTOR_AUTO_HEADING_REACHED; break;
+    case MR_STOPPED:         s_auto_status = MOTOR_AUTO_STOPPED;         break;
+    case MR_REJECTED:        s_auto_status = MOTOR_AUTO_REJECTED;        break;
+    }
+    if (s_auto_status != MOTOR_AUTO_RUNNING) s_auto_word = 0;
+}
 
 static void apply(const mc_out_t *o) {
 #if MOTOR_SEND_DIR_BYTE
@@ -85,9 +115,15 @@ static bool motion_tick(struct repeating_timer *t) {
             s_word = 0;   /* caller went quiet: Motion Control times out (FR-42) */
         }
     }
+    if (s_auto_word) {
+        mc_out_clear(&out);
+        mc_command(&s_mc, s_auto_word, nm, hw, &out);  /* keep the auto move alive */
+        note_result(&out);
+    }
     motor_state_t before = mc_state(&s_mc);
     mc_out_clear(&out);
     mc_step(&s_mc, nm, hw, &out);
+    note_result(&out);
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
         s_safe_reason = (out.fault_set & FAULT_CMD_TIMEOUT) ? MOTOR_SAFE_CMD_TIMEOUT
                                                             : MOTOR_SAFE_HEADING_STALE;
@@ -113,10 +149,13 @@ static void hard_stop(mc_stop_kind_t kind) {
     mc_out_t out;
     mc_out_clear(&out);
     mc_immediate_stop(&s_mc, kind, now_ms(), &out);
+    note_result(&out);
     motor_hw_apply(&out);
     s_word = 0;
+    s_auto_word = 0;
+    if (s_auto_status == MOTOR_AUTO_RUNNING) s_auto_status = MOTOR_AUTO_STOPPED;
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
-        s_safe_reason = (kind == MC_STOP_LINK_LOST) ? MOTOR_SAFE_LINK_LOST : MOTOR_SAFE_SENSOR_LOCK;
+        s_safe_reason = MOTOR_SAFE_MANUAL_ESTOP;
 }
 
 static int clamp100(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
@@ -152,9 +191,15 @@ motor_error_t motor_init(void) {
     motor_hw_dir_uart_init();
 #endif
     mc_init(&s_mc);
-    mc_set_system_ready(&s_mc, false); /* locked until the safety interlock is ready */
-    safety_interlock_init(&s_safety);
+    mc_set_system_ready(&s_mc, true);
+    s_manual_estop = false;
+    s_forward_driving = false;
+    s_front_blocked = false;
+    s_front_stop_pending = false;
     s_word = 0;
+    s_heading_offset = 0;
+    s_heading_epoch = 0;
+    s_have_raw_heading = false;
 
     if (!add_repeating_timer_ms(-(int32_t)MC_PERIOD_MS, motion_tick, NULL, &s_timer))
         return MOTOR_ERR_INIT;
@@ -162,14 +207,74 @@ motor_error_t motor_init(void) {
     return MOTOR_OK;
 }
 
-void motor_heading_update(float heading_deg, bool valid) {
-    if (!valid) return;                /* no new frame -> heading goes stale by itself */
-    while (heading_deg < 0.0f)    heading_deg += 360.0f;
-    while (heading_deg >= 360.0f) heading_deg -= 360.0f;
+static float wrap_heading(float heading_deg) {
+    float wrapped = fmodf(heading_deg, 360.0f);
+    return wrapped < 0 ? wrapped + 360.0f : wrapped;
+}
+
+static void store_heading(float heading_deg) {
     uint16_t tenths = (uint16_t)(heading_deg * 10.0f + 0.5f);
     if (tenths >= 3600u) tenths = 0;
     s_hdg_seq = (uint8_t)((s_hdg_seq + 1u) & 0xFu);
     s_heading_word = heading_word_pack(tenths, s_hdg_seq, now_ms());   /* one store */
+}
+
+void motor_heading_update(float heading_deg, bool valid) {
+    if (!valid || !isfinite(heading_deg)) return;
+    uint32_t irq = save_and_disable_interrupts();
+    s_raw_heading = wrap_heading(heading_deg);
+    s_raw_heading_ms = now_ms();
+    s_have_raw_heading = true;
+    store_heading(wrap_heading(s_raw_heading - s_heading_offset));
+    restore_interrupts(irq);
+}
+
+float motor_heading_relative(float raw_heading_deg) {
+    uint32_t irq = save_and_disable_interrupts();
+    float relative = wrap_heading(raw_heading_deg - s_heading_offset);
+    restore_interrupts(irq);
+    return relative;
+}
+
+float motor_heading_offset(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    float offset = s_heading_offset;
+    restore_interrupts(irq);
+    return offset;
+}
+
+uint32_t motor_heading_epoch(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    uint32_t epoch = s_heading_epoch;
+    restore_interrupts(irq);
+    return epoch;
+}
+
+bool motor_heading_sample_since(uint32_t since_ms) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool received = s_have_raw_heading && (int32_t)(s_raw_heading_ms - since_ms) >= 0;
+    restore_interrupts(irq);
+    return received;
+}
+
+motor_error_t motor_zero_heading(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    if (!s_have_raw_heading || (uint32_t)(now_ms() - s_raw_heading_ms) > MC_HEADING_STALE_MS) {
+        restore_interrupts(irq);
+        return MOTOR_ERR_NO_HEADING;
+    }
+    hard_stop(MC_STOP_OPERATOR);
+    motor_hw_arm(MH_OFF);
+    motor_hw_claw(MH_OFF);
+    s_heading_offset = s_raw_heading;
+    ++s_heading_epoch;
+    store_heading(0);
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_step(&s_mc, now_ms(), s_heading_word, &out);
+    apply(&out);
+    restore_interrupts(irq);
+    return MOTOR_OK;
 }
 
 int motor_move_speed(motor_direction_t direction) {
@@ -190,7 +295,9 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
 
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched) {
+    if (!s_manual_estop && direction == DIRECTION_FORWARD && s_front_blocked) {
+        r = MOTOR_ERR_FRONT_BLOCKED;
+    } else if (!s_manual_estop) {
         /* Same move again = refresh (same word). A different move gets a
          * new sequence number. */
         uint32_t word = 0;
@@ -201,11 +308,109 @@ motor_error_t motor_set_direction(motor_direction_t direction, int speed_percent
         r = submit(word);
         if (r == MOTOR_OK) {
             s_word = word;
+            s_forward_driving = direction == DIRECTION_FORWARD;
             s_last_call_ms = now_ms();
         }
     }
     restore_interrupts(irq);
     return r;
+}
+
+/* ======================= autonomous moves (FR-40, FR-41) =======================
+ * Called by the mapping / Exploration side. One call starts the move; it
+ * keeps going (the driver refreshes it) until motor_auto_stop(), an operator
+ * STOP, or a safety stop. Needs a fresh heading from the Sensor Pico. */
+
+static bool heading_ready(void) { return s_mc.heading_seen && !s_mc.stale_latched; }
+static int  heading_deg_now(void) { return (int)((s_mc.heading + 5u) / 10u) % 360; }
+
+static motor_error_t start_auto(uint32_t word) {
+    s_word = 0;                              /* a manual move can't be held now */
+    s_auto_seq = mc_seq(word);
+    s_auto_status = MOTOR_AUTO_RUNNING;
+    mc_out_t out;
+    mc_out_clear(&out);
+    mc_command(&s_mc, word, now_ms(), s_heading_word, &out);
+    note_result(&out);
+    if (s_auto_status == MOTOR_AUTO_REJECTED) return MOTOR_ERR_SAFETY;
+    s_auto_word = word;
+    return MOTOR_OK;
+}
+
+static motor_error_t auto_checks(void) {
+    if (s_manual_estop) return MOTOR_ERR_SAFETY;
+    if (!heading_ready()) return MOTOR_ERR_NO_HEADING;
+    return MOTOR_OK;
+}
+
+motor_error_t motor_auto_drive(int speed_percent) {
+    if (speed_percent == 0) return motor_auto_stop();
+    if (speed_percent < -100 || speed_percent > 100) return MOTOR_ERR_PIN;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    if (r == MOTOR_OK && speed_percent > 0 && s_front_blocked)
+        r = MOTOR_ERR_FRONT_BLOCKED;             /* obstacle ahead: only forward is blocked */
+    if (r == MOTOR_OK && s_auto_word && mc_state(&s_mc) == MS_AUTO_DRIVE &&
+        mc_s8(s_auto_word, 8) == speed_percent) {
+        /* Same move sent again (the laptop repeats it): keep going, no restart. */
+    } else if (r == MOTOR_OK) {
+        /* Hold the heading the rover has now; if it is already driving
+         * straight, keep the same target so a speed change doesn't re-aim. */
+        int hold = (mc_state(&s_mc) == MS_AUTO_DRIVE && s_auto_word)
+                   ? (int)mc_hdg9(s_auto_word, 16) : heading_deg_now();
+        r = start_auto(mc_pack_auto_drive(next_seq(), (int8_t)speed_percent, (uint16_t)hold));
+        if (r == MOTOR_OK) s_forward_driving = speed_percent > 0;  /* a front obstacle stops it */
+    }
+    restore_interrupts(irq);
+    return r;
+}
+
+motor_error_t motor_auto_rotate_to(int heading_deg) {
+    heading_deg %= 360;
+    if (heading_deg < 0) heading_deg += 360;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    if (r == MOTOR_OK) {
+        r = start_auto(mc_pack_auto_rotate(next_seq(), (uint16_t)heading_deg));
+        if (r == MOTOR_OK) s_forward_driving = false;   /* turning is not stopped by a front obstacle */
+    }
+    restore_interrupts(irq);
+    return r;
+}
+
+motor_error_t motor_auto_rotate_by(int delta_deg) {
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t r = auto_checks();
+    int target = heading_deg_now() + delta_deg;
+    restore_interrupts(irq);
+    return r == MOTOR_OK ? motor_auto_rotate_to(target) : r;
+}
+
+motor_error_t motor_auto_stop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    if (s_auto_word) {
+        s_auto_word = 0;                     /* stop refreshing the move */
+        mc_out_t out;
+        mc_out_clear(&out);
+        mc_command(&s_mc, mc_pack_simple(MC_STOP, MC_SRC_AUTO, s_auto_seq), now_ms(),
+                   s_heading_word, &out);    /* normal stop: ramp down, then DONE */
+        note_result(&out);
+    }
+    restore_interrupts(irq);
+    return MOTOR_OK;
+}
+
+motor_auto_status_t motor_auto_status(void) { return (motor_auto_status_t)s_auto_status; }
+
+const char *motor_auto_status_name(motor_auto_status_t s) {
+    switch (s) {
+    case MOTOR_AUTO_RUNNING:         return "RUNNING";
+    case MOTOR_AUTO_DONE:            return "DONE";
+    case MOTOR_AUTO_HEADING_REACHED: return "HEADING_REACHED";
+    case MOTOR_AUTO_STOPPED:         return "STOPPED";
+    case MOTOR_AUTO_REJECTED:        return "REJECTED";
+    default:                         return "IDLE";
+    }
 }
 
 /* Parallel park (strafe for MC_PARK_DURATION_MS, then stops by itself).
@@ -214,9 +419,10 @@ motor_error_t motor_parallel_park(int direction, int power_percent) {
     int p = power_percent > 0 ? clamp100(power_percent) : MC_PARK_PCT;
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched) {
+    if (!s_manual_estop) {
         uint32_t word = mc_pack_manual_park(next_seq(), (int8_t)(direction < 0 ? -p : p));
         r = submit(word);
+        if (r == MOTOR_OK) s_forward_driving = false;
         s_word = 0;                    /* park ends by itself: no auto refresh */
     }
     restore_interrupts(irq);
@@ -228,7 +434,7 @@ motor_error_t motor_parallel_park(int direction, int power_percent) {
 motor_error_t arm_set_direction(arm_direction_t direction) {
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched || direction == ARM_STOP) {
+    if (!s_manual_estop || direction == ARM_STOP) {
         motor_hw_arm(direction == ARM_DOWN ? MH_FWD : direction == ARM_UP ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
@@ -239,7 +445,7 @@ motor_error_t arm_set_direction(arm_direction_t direction) {
 motor_error_t claw_set_direction(claw_direction_t direction) {
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = MOTOR_ERR_SAFETY;
-    if (!s_safety.latched || direction == CLAW_STOP) {
+    if (!s_manual_estop || direction == CLAW_STOP) {
         motor_hw_claw(direction == CLAW_CLOSE ? MH_FWD : direction == CLAW_OPEN ? MH_REV : MH_OFF);
         r = MOTOR_OK;
     }
@@ -260,46 +466,53 @@ motor_error_t motor_emergency_stop(void) {
     return MOTOR_OK;
 }
 
-static void on_latched(void) {
-    /* Collision Detection STOP or lost sensor link: SAFE STOP, no ramp. */
+void motor_manual_estop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    s_manual_estop = true;
     hard_stop(MC_STOP_ESTOP);
     motor_hw_arm(MH_OFF);
     motor_hw_claw(MH_OFF);
-    mc_set_system_ready(&s_mc, false);
+    restore_interrupts(irq);
 }
 
-/* Called from the UART interrupt: short, no printf. */
-void motor_safety_receive(bool stop_requested, uint32_t receive_ms) {
+/* Sensor packets only control the temporary forward guard. */
+void motor_safety_receive(bool front_blocked, uint32_t receive_ms) {
     uint32_t irq = save_and_disable_interrupts();
-    bool was = s_safety.latched;
-    safety_interlock_receive(&s_safety, stop_requested, receive_ms);
-    if (s_safety.latched && !was) on_latched();
+    if (front_blocked && !s_front_blocked) {
+        if (s_forward_driving) hard_stop(MC_STOP_OPERATOR);
+        s_front_stop_pending = true;
+    }
+    s_front_blocked = front_blocked;
+    s_last_sensor_ms = receive_ms;
     restore_interrupts(irq);
+}
+
+bool motor_take_front_stop(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool pending = s_front_stop_pending;
+    s_front_stop_pending = false;
+    restore_interrupts(irq);
+    return pending;
 }
 
 void motor_safety_poll(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool was = s_safety.latched;
-    safety_interlock_poll(&s_safety, now_ms());
-    if (s_safety.latched && !was) on_latched();
+    // Missing readings mean no detected obstacle, never a safety latch.
+    if ((uint32_t)(now_ms() - s_last_sensor_ms) > SAFETY_PACKET_TIMEOUT_MS)
+        s_front_blocked = false;
     restore_interrupts(irq);
 }
 
-/* Laptop link lost (FR-08): stop at once. If the rover was moving this is
- * SAFE STOP (statechart 6.6): it will not move again until Reset Safety. */
 void motor_link_lost(void) {
-    uint32_t irq = save_and_disable_interrupts();
-    hard_stop(MC_STOP_LINK_LOST);
-    motor_hw_arm(MH_OFF);
-    motor_hw_claw(MH_OFF);
-    restore_interrupts(irq);
+    // Communications loss stops motion without requiring a safety reset.
+    motor_emergency_stop();
 }
 
 const char *motor_safe_stop_reason(void) {
     switch (s_safe_reason) {
     case MOTOR_SAFE_CMD_TIMEOUT:   return "no command for 0.8 s (link lost?)";
     case MOTOR_SAFE_LINK_LOST:     return "laptop link lost";
-    case MOTOR_SAFE_SENSOR_LOCK:   return "collision stop / sensor link lost";
+    case MOTOR_SAFE_MANUAL_ESTOP:  return "manual dashboard E-STOP";
     case MOTOR_SAFE_HEADING_STALE: return "heading too old";
     default:                       return "unknown";
     }
@@ -307,14 +520,15 @@ const char *motor_safe_stop_reason(void) {
 
 bool motor_safety_is_latched(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool l = s_safety.latched;
+    bool l = s_manual_estop;
     restore_interrupts(irq);
     return l;
 }
 
 bool motor_safety_reset(void) {
     uint32_t irq = save_and_disable_interrupts();
-    bool ready = safety_interlock_reset(&s_safety, now_ms());
+    bool ready = true;
+    s_manual_estop = false;
     hard_stop(MC_STOP_OPERATOR);       /* a reset never restarts an old move */
     if (ready) {
         mc_out_t out;

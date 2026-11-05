@@ -15,7 +15,9 @@
 /* ---------------- Timing ---------------- */
 #define MC_PERIOD_MS            20u   /* Motor Control fixed period (vTaskDelayUntil-style) */
 #define MC_CMD_TIMEOUT_MS       300u  /* FR-42 / A12: no command or refresh -> SAFE STOP   */
+#ifndef MC_HEADING_STALE_MS
 #define MC_HEADING_STALE_MS     150u  /* ~3 missed 20 Hz heading frames -> stop            */
+#endif                                /* (must stay below 1024 ms: 10-bit receive time)    */
 #define MC_BRAKE_HOLD_MS        300u  /* active brake time after an immediate stop          */
 #define MC_DIR_REFRESH_MS       500u  /* resend movement direction to the Sensor Pico      */
 
@@ -26,9 +28,9 @@
 /* ---------------- Heading (FR-41) ---------------- */
 /* Heading is carried in tenths of a degree (0..3599) = 12 bits. */
 #define MC_HEADING_TOL_TENTHS   30    /* +/-3.0 deg: rotation counts as done      */
-#define MC_ROT_SLOW_ZONE_TENTHS 150   /* within 15 deg of target: rotate slowly   */
-#define MC_ROT_FAST_PCT         45    /* rotate-on-spot effort, far from target    */
-#define MC_ROT_SLOW_PCT         25    /* rotate-on-spot effort, near target        */
+#define MC_ROT_SLOW_ZONE_TENTHS 250   /* within 25 deg of target: rotate slowly   */
+#define MC_ROT_FAST_PCT         60    /* rotate-on-spot effort, far from target (floor calibration 30 Oct) */
+#define MC_ROT_SLOW_PCT         40    /* rotate-on-spot effort, near target        */
 
 /* Heading hold: turn trim = KP * error, error in tenths of a degree.
  * KP_NUM/KP_DEN = 2/10 -> 2 % turn effort per 1 deg of error. */
@@ -48,7 +50,7 @@
 /* ---------------- Speed (A5) ---------------- */
 /* Provisional cruise 0.3 m/s. The % that gives 0.3 m/s must be measured;
  * these are effort percentages, not m/s. Exploration chooses the speed. */
-#define MC_AUTO_CRUISE_PCT      50
+#define MC_AUTO_CRUISE_PCT      30    /* floor calibration 30 Oct (same as W/S) */
 #define MC_AUTO_APPROACH_PCT    30    /* slower near a marker (NFR-05 overshoot) */
 #define MC_PARK_PCT             60    /* parallel park strafe effort (35 too weak on the floor) */
 #define MC_PARK_DURATION_MS     1500u /* parallel park strafe time               */
@@ -58,10 +60,10 @@
  * tests: strafe and diagonal need more (only 2 wheels push on a diagonal,
  * and mecanum rollers slip sideways). Forward also gets the team's pitch
  * boost on a slope. Tune on the floor, then rebuild. */
-#define MC_DASH_STRAIGHT_PCT    50    /* W / S      forward, backward  */
-#define MC_DASH_STRAFE_PCT      100   /* A / D      strafe left, right */
-#define MC_DASH_DIAGONAL_PCT    80    /* R T F G    diagonals          */
-#define MC_DASH_ROTATE_PCT      70    /* Q / E      rotate on the spot */
+#define MC_DASH_STRAIGHT_PCT    10    /* W / S      forward, backward  */
+#define MC_DASH_STRAFE_PCT      100   /* Q / E      strafe left, right (zigzag) */
+#define MC_DASH_DIAGONAL_PCT    60    /* R T F G    diagonals (bench: m 30 30 0) */
+#define MC_DASH_ROTATE_PCT      60    /* A / D      rotate on the spot */
 
 /* ---------------- Start boost ----------------
  * Motors need more power to START turning than to keep turning (static
@@ -78,7 +80,7 @@
  * The rover wobbles slightly forward/back but moves sideways.
  * 0 = off (normal strafe). Adjustable on the bench ('zz MS'). */
 #ifndef MC_STRAFE_ZIGZAG_MS
-#define MC_STRAFE_ZIGZAG_MS     200u
+#define MC_STRAFE_ZIGZAG_MS     200u   /* floor test: 150-300 ms works, 100 doesn't */
 #endif
 
 /* ---------------- Ramp (FR-42) ---------------- */
@@ -88,10 +90,15 @@
  * Wheel order everywhere: 0 = front-left, 1 = front-right,
  *                         2 = back-left,  3 = back-right.
  * DEADBAND: smallest duty that makes that wheel turn (measure each wheel alone).
- * TRIM:     scales a strong wheel down so all four match (100 = no change).
+ * TRIM:     scales a stronger wheel down so all four match (100 = no change).
+ *           Separate values for each wheel spinning FORWARD and BACKWARD,
+ *           because a DC motor is often weaker in one direction (floor test:
+ *           drifts right going forward, straight going backward).
+ *           Tune live on the bench with 'trim W FWD REV'.
  * INVERT:   set to 1 if that wheel spins backwards for a positive command. */
-#define MC_DEADBAND_PCT   { 20, 20, 20, 20 }
-#define MC_TRIM_PCT       { 100, 100, 100, 100 }
+#define MC_DEADBAND_PCT   { 40, 40, 40, 40 }        /* all wheels start at 40 % (t 40) */
+#define MC_TRIM_FWD_PCT   { 90, 100, 90, 100 }      /* forward curved right: left side 90 */
+#define MC_TRIM_REV_PCT   { 100, 90, 100, 90 }      /* backward curved left: right side 90 */
 #define MC_INVERT         { 0, 0, 0, 0 }
 
 /* Bench testing only: allow manual moves while no heading is arriving
