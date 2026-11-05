@@ -87,7 +87,7 @@ class SensorSnapshot:
 
 class LaptopNavigator:
     SENSOR_MAX_AGE_S = 0.75  # Also decides whether a heading may place markers on the map.
-    SENSOR_HOLD_AGE_S = 1.0  # Pause DFS beyond this; telemetry only arrives every 500 ms.
+    SENSOR_HOLD_AGE_S = 1.4  # Pause DFS beyond this; telemetry arrives every 500 ms, one late packet read 1.05 s (1.0 paused constantly). Keep below the 1.5 s link timeout.
     CAMERA_MAX_AGE_S = 1.0
     COMMAND_REFRESH_S = 0.2
     TURN_TIMEOUT_S = 3.0  # Per attempt: a stall brakes and retries, and the retry's start boost frees it.
@@ -109,6 +109,8 @@ class LaptopNavigator:
     JAM_MIN_PROGRESS_MM = 25.0  # Above camera range noise, below a slow leg's travel in JAM_WAIT_S.
     ALIGN_BACK_WAIT_S = 1.0  # Ride out short camera blips before assuming an overshoot.
     ALIGN_BACK_MAX_PULSES = 5  # No usable rear sensor, so limit how far it can reverse blind.
+    BLIND_RESTART_S = 4.0  # Driving with no marker ahead and no usable front ToF: re-kick the wheels this often.
+    SEGMENT_RETRIES = 2  # A timed-out leg is restarted (STOP then FORWARD) this many times before DFS faults.
     FAR_SAMPLES = 3  # Fresh readings in a row before 0 means "too far", not a one-off dropout.
 
     def __init__(self, send_command, report=lambda message: None, clock=time.monotonic,
@@ -164,6 +166,9 @@ class LaptopNavigator:
         self._hold_marker: Optional[int] = None
         self._await_marker = False
         self._jam_ref = None
+        self._blind_since = None
+        self._retries_for = None
+        self._retries = 0
         self._turn_braked_until = 0.0
         self._reset_turn()
 
@@ -226,8 +231,20 @@ class LaptopNavigator:
         elif front is not None and front <= 1000:  # 1023 is a range category, not a distance.
             source, distance = 'Front ToF', front
         else:
+            # Nothing to measure progress against (open floor, front ToF 0/1023): the jam check was blind here, and a
+            # rover that never started moving just sat until the 30 s timeout. Re-kick on a timer instead.
             self._jam_ref = None
+            if self._blind_since is None:
+                self._blind_since = now
+            elif now - self._blind_since >= self.BLIND_RESTART_S:
+                self._blind_since = None
+                if self._send('STOP', now, force=True):
+                    self.phase = 'settle'
+                    self.ready_at = now + self.STOP_SETTLE_S
+                    self._status('No marker or front ToF to measure progress; restarting forward travel')
+                return True
             return False
+        self._blind_since = None
         ref = self._jam_ref
         # A gap in checks (pause, centring) or a new source restarts the measurement.
         if (ref is None or ref['source'] != source or
@@ -244,6 +261,27 @@ class LaptopNavigator:
             self.ready_at = now + self.STOP_SETTLE_S
             self._status('%s not getting closer (%.0f mm); restarting forward travel' %
                          (source, distance))
+        return True
+
+    def _retry_timed_out_leg(self, now):
+        """A leg that outlives its timeout while driving is usually a stalled start, not a lost mission.
+
+        Restart it (STOP, settle, FORWARD gives the wheels a fresh start boost) before giving up."""
+        ex = self.explorer
+        if self.grid is None or self.phase != 'drive' or ex.state != State.MOVING or ex.pending is None:
+            return False
+        key = (ex.session_id, ex.pending.segment_id)
+        if self._retries_for != key:
+            self._retries_for, self._retries = key, 0
+        if now - ex.issued_at < ex.segment_timeout_s or self._retries >= self.SEGMENT_RETRIES:
+            return False
+        self._retries += 1
+        ex.issued_at = now
+        if self._send('STOP', now, force=True):
+            self.phase = 'settle'
+            self.ready_at = now + self.STOP_SETTLE_S
+            self._status('Leg timed out after %.0f s; restarting it (retry %d of %d)' %
+                         (ex.segment_timeout_s, self._retries, self.SEGMENT_RETRIES))
         return True
 
     def _side_clearance(self, side):
@@ -983,6 +1021,8 @@ class LaptopNavigator:
                 return
         if self.grid is None and sensor is not None and sensor.stop_required and self.phase == "drive":
             self.stop("Sensor stop request")
+            return
+        if self._retry_timed_out_leg(now):
             return
         self.explorer.tick(now)
         if self.explorer.state == State.FAULT:

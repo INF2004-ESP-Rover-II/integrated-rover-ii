@@ -586,6 +586,32 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(self.commands.count('STOP'), stops)
         self.assertEqual(self.nav.phase, 'drive')
 
+    def test_blind_drive_restarts_the_wheels_on_a_timer(self):
+        """No marker and front ToF 0/1023: nothing to measure progress, so re-kick every BLIND_RESTART_S."""
+        for front in (1023, 0):
+            with self.subTest(front=front):
+                self.setUp()
+                self.drive()
+                stops = self.commands.count('STOP')
+                for _ in range(int(self.nav.BLIND_RESTART_S / .1) + 5):
+                    self.tof_step(front)
+                self.assertEqual(self.commands.count('STOP'), stops + 1)
+                self.assertIn('restarting forward travel', self.nav.status)
+                self.tof_step(front, seconds=.41)
+                self.assertEqual(self.commands[-1], 'FORWARD')
+
+    def test_timed_out_leg_is_retried_before_dfs_faults(self):
+        self.drive()
+        retries = 0
+        for _ in range(4000):
+            self.jam_step()
+            retries = max(retries, self.nav._retries)
+            if not self.nav.active:
+                break
+        self.assertFalse(self.nav.active)
+        self.assertIn('TIMEOUT', self.nav.status)
+        self.assertGreaterEqual(retries, 1)
+
     def test_front_tof_without_a_real_distance_cannot_trigger_a_jam(self):
         for front in (1023, 0, 65535):
             with self.subTest(front=front):
@@ -616,16 +642,17 @@ class NavigationTests(unittest.TestCase):
 
     def test_real_jam_still_ends_at_the_travel_limit(self):
         self.drive()
-        for _ in range(600):
+        for _ in range(4000):   # a timed-out leg is retried SEGMENT_RETRIES times before DFS faults
             self.jam_step()
             if not self.nav.active:
                 break
         self.assertFalse(self.nav.active)
         self.assertIn('TIMEOUT', self.nav.status)
 
-    def test_sensor_age_pauses_dfs_only_past_one_second(self):
+    def test_sensor_age_pauses_dfs_only_past_the_hold_age(self):
         self.drive()
-        self.now += .95
+        hold = self.nav.SENSOR_HOLD_AGE_S
+        self.now += hold - .05
         self.camera()
         self.nav.tick()
         self.assertIsNone(self.nav._input_hold)
@@ -633,7 +660,7 @@ class NavigationTests(unittest.TestCase):
         self.camera()
         self.nav.tick()
         self.assertIsNotNone(self.nav._input_hold)
-        self.assertIn('sensor telemetry age 1.05s > 1.00s', self.nav.status)
+        self.assertIn('sensor telemetry age %.2fs > %.2fs' % (hold + .05, hold), self.nav.status)
 
     def test_camera_gap_stops_then_resumes_same_dfs_without_reactivation(self):
         self.drive()
