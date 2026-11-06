@@ -4,6 +4,8 @@ An embedded systems project using Pico W and Robo Pico to control a mecanum-whee
 
 See [MPU6500 integration](MPU6500.md) for current IMU wiring, calibration and firmware compatibility.
 
+See [ESP32-S3 On-board Vision](#-esp32-s3-on-board-vision-updated-2026-11-06) for the latest vision changes and the UART link to the Robo Pico.
+
 ---
 
 ## 📁 Project Structure
@@ -13,6 +15,7 @@ INF2004-Embedded/
 ├── firmware/
 │   ├── robo_pico/          # Robot controller (Pico W)
 │   ├── sensor_pico/        # Sensor processor (Pico)
+│   ├── esp32_s3_vision/    # On-board marker detection (ESP-IDF, separate build)
 │   └── CMakeLists.txt
 ├── dashboard/              # Python control interface
 ├── build/                  # Build output (generated)
@@ -221,6 +224,99 @@ Notes:
 - Markers seen with no mapped marker in view are placed from the rover's last known cell. At the end of a line (front ToF ≤ 45 cm) a turn puts the rover in the last marker's cell; tune `AT_WALL_MM` in `dashboard/vision_feed.py`.
 - Without the camera, replay a recording: `python <ESP32-LogiCam-Test>/software/laptop/replay.py session.jsonl | mosquitto_pub -l -t camera/marker`.
 - Unit tests: `python -m unittest discover -s tests -p "test_*.py"`.
+
+---
+
+## 📷 ESP32-S3 On-board Vision (updated 2026-11-06)
+
+**For anyone picking this up, including AI sessions: read this before changing vision code.**
+
+The ESP32-S3 can now find ArUco markers and measure range and bearing by itself, with no laptop, and send the results over UART. The firmware is in `firmware/esp32_s3_vision/`. It is an ESP-IDF project (v5.2.7, target `esp32s3`) and is **not** part of the Pico CMake build.
+
+**Nothing on the Robo Pico reads this link yet.** The rover still gets markers from the laptop (`vision/vision_publisher.py`, see Test 5) until the receiver exists.
+
+| Work | Status |
+|---|---|
+| Detection, range and bearing on the S3 | Done |
+| UART sender on the S3 | Done, tested by loopback only |
+| Robo Pico receiver on UART1 (GP21) | **Not started** (Vivi's side) |
+| End-to-end test with a Pico | Not done |
+| Moving the rover from the laptop publisher to UART | Not done |
+
+### What changed
+
+- Added `firmware/esp32_s3_vision/`, moved from the `ESP32-LogiCam-Test` repo so the rover's code is in one place. This folder is now the copy to edit. The old repo keeps the test images, detector comparison tools, generator scripts for `aruco_dict.h` and `camera_calib.h`, the marker sheet and an older handover (`ONBOARD_VISION_HANDOVER_2026-11-05.md`, which still says to use a resistor and that step 7 is not started).
+- `main/vision_frame.c` builds the UART message. `main/app_main.c` runs the pipeline in `vision_task` and sends a message for every processed image.
+- `main/wifi_secrets.h` is committed on purpose. The router is a local test network, and the team chose not to hide its password. **This repo is public.**
+
+### Wiring
+
+| ESP32-S3 | Robo Pico | Notes |
+|---|---|---|
+| GPIO17 (UART1 TX) | GP21 (UART1 RX) | Direct wire, with no resistor |
+| GND | GND | Required |
+
+Both boards use 3.3 V logic. Because there is no resistor, do not press the Robo Pico's GP21 button while the wire is connected: it shorts GPIO17 to GND. Also avoid powering the S3 while the Pico is off.
+
+### UART message
+
+115200 baud, 8N1, one-way from the S3 to the Pico. Multi-byte fields are little-endian. The format was agreed with Vivi, so **ask Jeremy before changing it**.
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| Sync | 1 | `0xA5` |
+| Sequence | 1 | Goes up per processed image and wraps at 255. Health reports keep the last value |
+| Status | 1 | 0 = OK, 1 = NO_MARKER, 2 = STALLED, 3 = CAMERA_LOST |
+| `age_ms` | 2 | `uint16_t`, capped at 65535. Keeps rising in health reports |
+| Marker count N | 1 | 0 to 4 |
+| Marker ID (per marker) | 1 | 1 to 36 by default. Change `VISION_ID_MIN` and `VISION_ID_MAX` in `app_main.c` to test others |
+| Range (per marker) | 2 | `uint16_t`, straight-line mm from the lens |
+| Bearing (per marker) | 2 | `int16_t`, hundredths of a degree, positive = right |
+| Quality (per marker) | 1 | 0 = OK, 1 = pose failed (range and bearing are 0), 2 = bad shape, 3 = too small, 4 = too far |
+| CRC | 1 | CRC-8: polynomial 0x07, init 0, no reflection, xorout 0. Covers sequence through the last payload byte |
+
+A message is 7 bytes with no marker, 13 with one and 31 with four. `vision_crc8()` and `vision_frame_build()` in `vision_frame.c` are the reference for the receiver.
+
+### Still to agree with Vivi
+
+- **Health limits:** STALLED after 0.5 s without a processed image, and CAMERA_LOST after 5 s without a camera frame, repeated every 0.2 s. These are the S3's current values (`VISION_STALL_US`, `VISION_LOST_US`, `VISION_HEALTH_US`), not agreed numbers.
+- **`age_ms` start point:** it starts when the frame reaches the S3, because the S3 cannot see when the picture was taken. It reads low by the camera and USB delay, which has not been measured.
+
+Vivi has not been told either point yet.
+
+### Build, flash and test
+
+```bash
+cd firmware/esp32_s3_vision
+idf.py set-target esp32s3   # first build only
+idf.py build
+idf.py -p <port> flash      # hold BOOT, tap EN/RST, release BOOT if it cannot connect
+```
+
+Use the S3's UART USB-C port for flashing, with the webcam in the other port. Tapping EN/RST by itself can leave the board in download mode.
+
+Host tests, which need only a C compiler and, for the second one, OpenCV:
+
+```bash
+python3 firmware/esp32_s3_vision/tools/test_vision_frame.py
+python3 firmware/esp32_s3_vision/tools/test_mjpeg_dht.py
+```
+
+**Loopback test without a Pico:** `VISION_LOOPBACK_TEST` in `app_main.c` is **currently on**. With a wire from GPIO17 to GPIO18, a second UART reads the bytes back and logs them. Save the serial log and check it with `tools/check_uart_log.py <log>`. Comment the define out for the final rover build. Leaving it on does not change what the Pico receives; it only adds log lines, and `nothing on GPIO18` warnings when the wire is absent.
+
+### Measured on the board (2026-11-06)
+
+- **Speed:** 5.3 fps processed with the camera at 15 fps. Decode takes 41 ms, detection 134 ms, and `age_ms` is about 180 to 250 ms.
+- **Loopback:** 296 of 297 frames read back in a 60 s run, the last still being sent when the capture ended. There were no mismatches, bad frames or sequence gaps.
+- **Camera unplugged:** STALLED appeared with `age_ms` at 776, CAMERA_LOST at 5196, and the sequence held still. The camera recovered without a reset when plugged back in.
+- **Marker removed:** NO_MARKER with N = 0, and the sequence kept rising.
+
+### Known limits
+
+- **Not tested on the board:** a real Pico receiver, several real markers in one frame, and the filter that drops IDs 37 to 40.
+- **Wi-Fi blocks vision:** the S3 waits forever for the `RoverII` router at startup, so with the router off the Pico gets no messages at all, not even health reports.
+- **`/stream` slows vision:** the stream handler holds the frame lock while sending, so processing slows with a viewer connected. Running the detector with the stream open has not been measured.
+- **Range accuracy:** range and bearing were compared with OpenCV on the laptop, not with a tape measure. The bearing shows about 2° of offset that may be camera twist, and the lens offset from the rover's centre has not been measured. Do not change the camera calibration without asking Jeremy.
 
 ---
 
