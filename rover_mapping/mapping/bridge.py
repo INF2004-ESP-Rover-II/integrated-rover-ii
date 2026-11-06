@@ -48,6 +48,13 @@ class MappingBridge:
 
     def begin_session(self, n: int, start_marker_id: int) -> bool:
         with self.lock:
+            # DFS restarted after a stop / TIMEOUT at a marker we already mapped: keep the map (use Reset map for a fresh one)
+            if self.ctrl.state in (State.PAUSED, State.FAULT_WAIT) and start_marker_id in self.ctrl.graph.markers:
+                self.segments.clear()
+                if self.ctrl.resume_start(n, start_marker_id):
+                    self.notify(f"DFS restarted: keeping the {self.ctrl.graph.count()} markers already mapped")
+                    self._flush()
+                    return True
             self._force_idle()
             self.segments.clear()
             self.grid.clear()
@@ -85,6 +92,9 @@ class MappingBridge:
                 self.notify("Cannot route: the rover's marker has not been confirmed by the camera")
                 return False
         return self._do(lambda c: c.set_target(target_id), "set target")
+
+    def finish_early(self) -> bool:
+        return self._do(lambda c: c.finish_early(), "finish mapping")
 
     def stop(self) -> None:
         self._do(lambda c: c.operator_stop(), "stop", quiet=True)

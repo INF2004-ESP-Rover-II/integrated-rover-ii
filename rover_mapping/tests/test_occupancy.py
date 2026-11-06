@@ -130,7 +130,7 @@ class CameraGeometry(unittest.TestCase):
         self.assertAlmostEqual(cfg.camera_ground_cm(450), 31.1, delta=0.1)      # 450 mm slant, 32.5 cm up
         self.assertAlmostEqual(cfg.camera_ground_cm(682), 60.0, delta=0.2)      # a marker 60 cm away on the floor
         self.assertEqual(cfg.camera_ground_cm(100), 0.0)                         # closer than the lens height
-        self.assertAlmostEqual(cfg.STANDOFF_CM, 43.1, delta=0.2)                 # 31.1 + 12 cm camera offset
+        self.assertAlmostEqual(cfg.STANDOFF_CM, 50.0, delta=0.2)                 # 38.0 (500 mm lens range over a 32.5 cm lens height) + 12 cm camera offset
 
     def test_tof_forward_offset_moves_the_rays(self):
         from mapping.pose import PoseFeed
