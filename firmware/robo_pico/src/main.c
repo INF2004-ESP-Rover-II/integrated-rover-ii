@@ -10,6 +10,7 @@
 #include "../../common/obstacle_threshold.h"
 #include "wifi_mqtt.h"
 #include "uart_protocol.h"
+#include "map_cmd.h"          // Subsystem 4: mapping + A* route planning (MAP_* commands, robot/map)
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
 
@@ -196,6 +197,20 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+
+    // Subsystem 4 (mapping / path planning): MAP_* commands never move the motors, they only feed the
+    // mapping state machine, so they are handled before any motor, heading-zero or safety-lock logic.
+    if (strncmp(command, "MAP_", 4) == 0)
+    {
+        char map_reply[160];
+        if (map_cmd_handle(command, map_reply, sizeof(map_reply)))
+        {
+            printf("[MAP] %s\n", map_reply);
+            mqtt_publish_status(map_reply);
+        }
+        return;
+    }
+
     if (strcmp(cmd_buffer, "ZERO_HEADING") == 0)
     {
         autonomous_mode = false;
@@ -497,6 +512,72 @@ static void publish_sensor_data(void)
     mqtt_publish_telemetry(telemetry);
 }
 
+/* Subsystem 4: USB serial console. Type a MAP_ command and press Enter. Works without Wi-Fi/MQTT.
+ * Only MAP_ commands are accepted here, so typing in the serial terminal can never drive the motors. */
+static char map_json[5120];            /* robot/map snapshot buffer (36 markers fit in about 3-4 KB) */
+static char map_console[96];           /* USB serial console line buffer */
+static size_t map_console_len = 0;
+
+static void map_console_poll(void)
+{
+    for (int budget = 0; budget < 64; budget++)
+    {
+        int ch = getchar_timeout_us(0);
+        if (ch == PICO_ERROR_TIMEOUT)
+        {
+            break;
+        }
+        if (ch == '\r' || ch == '\n')
+        {
+            if (map_console_len > 0)
+            {
+                map_console[map_console_len] = '\0';
+                map_console_len = 0;
+                char reply[160];
+                if (map_cmd_handle(map_console, reply, sizeof(reply)))
+                {
+                    printf("[MAP] %s\n", reply);
+                    if (mqtt_is_connected())
+                    {
+                        mqtt_publish_status(reply);
+                    }
+                    if (strcmp(map_console, "MAP_DUMP") == 0 &&
+                        map_snapshot_json(map_cmd_fsm(), map_json, sizeof(map_json)) > 0)
+                    {
+                        printf("[MAP] %s\n", map_json);
+                    }
+                }
+                else
+                {
+                    printf("[MAP] The USB console only accepts MAP_ commands (e.g. MAP_SELFTEST)\n");
+                }
+            }
+        }
+        else if (map_console_len < sizeof(map_console) - 1)
+        {
+            map_console[map_console_len++] = (char)ch;
+        }
+        else
+        {
+            map_console_len = 0;   /* line too long: drop it */
+        }
+    }
+}
+
+/* If the broker cannot be reached, keep the board alive with the USB console only (motors stay off). */
+static void map_console_only_forever(const char *why)
+{
+    printf("\n[MAP] %s\n[MAP] Running the USB MAP_ console only (no MQTT, no motor control). Type MAP_SELFTEST.\n", why);
+    map_cmd_init();
+    map_cmd_set_clock_us(time_us_32);
+    while (true)
+    {
+        cyw43_arch_poll();
+        map_console_poll();
+        sleep_ms(5);
+    }
+}
+
 int main()
 {
     stdio_init_all();
@@ -572,7 +653,9 @@ int main()
 
     if (!mqtt_is_connected())
     {
-        printf("[ERROR] MQTT connection timeout\n");
+        printf("[ERROR] MQTT connection timeout (is mosquitto running on the laptop at %s:%d?)\n",
+               MQTT_BROKER_IP, MQTT_BROKER_PORT);
+        map_console_only_forever("MQTT broker not reachable.");
         return -1;
     }
 
@@ -591,6 +674,9 @@ int main()
     printf("  UART Sensor: Listening on GP%d\n", SENSOR_UART_RX_PIN);
     printf("========================================\n\n");
 
+    map_cmd_init();
+    map_cmd_set_clock_us(time_us_32);      // lets MAP_SELFTEST time the A* planner on this board
+
     uint32_t last_timeout_check = 0;
     uint32_t last_sensor_publish = 0;
     uint32_t last_stats_print = 0;
@@ -608,6 +694,17 @@ int main()
         {
             sys_check_timeouts();
             last_timeout_check = now;
+        }
+
+        map_console_poll();
+
+        // Subsystem 4: publish the map when it changed (at most once a second)
+        if (map_cmd_snapshot_due(now, 1000u, map_json, sizeof(map_json)))
+        {
+            if (mqtt_publish_map(map_json) != WIFI_OK)
+            {
+                map_cmd_snapshot_retry();      // not connected or busy: offer it again in a second
+            }
         }
 
         if (uart_packet_available())

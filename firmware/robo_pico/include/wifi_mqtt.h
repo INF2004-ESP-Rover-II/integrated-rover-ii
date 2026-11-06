@@ -70,6 +70,12 @@ wifi_mqtt_error_t mqtt_publish_status(const char *status);
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
 
 /**
+ * @brief Publish the mapping snapshot (JSON) on robot/map. Not telemetry: it does not use the single
+ * telemetry slot, so a slow map message can never block telemetry. Call it only when the map changed.
+ */
+wifi_mqtt_error_t mqtt_publish_map(const char *json);
+
+/**
  * @brief Check MQTT connection status
  */
 bool mqtt_is_connected(void);

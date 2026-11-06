@@ -380,6 +380,10 @@ wifi_mqtt_error_t mqtt_publish_status(const char *status) {
     return publish_message(MQTT_TOPIC_STATUS, status, false);
 }
 
+wifi_mqtt_error_t mqtt_publish_map(const char *json) {
+    return publish_message("robot/map", json, false);
+}
+
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
     return publish_message(MQTT_TOPIC_TELEMETRY, data, true);
 }

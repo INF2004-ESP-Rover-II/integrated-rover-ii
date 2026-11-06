@@ -20,6 +20,10 @@ add_executable(mecanum_robot
     src/wifi_mqtt.c
     src/uart_protocol.c
     src/safety_interlock.c
+    src/rover_map.c              # Subsystem 4 mapping: marker graph
+    src/route_planner.c          # Subsystem 4 mapping: A* over the marker graph
+    src/map_fsm.c                # Subsystem 4 mapping: state machine
+    src/map_cmd.c                # Subsystem 4 mapping: MAP_* commands + robot/map JSON
 )
 
 target_include_directories(mecanum_robot PRIVATE
