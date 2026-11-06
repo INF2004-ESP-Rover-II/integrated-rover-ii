@@ -247,7 +247,7 @@ The ESP32-S3 can now find ArUco markers and measure range and bearing by itself,
 
 - Added `firmware/esp32_s3_vision/`, moved from the `ESP32-LogiCam-Test` repo so the rover's code is in one place. This folder is now the copy to edit. The old repo keeps the test images, detector comparison tools, generator scripts for `aruco_dict.h` and `camera_calib.h`, the marker sheet and an older handover (`ONBOARD_VISION_HANDOVER_2026-11-05.md`, which still says to use a resistor and that step 7 is not started).
 - `main/vision_frame.c` builds the UART message. `main/app_main.c` runs the pipeline in `vision_task` and sends a message for every processed image.
-- `main/wifi_secrets.h` is committed on purpose. The router is a local test network, and the team chose not to hide its password. **This repo is public.**
+- `main/wifi_secrets.h` is committed on purpose. The router is a local test network, and Jeremy chose not to hide its password. **This repo is public.**
 
 ### Wiring
 
@@ -316,7 +316,7 @@ python3 firmware/esp32_s3_vision/tools/test_mjpeg_dht.py
 - **Not tested on the board:** a real Pico receiver, several real markers in one frame, and the filter that drops IDs 37 to 40.
 - **Wi-Fi blocks vision:** the S3 waits forever for the `RoverII` router at startup, so with the router off the Pico gets no messages at all, not even health reports.
 - **`/stream` slows vision:** the stream handler holds the frame lock while sending, so processing slows with a viewer connected. Running the detector with the stream open has not been measured.
-- **Range accuracy:** range and bearing were compared with OpenCV on the laptop, not with a tape measure. The bearing shows about 2° of offset that may be camera twist, and the lens offset from the rover's centre has not been measured. Do not change the camera calibration without asking Jeremy.
+- **Range accuracy:** range and bearing were compared with OpenCV on the laptop, not with a tape measure. With the marker placed straight ahead, the bearing read about +1.8° at 60 cm and 120 cm, which may be camera twist but has not been confirmed. The lens offset from the rover's centre has not been measured. Do not change the camera calibration without asking Jeremy.
 
 ---
 
