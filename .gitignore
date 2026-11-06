@@ -29,3 +29,9 @@ dashboard/logs/
 .DS_Store
 build/
 .venv/
+
+# ESP32-S3 vision firmware (ESP-IDF): generated files and the Wi-Fi password
+/firmware/esp32_s3_vision/managed_components/
+/firmware/esp32_s3_vision/sdkconfig
+/firmware/esp32_s3_vision/sdkconfig.old
+/firmware/esp32_s3_vision/main/wifi_secrets.h
