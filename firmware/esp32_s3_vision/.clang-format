@@ -1,0 +1,21 @@
+# BARR-C:2018 layout rules that a formatter can enforce (rule numbers in brackets).
+BasedOnStyle: LLVM
+ColumnLimit: 80                      # 1.2.a
+IndentWidth: 4                       # 3.4
+UseTab: Never                        # 3.5
+BreakBeforeBraces: Allman            # 1.3.b
+InsertBraces: true                   # 1.3.a
+PointerAlignment: Middle             # 3.1.e
+AlignConsecutiveAssignments: true    # 3.2.c
+AlignConsecutiveDeclarations: true   # 3.2.a, 3.2.b
+SpaceBeforeParens: Custom            # 3.1.j
+SpaceBeforeParensOptions:
+  AfterControlStatements: true       # 3.1.a
+  AfterFunctionDeclarationName: true
+  AfterFunctionDefinitionName: true
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+SortIncludes: Never                  # include order is left as written
