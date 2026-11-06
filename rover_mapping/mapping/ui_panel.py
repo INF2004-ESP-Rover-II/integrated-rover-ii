@@ -48,6 +48,7 @@ class MappingPanel(tk.Frame):
         self.target_var = tk.StringVar()
         tk.Label(row, text="Target marker (or click one)", fg=FG, bg=BG).pack(side="left", padx=(2, 4))
         tk.Entry(row, textvariable=self.target_var, width=4).pack(side="left", padx=(0, 8))
+        self._btn(row, "Finish mapping", "#2980b9", self._finish)
         self._btn(row, "Go to target", "#e67e22", self._go)
         self._btn(row, "Stop", "#e74c3c", lambda: self.nav.stop("Mapping panel stop"))
         self._btn(row, "Reset fault", "#8e44ad", lambda: self.bridge.reset_fault())
@@ -84,6 +85,14 @@ class MappingPanel(tk.Frame):
             self._log(f"[Mapping] Driving to marker {target}")
         except ValueError as exc:
             self._log(f"[Mapping] Cannot start route: {exc}")
+
+    def _finish(self):
+        """Use the markers found so far as the whole map (stops exploring), so Go to target works."""
+        if self.bridge.finish_early():
+            self.nav.stop("Mapping finished by operator")
+            self._log(f"[Mapping] Map finished with {self.bridge.snapshot()['count']} markers")
+        else:
+            self._log("[Mapping] Cannot finish: map needs >= 2 markers and mapping running or paused")
 
     def _on_click(self, event):
         if event.inaxes is None or event.xdata is None:

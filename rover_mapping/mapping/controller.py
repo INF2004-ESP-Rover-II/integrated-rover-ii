@@ -99,6 +99,27 @@ class MappingController:
             self.position_confirmed = False
             self._goto(State.MAP_COMPLETE)
 
+    def resume_start(self, n: int, start_marker_id: int) -> bool:
+        """DFS was stopped/faulted and restarted at a marker we already know: keep the map and carry on."""
+        if (self.state in (State.PAUSED, State.FAULT_WAIT) and n >= 1
+                and start_marker_id in self.graph.markers):
+            self.n = n
+            self.graph.current = start_marker_id
+            self.position_confirmed = True
+            self._goto(State.MAPPING)
+            self._check_count()
+            return True
+        return False
+
+    def finish_early(self) -> bool:
+        """Operator decides the map is big enough: treat the markers found so far as the full map."""
+        if self.state in (State.MAPPING, State.PAUSED) and self.graph.count() >= 2:
+            self.n = self.graph.count()
+            self._emit(ev.CountReached(self.n))
+            self._goto(State.MAP_COMPLETE)
+            return True
+        return False
+
     def mission_fault(self) -> None:
         """Fault reported by Mission Control (not detected locally)."""
         if self.state == State.MAPPING:
