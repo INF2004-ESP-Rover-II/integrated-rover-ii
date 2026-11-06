@@ -7,7 +7,7 @@
 
 
 // ====================== MQTT CONFIG ======================
-#define MQTT_BROKER_IP    "192.168.50.237" //!!check correct IP
+#define MQTT_BROKER_IP    "192.168.50.11" //!!check correct IP
 #define MQTT_BROKER_PORT  1883
 #define MQTT_CLIENT_ID    "robot_pico_w"
 

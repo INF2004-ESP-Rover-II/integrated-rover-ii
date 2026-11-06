@@ -6,7 +6,7 @@
 #define LWIP_SOCKET                 0
 #define MEM_LIBC_MALLOC             0
 #define MEM_ALIGNMENT               4
-#define MEM_SIZE                    20000     // ← INCREASE from 8000 to 20KB
+#define MEM_SIZE                    32768     // MQTT ring plus TCP/network work.
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
 #define PBUF_POOL_SIZE              24
@@ -48,6 +48,6 @@
 #define MQTT_REQ_MAX_IN_FLIGHT      16        // Shared by subscriptions, status and telemetry.
 
 // MQTT output ring buffer (important for publishing)
-#define MQTT_OUTPUT_RINGBUF_SIZE    8192       // ← ADD THIS LINE
+#define MQTT_OUTPUT_RINGBUF_SIZE    16384     // Full 64-node snapshots.
 
 #endif /* __LWIPOPTS_H__ */

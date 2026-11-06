@@ -20,10 +20,15 @@ add_executable(mecanum_robot
     src/wifi_mqtt.c
     src/uart_protocol.c
     src/safety_interlock.c
+    src/camera_uart.c
+    src/onboard_dfs.c
+    src/rover_map.c
+    ../common/vision_protocol.c
 )
 
 target_include_directories(mecanum_robot PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/../common
 )
 
 # Subsystem 6: allow manual moves while the Sensor Pico heading is missing or
@@ -48,3 +53,18 @@ pico_enable_stdio_usb(mecanum_robot 1)
 pico_enable_stdio_uart(mecanum_robot 0)
 
 pico_add_extra_outputs(mecanum_robot)
+
+# Standalone S3 -> UART1 receiver bring-up; no motor, Wi-Fi or Sensor UART code.
+add_executable(camera_uart_diagnostic
+    src/camera_uart_diagnostic.c
+    src/camera_uart.c
+    ../common/vision_protocol.c
+)
+target_include_directories(camera_uart_diagnostic PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/../common
+)
+target_link_libraries(camera_uart_diagnostic pico_stdlib hardware_uart)
+pico_enable_stdio_usb(camera_uart_diagnostic 1)
+pico_enable_stdio_uart(camera_uart_diagnostic 0)
+pico_add_extra_outputs(camera_uart_diagnostic)

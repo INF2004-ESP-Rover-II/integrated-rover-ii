@@ -104,6 +104,10 @@ void motor_manual_estop(void);
 /** Consume a front-stop event for reporting outside the UART interrupt. */
 bool motor_take_front_stop(void);
 void motor_safety_poll(void);
+/* Main-loop navigation lease, checked independently by the motor timer. */
+void motor_executor_require(bool required);
+void motor_executor_renew(void);
+bool motor_executor_expired(void);
 bool motor_safety_is_latched(void);
 bool motor_safety_reset(void);
 

@@ -1546,6 +1546,11 @@ class RobotGUI:
         self.root.update_idletasks()
 
 def main():
+    import sys
+    if "--legacy-laptop" not in sys.argv:
+        from onboard_dashboard import main as onboard_main
+        return onboard_main()
+    sys.argv.remove("--legacy-laptop")
     root = tk.Tk()
     app = RobotGUI(root)
     root.mainloop()

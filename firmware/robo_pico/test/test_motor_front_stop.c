@@ -137,6 +137,16 @@ int main(void) {
     motor_heading_update(NAN, true); // Invalid readings cannot refresh the reference.
     assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
     assert(motor_heading_epoch() == epoch);
+    motor_emergency_stop();motor_safety_receive(false,clock_ms);motor_heading_update(0,true);
+    motor_executor_require(true);
+    assert(motor_auto_drive(30)==MOTOR_OK);tick(NULL);
+    clock_ms+=301;motor_heading_update(0,true);tick(NULL);
+    assert(motor_executor_expired()&&motor_auto_status()!=MOTOR_AUTO_RUNNING);
+    motor_executor_renew();clock_ms+=20;tick(NULL);
+    assert(motor_executor_expired()); /* Renewal cannot erase an expired lease. */
+    motor_executor_require(false);motor_executor_require(true);
+    assert(!motor_executor_expired());
+    motor_emergency_stop();motor_executor_require(false);
     puts("Front range, timeout and manual E-STOP tests passed");
     return 0;
 }

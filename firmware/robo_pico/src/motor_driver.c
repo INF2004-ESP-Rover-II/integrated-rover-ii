@@ -76,6 +76,10 @@ static uint32_t           s_auto_word;      /* auto move being held (0 = none) *
 static uint8_t            s_auto_seq;
 static volatile uint8_t   s_auto_status = MOTOR_AUTO_IDLE;
 
+static volatile bool s_executor_required, s_executor_expired;
+static volatile uint32_t s_executor_renew_ms;
+static void hard_stop(mc_stop_kind_t kind);
+
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
 /* Turn a move result for the running auto command into its status. */
@@ -104,6 +108,11 @@ static bool motion_tick(struct repeating_timer *t) {
     (void)t;
     uint32_t irq = save_and_disable_interrupts();
     uint32_t nm = now_ms();
+    if (s_executor_required && !s_executor_expired && (uint32_t)(nm-s_executor_renew_ms)>300u) {
+        hard_stop(MC_STOP_OPERATOR);
+        s_executor_expired=true;
+        s_safe_reason=MOTOR_SAFE_CMD_TIMEOUT;
+    }
     uint32_t hw = s_heading_word;
     mc_out_t out;
 
@@ -193,6 +202,7 @@ motor_error_t motor_init(void) {
     mc_init(&s_mc);
     mc_set_system_ready(&s_mc, true);
     s_manual_estop = false;
+    s_executor_required = s_executor_expired = false;
     s_forward_driving = false;
     s_front_blocked = false;
     s_front_stop_pending = false;
@@ -452,6 +462,21 @@ motor_error_t claw_set_direction(claw_direction_t direction) {
     restore_interrupts(irq);
     return r;
 }
+
+void motor_executor_require(bool required) {
+    uint32_t irq=save_and_disable_interrupts();
+    if (required && !s_executor_required) {
+        s_executor_renew_ms=now_ms();s_executor_expired=false;
+    }
+    s_executor_required=required;
+    restore_interrupts(irq);
+}
+void motor_executor_renew(void) {
+    uint32_t irq=save_and_disable_interrupts();
+    if(!s_executor_expired)s_executor_renew_ms=now_ms();
+    restore_interrupts(irq);
+}
+bool motor_executor_expired(void) { return s_executor_expired; }
 
 /* ---------------- stops ---------------- */
 
