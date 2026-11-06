@@ -8,7 +8,7 @@ LaptopNavigator + DFS and my mapping code end to end without hardware.
        camera/marker  JSON   (schema 1, lens-relative range/bearing)
 
 Conventions copied from her code: compass heading INCREASES with ROTATE_RIGHT; map north is the
-heading the rover had when the mission started; markers are seen at 450 mm when standing at one.
+heading the rover had when the mission started; markers are seen at 500 mm when standing at one.
 Marker IDs are the maze node numbers + 1 (live IDs are 1..36)."""
 import math
 import random
@@ -19,7 +19,7 @@ from mapping.config import opposite
 
 class RoverPhysics:
     OPEN_MM, WALL_MM = 800, 250        # ToF reading for an open exit / a wall
-    STAND_OFF_MM = 450
+    STAND_OFF_MM = 500
     SEE_MM = 1000                      # camera range limit
 
     def __init__(self, maze, start_node: int, start_heading_deg: float = 0.0,
@@ -58,9 +58,21 @@ class RoverPhysics:
     # ---- physics ---------------------------------------------------------------------
     def command(self, text: str) -> None:
         self.cmd = text.split(":")[0]
+        if self.cmd == "TURN_TO":                  # RoboPico closes the turn itself: absolute IMU heading
+            try:
+                self.turn_target = float(text.split(":")[1]) % 360
+            except (IndexError, ValueError):
+                self.cmd = "STOP"
 
     def step(self, dt: float) -> None:
-        if self.cmd == "ROTATE_RIGHT":
+        if self.cmd == "TURN_TO":
+            error = (self.turn_target - self.heading + 540.0) % 360.0 - 180.0
+            move = self.rotate_dps * dt
+            if abs(error) <= move:
+                self.heading = self.turn_target
+            else:
+                self.heading = (self.heading + (move if error > 0 else -move)) % 360
+        elif self.cmd == "ROTATE_RIGHT":
             self.heading = (self.heading + self.rotate_dps * dt) % 360
         elif self.cmd == "ROTATE_LEFT":
             self.heading = (self.heading - self.rotate_dps * dt) % 360
@@ -105,7 +117,7 @@ class RoverPhysics:
         if self.drive is not None:
             tx, ty = self.world.marker_xy(self.drive["to"])
             vx, vy = self._vec(self.drive["dir"])
-            # the camera range reads 450 mm when the rover has stopped at its stand-off point
+            # the camera range reads 500 mm when the rover has stopped at its stand-off point
             r = self.drive["range"] / 10 - self.STAND_OFF_MM / 10 + self.standoff_cm
             return tx - r * vx, ty - r * vy
         mx, my = self.world.marker_xy(self.at)
@@ -155,8 +167,8 @@ class RoverPhysics:
         markers = []
         if self.drive is not None:
             if self.axis() == opposite(self.drive["dir"]):       # facing back: the source marker is ahead
-                if 450.0 + self._progress() <= self.SEE_MM:
-                    markers.append((self.marker_id(self.drive["from"]), 450.0 + self._progress()))
+                if self.STAND_OFF_MM + self._progress() <= self.SEE_MM:
+                    markers.append((self.marker_id(self.drive["from"]), self.STAND_OFF_MM + self._progress()))
             elif self.drive["range"] <= self.SEE_MM:
                 markers.append((self.marker_id(self.drive["to"]), max(self.drive["range"], 1.0)))
         else:
