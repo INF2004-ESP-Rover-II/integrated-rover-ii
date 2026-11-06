@@ -186,6 +186,13 @@ class RouteRunner:
         nav.map_zero_deg = saved_zero                    # keep the map frame of the exploration
         if saved_grid_origin is not None:
             nav.grid_mission_origin = saved_grid_origin
+        # The navigator has just verified fresh camera/sensor data at its current marker; after a stop or a
+        # Finish-mapping the mapping side no longer holds a camera confirmation, so take it from the navigator.
+        start = nav.grid.current if getattr(nav, "grid", None) is not None else nav.visible_marker
+        if start is not None and start in b.ctrl.graph.markers:
+            b.confirm_marker(start)
+        elif start is not None:
+            b.notify(f"The rover's marker {start} is not on the map (mapped: {sorted(b.ctrl.graph.markers)})")
         if not b.set_target(target_id):
             nav.stop("Route could not be planned")
             nav.explorer = saved_explorer
@@ -224,8 +231,14 @@ class RouteRunner:
                     and sensor.stop_required):
                 return original()
             now = nav.clock()
+            # A wall in front of a rover that still has to TURN is not a blocked hop (after a terminal wall
+            # stop the rover faces the wall 15 cm away and the next hop starts with a turn away from it).
+            facing_route = True
+            if nav.phase in ("turn", "settle") and ex.pending is not None:
+                target = (nav.map_zero_deg + int(ex.pending.direction) * 90) % 360
+                facing_route = abs((target - sensor.heading + 540.0) % 360.0 - 180.0) <= nav.TURN_TOLERANCE_DEG
             if (ex.state == State.MOVING and ex.pending is not None and ex._planned is not None
-                    and nav.phase in ("turn", "settle", "drive")):
+                    and facing_route and nav.phase in ("turn", "settle", "drive")):
                 moved = nav.phase == "drive"             # still turning/settling = never left the marker
                 nav._send("STOP", now, force=True)
                 if ex.segment_blocked(ex.session_id, ex.pending.segment_id, now, moved=moved):
@@ -234,7 +247,7 @@ class RouteRunner:
                     nav._reset_arrival()
                     nav._status("Route blocked: %s" % ("backing out to marker %s" % ex.current
                                                       if moved else "re-planning at marker %s" % ex.current))
-            if ex.recovering and nav.phase in ("turn", "scan", "settle"):
+            if (ex.recovering or not facing_route) and nav.phase in ("turn", "scan", "settle"):
                 nav.sensor = replace(sensor, stop_required=False)
                 try:
                     return original()
