@@ -247,7 +247,6 @@ The ESP32-S3 can now find ArUco markers and measure range and bearing by itself,
 
 - Added `firmware/esp32_s3_vision/`, moved from the `ESP32-LogiCam-Test` repo so the rover's code is in one place. This folder is now the copy to edit. The old repo keeps the test images, detector comparison tools, generator scripts for `aruco_dict.h` and `camera_calib.h`, the marker sheet and an older handover (`ONBOARD_VISION_HANDOVER_2026-11-05.md`, which still says to use a resistor and that step 7 is not started).
 - `main/vision_frame.c` builds the UART message. `main/app_main.c` runs the pipeline in `vision_task` and sends a message for every processed image.
-- `main/wifi_secrets.h` is committed on purpose. The router is a local test network, and Jeremy chose not to hide its password. **This repo is public.**
 
 ### Wiring
 
