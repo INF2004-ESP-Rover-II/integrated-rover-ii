@@ -12,6 +12,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_LIST_DIR)
     pico_sdk_init()
 endif()
 
+# Reuse the ESP32 encoder's contract/CRC without changing its UART format.
+set(CAMERA_RECEIVER_SOURCES
+    src/camera_protocol.c
+    src/camera_uart.c
+    ../esp32_s3_vision/main/vision_frame.c
+)
+
 add_executable(mecanum_robot
     src/main.c
     src/motor_driver.c
@@ -20,10 +27,13 @@ add_executable(mecanum_robot
     src/wifi_mqtt.c
     src/uart_protocol.c
     src/safety_interlock.c
+    src/mission_control.c
+    ${CAMERA_RECEIVER_SOURCES}
 )
 
 target_include_directories(mecanum_robot PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/../esp32_s3_vision/main
 )
 
 # Subsystem 6: allow manual moves while the Sensor Pico heading is missing or
@@ -48,3 +58,14 @@ pico_enable_stdio_usb(mecanum_robot 1)
 pico_enable_stdio_uart(mecanum_robot 0)
 
 pico_add_extra_outputs(mecanum_robot)
+
+# Flash this image for a receive/print test without Wi-Fi, MQTT or motor setup.
+add_executable(camera_uart_monitor camera_monitor/main.c ${CAMERA_RECEIVER_SOURCES})
+target_include_directories(camera_uart_monitor PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/../esp32_s3_vision/main
+)
+target_link_libraries(camera_uart_monitor pico_stdlib hardware_uart)
+pico_enable_stdio_usb(camera_uart_monitor 1)
+pico_enable_stdio_uart(camera_uart_monitor 0)
+pico_add_extra_outputs(camera_uart_monitor)

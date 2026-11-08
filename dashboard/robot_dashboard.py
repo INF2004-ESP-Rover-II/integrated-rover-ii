@@ -91,7 +91,7 @@ class RobotGUI:
         # MQTT Client
         self.mqtt_client = None
         self.connected = False
-        self.broker_ip = tk.StringVar(value="192.168.50.236")
+        self.broker_ip = tk.StringVar(value="192.168.50.11")
         self.broker_port = tk.IntVar(value=1883)
         self.client_id = "robot_dashboard"
 

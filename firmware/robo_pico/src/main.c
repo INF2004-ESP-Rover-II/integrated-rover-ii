@@ -10,6 +10,8 @@
 #include "../../common/obstacle_threshold.h"
 #include "wifi_mqtt.h"
 #include "uart_protocol.h"
+#include "camera_uart.h"
+#include "mission_control.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
 
@@ -65,6 +67,66 @@ static bool link_lost = true; // FR-08: true until the first laptop heartbeat
 static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
 static bool heading_zero_pending;
 static uint32_t heading_zero_ready_ms;
+static mission_t mission;
+
+static void report_mission(bool force)
+{
+    static uint32_t serial_revision = UINT32_MAX;
+    static uint32_t last_publish_ms;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    bool changed = serial_revision != mission.revision;
+    if (!force && !changed && (uint32_t)(now - last_publish_ms) < 1000u) return;
+    char status[192];
+    snprintf(status, sizeof(status),
+             "MISSION_STATE:%s test=%u motion=disabled reason=%s revision=%lu",
+             mission_state_name(mission.state), (unsigned)mission.test_mode,
+             mission_reason_name(mission.reason), (unsigned long)mission.revision);
+    if (force || changed) {
+        printf("[MISSION] %s\n", status);
+        serial_revision = mission.revision;
+    }
+    if (mqtt_is_connected()) mqtt_publish_status(status);
+    last_publish_ms = now;
+}
+
+static void stop_mission_outputs(void)
+{
+    autonomous_mode = false;
+    autonomous_state = AUTO_STATE_IDLE;
+    forward_boost_active = false;
+    heading_zero_pending = false;
+    motor_emergency_stop();
+    arm_set_direction(ARM_STOP);
+    claw_set_direction(CLAW_STOP);
+}
+
+static bool handle_mission_command(const char *command)
+{
+    if (strcmp(command, "MISSION_STATUS") == 0) {
+        report_mission(true);
+        return true;
+    }
+    if (strcmp(command, "START_DFS") == 0) {
+        mqtt_publish_status("MISSION_REFUSED:ONBOARD_DFS_NOT_IMPLEMENTED");
+        printf("[MISSION] START_DFS refused: onboard DFS/executor not implemented\n");
+        return true;
+    }
+    const char *event;
+    if (strncmp(command, "MISSION_TEST:", 13) == 0) event = command + 13;
+    else if (strcmp(command, "RESET_MISSION") == 0) event = "RESET";
+    else return false;
+
+    mission_result_t result = mission_test_event(&mission, event,
+        motor_safety_is_latched(), to_ms_since_boot(get_absolute_time()));
+    if (result == MISSION_ACCEPTED) stop_mission_outputs();
+    char reply[96];
+    snprintf(reply, sizeof(reply), "MISSION_TEST:%s state=%s",
+             mission_result_name(result), mission_state_name(mission.state));
+    printf("[MISSION] %s\n", reply);
+    mqtt_publish_status(reply);
+    report_mission(true);
+    return true;
+}
 
 static void service_heading_zero(void)
 {
@@ -107,10 +169,12 @@ static void service_safety_stop(void)
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         forward_boost_active = false;
+        mission_pause(&mission, MISSION_REASON_FRONT_STOP, to_ms_since_boot(get_absolute_time()));
         mqtt_publish_status("FRONT_STOPPED");
     }
     if (motor_safety_is_latched())
     {
+        mission_fault(&mission, MISSION_REASON_ESTOP, to_ms_since_boot(get_absolute_time()));
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         forward_boost_active = false;
@@ -196,6 +260,11 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+    if (handle_mission_command(command)) return;
+    if (!mission_command_allowed(&mission, command)) {
+        mqtt_publish_status("MISSION_REFUSED:TEST_MODE_MOVEMENT_DISABLED");
+        return;
+    }
     if (strcmp(cmd_buffer, "ZERO_HEADING") == 0)
     {
         autonomous_mode = false;
@@ -347,7 +416,10 @@ static void process_command(const char *command)
         else if (strncmp(cmd_buffer, "TURN_BY", 7) == 0)
             result = has_arg ? motor_auto_rotate_by(value) : MOTOR_ERR_PIN;
         else
+        {
+            mission_pause(&mission, MISSION_REASON_OPERATOR_STOP, to_ms_since_boot(get_absolute_time()));
             result = motor_auto_stop();
+        }
 
         char msg[80];
         static char last_move[32] = "";
@@ -384,6 +456,7 @@ static void process_command(const char *command)
     }
     else if (strncmp(cmd_buffer, "AUTO_STOP", 9) == 0)
     {
+        mission_pause(&mission, MISSION_REASON_OPERATOR_STOP, to_ms_since_boot(get_absolute_time()));
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         motor_emergency_stop();
@@ -393,6 +466,7 @@ static void process_command(const char *command)
     }
     else if (strncmp(cmd_buffer, "STOP", 4) == 0)
     {
+        mission_pause(&mission, MISSION_REASON_OPERATOR_STOP, to_ms_since_boot(get_absolute_time()));
         autonomous_mode = false; // Stop also disables auto
         autonomous_state = AUTO_STATE_IDLE;
         result = motor_emergency_stop();
@@ -442,6 +516,8 @@ static void publish_sensor_data(void)
              "{"
              "\"timestamp\":%lu,"
              "\"heading_epoch\":%lu,\"heading_offset_deg\":%.3f,"
+             "\"mission\":{\"state\":\"%s\",\"reason\":\"%s\",\"test_mode\":%s,"
+             "\"motion_enabled\":false,\"revision\":%lu},"
              "\"imu\":{"
              "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
@@ -470,6 +546,8 @@ static void publish_sensor_data(void)
              "}",
              (unsigned long)latest_sensors.timestamp_ms,
              (unsigned long)motor_heading_epoch(), motor_heading_offset(),
+             mission_state_name(mission.state), mission_reason_name(mission.reason),
+             mission.test_mode ? "true" : "false", (unsigned long)mission.revision,
              latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
              latest_sensors.gyro_x, latest_sensors.gyro_y, latest_sensors.gyro_z,
              motor_heading_relative(latest_sensors.heading), latest_sensors.pitch, latest_sensors.roll,
@@ -501,6 +579,8 @@ int main()
 {
     stdio_init_all();
     sleep_ms(2000);
+    mission_init(&mission, to_ms_since_boot(get_absolute_time()));
+    report_mission(true);
 
     printf("\n========================================\n");
     printf("  Mecanum Robot Controller\n");
@@ -532,6 +612,7 @@ int main()
     }
     uart_set_packet_callback(on_sensor_packet);
     uart_receiver_init(SENSOR_UART_ID, SENSOR_UART_BAUD, SENSOR_UART_RX_PIN, SENSOR_UART_TX_PIN);
+    camera_uart_init();
 
     // Initialize piezo buzzer with PWM
     gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
@@ -599,10 +680,16 @@ int main()
     while (true)
     {
         service_safety_stop();
+        camera_uart_poll(); // UART1 diagnostics only; no navigation/motor actions.
         cyw43_arch_poll();
         service_safety_stop();
         service_heading_zero();
         uint32_t now = to_ms_since_boot(get_absolute_time());
+        uint32_t mission_last_rx = mqtt_last_link_rx_ms();
+        bool mission_link_ok = mission_last_rx != 0 &&
+            (uint32_t)(now - mission_last_rx) <= LINK_TIMEOUT_MS;
+        mission_tick(&mission, motor_safety_is_latched(), mission_link_ok, now);
+        report_mission(false);
 
         if (now - last_timeout_check >= 100)
         {
