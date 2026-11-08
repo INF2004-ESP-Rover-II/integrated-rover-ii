@@ -63,7 +63,8 @@ motor_error_t motor_parallel_park(int direction, int power_percent);
 /** Drive straight, holding the current heading. speed: +1..100 forward,
  *  -1..-100 backward (0 = motor_auto_stop). */
 motor_error_t motor_auto_drive(int speed_percent);
-/** Onboard executor only: requires periodic renewal by the main loop.
+/** Onboard executor only: signed speed as above, nonzero; lease 1..500 ms.
+ * Renew for continuous travel; a recovery pulse deliberately does not renew.
  * The independent 20 ms motor timer brakes when the lease expires. */
 motor_error_t motor_auto_drive_leased(int speed_percent, uint16_t lease_ms);
 bool motor_auto_renew_lease(void);

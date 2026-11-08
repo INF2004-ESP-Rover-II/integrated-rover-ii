@@ -4,7 +4,7 @@ import json
 
 
 MISSION_STATES = frozenset({"IDLE", "READY", "EXPLORING", "PAUSED", "COMPLETE", "FAULT"})
-LEG_PHASES = frozenset({'NONE', 'SCANNING', 'SELECTING', 'CONFIGURED', 'TURNING', 'APPROACHING', 'HOLDING', 'BRAKING', 'VERIFYING', 'COMPLETE', 'CANCELLED'})
+LEG_PHASES = frozenset({'NONE', 'SCANNING', 'SELECTING', 'CONFIGURED', 'TURNING', 'APPROACHING', 'HOLDING', 'BRAKING', 'VERIFYING', 'BACKING_UP', 'REACQUIRING', 'COMPLETE', 'CANCELLED'})
 LEG_FIELDS = ('leg_id', 'departure_node', 'next_target_node', 'arrival_reference_node',
               'target_cell', 'direction', 'phase', 'configured')
 
@@ -65,7 +65,13 @@ DFS_REFUSAL_MESSAGES.update({
     'TARGET_NOT_VISIBLE_AT_START': 'The locked target must be visible when starting so RoboPico can capture its reference baseline.',
     'TRACKING_MARKERS_MISSING': 'Neither locked tracking marker is usable in the latest image.',
     'CAMERA_RECOVERY_TIMEOUT': 'Camera recovery timed out while stopped. See the tracking row for the exact input reason and ages.',
-    'LEG_TIME_LIMIT': 'The leg reached its overall 10-second limit, including camera waits.'})
+    'LEG_TIME_LIMIT': 'The leg reached its overall time limit, including bounded recovery waits.',
+    'REAR_SENSOR_UNAVAILABLE': 'Reference recovery stopped: a usable rear ultrasonic reading is required before reversing.',
+    'REAR_BLOCKED': 'Reference recovery stopped: rear clearance must exceed 250 mm.',
+    'BACKUP_MOTOR_REFUSED': 'Motion Control refused the short reference-recovery reverse.',
+    'BACKUP_MOTOR_STOPPED': 'The reference-recovery reverse stopped unexpectedly.',
+    'REFERENCE_REACQUISITION_TIMEOUT': 'The locked reference did not supply enough usable images after recovery. Arrival remains unconfirmed.',
+    'REFERENCE_RECOVERY_EXHAUSTED': 'The reference disappeared again after the single reverse attempt. Arrival remains unconfirmed.'})
 
 
 @dataclass(frozen=True)

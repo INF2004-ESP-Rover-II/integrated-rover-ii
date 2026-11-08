@@ -56,7 +56,8 @@ bool mission_begin_drive(mission_t *mission, uint32_t now_ms)
 bool mission_motion_enabled(const mission_t *mission)
 {
     return !mission->test_mode && mission->state == MISSION_EXPLORING &&
-        (mission->leg.phase == LEG_APPROACHING || (mission->dfs_active && mission->leg.phase == LEG_TURNING));
+        (mission->leg.phase == LEG_APPROACHING || mission->leg.phase == LEG_BACKING_UP ||
+         (mission->dfs_active && mission->leg.phase == LEG_TURNING));
 }
 
 bool mission_arrival_phase(mission_t *mission, leg_phase_t phase, uint32_t now_ms)
@@ -87,6 +88,19 @@ bool mission_complete_target(mission_t *mission, uint32_t now_ms)
     mission->leg.phase = LEG_COMPLETE;
     transition(mission, mission->dfs_active ? MISSION_EXPLORING : MISSION_READY,
                MISSION_REASON_TARGET_ARRIVED, false, now_ms);
+    return true;
+}
+
+bool mission_reference_phase(mission_t *m, leg_phase_t phase, uint32_t now)
+{
+    if (m->test_mode || m->state!=MISSION_EXPLORING || !m->leg.configured) return false;
+    leg_phase_t from=m->leg.phase;
+    bool allowed=(phase==LEG_HOLDING && (from==LEG_APPROACHING || from==LEG_BRAKING || from==LEG_VERIFYING)) ||
+        (phase==LEG_BACKING_UP && from==LEG_HOLDING) ||
+        (phase==LEG_REACQUIRING && from==LEG_BACKING_UP) ||
+        (phase==LEG_APPROACHING && (from==LEG_HOLDING || from==LEG_REACQUIRING));
+    if (!allowed) return false;
+    m->leg.phase=phase; m->changed_ms=now; m->revision++;
     return true;
 }
 

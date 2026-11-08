@@ -13,6 +13,8 @@ static onboard_drive_inputs_t inputs;
 static camera_observation_t camera;
 static uint32_t now;
 static unsigned starts, stops, renews;
+static unsigned reverse_starts;
+static int last_speed;
 static motor_error_t start_result;
 static motor_auto_status_t status;
 static bool renew_ok;
@@ -20,7 +22,9 @@ static motor_lease_t lease;
 
 motor_error_t motor_auto_drive_leased(int speed, uint16_t lease_ms)
 {
-    assert(speed > 0 && speed <= 100 && lease_ms == ONBOARD_DRIVE_LEASE_MS);
+    assert(speed && speed >= -100 && speed <= 100 && lease_ms == ONBOARD_DRIVE_LEASE_MS);
+    last_speed=speed;
+    if (speed<0) reverse_starts++;
     starts++;
     if (start_result == MOTOR_OK) {
         status = MOTOR_AUTO_RUNNING;
@@ -41,6 +45,7 @@ bool motor_auto_renew_lease(void)
 static void setup(void)
 {
     now = 1000; starts = stops = renews = 0;
+    reverse_starts=0; last_speed=0;
     start_result = MOTOR_OK; status = MOTOR_AUTO_IDLE; renew_ok = true;
     mission_init(&mission, now); rover_map_init(&map, 123);
     assert(rover_map_start(&map, 7) == MAP_OK);
@@ -548,6 +553,139 @@ static void test_recovery_keeps_good_image_across_cached_frame_expiry(void)
     assert(!drive.active && !strcmp(drive.result, "CAMERA_RECOVERY_TIMEOUT") && starts == 1);
 }
 
+static void lose_reference(void)
+{
+    inputs.reference_absent=true; inputs.camera_status=VISION_STATUS_NO_MARKER;
+    inputs.camera_fresh=false; inputs.camera_packet_age_ms=0; inputs.camera_image_age_ms=100;
+    selection.available=selection.reference_available=false;
+    tick(20);
+    assert(drive.active && drive.reference_recovery && mission.leg.phase==LEG_HOLDING);
+    assert(!mission_motion_enabled(&mission) && map.current_node==0 && map.count==1);
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
+}
+static void start_backup(void)
+{
+    lose_reference(); tick(ONBOARD_DRIVE_REFERENCE_MISSING_MS-1u);
+    assert(!reverse_starts && mission.leg.phase==LEG_HOLDING);
+    tick(1);
+    assert(reverse_starts==1 && drive.backup_used && mission.leg.phase==LEG_BACKING_UP);
+    assert(last_speed==-ONBOARD_DRIVE_BACKUP_PCT && mission_motion_enabled(&mission));
+    assert(!motor_lease_expired(&lease,now+ONBOARD_DRIVE_BACKUP_MS-1u));
+    assert(motor_lease_expired(&lease,now+ONBOARD_DRIVE_BACKUP_MS+1u));
+}
+static void reference_returns(void)
+{
+    inputs.reference_absent=false; healthy_camera();
+}
+static void test_missing_reference_waits_two_seconds_then_one_bounded_reverse(void)
+{
+    start_500_mm_leg(); brake_near_target(); observe_reference(400,400,0);
+    assert(drive.verification_frames==1);
+    uint32_t leg=mission.leg.leg_id;
+    start_backup(); assert(!drive.verification_frames);
+    char json[768]; assert(onboard_drive_format(&drive,&mission,json,sizeof(json)));
+    printf("BACKUP_TRACKING_JSON:%s\n",json);
+    assert(travel_leg_format_json(&mission.leg,json,sizeof(json)));
+    printf("BACKUP_MISSION_JSON:{\"state\":\"EXPLORING\",\"reason\":\"START_DFS\",\"test_mode\":false,\"motion_enabled\":true,\"revision\":%lu,\"leg\":%s}\n",
+        (unsigned long)mission.revision,json);
+    unsigned renewals=renews;
+    tick(ONBOARD_DRIVE_BACKUP_MS-1u); assert(mission.leg.phase==LEG_BACKING_UP);
+    tick(1); assert(mission.leg.phase==LEG_REACQUIRING && !mission_motion_enabled(&mission));
+    assert(renews==renewals && drive.active && map.count==1 && map.current_node==0);
+    reference_returns();
+    observe_reference(600,300,100); // Delayed moving/pre-settle image cannot count.
+    assert(!drive.recovery_frames && mission.leg.phase==LEG_REACQUIRING);
+    observe_reference(600,100,0); // Reverse range increase of 200 mm is permitted only here.
+    assert(drive.recovery_frames==1 && !drive.verification_frames && starts==2);
+    for(unsigned i=0;i<5;++i) onboard_drive_tick(&drive,&mission,&map,&selection,&inputs,now);
+    assert(drive.recovery_frames==1 && map.current_node==0);
+    observe_reference(590,100,0);
+    assert(!drive.reference_recovery && mission.leg.phase==LEG_APPROACHING && starts==3);
+    assert(last_speed>0 && mission.leg.leg_id==leg && mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
+    assert(!strcmp(drive.result,"RESUMED_AFTER_REFERENCE_RECOVERY"));
+    observe_reference(450,100,0); assert(mission.leg.phase==LEG_BRAKING && !drive.verification_frames);
+    observe_reference(400,400,0); observe_reference(400,100,0); assert(map.current_node==0);
+    observe_reference(400,100,0);
+    assert(!drive.active && map.current_node==2 && rover_map_find_id(&map,2)->visited);
+    assert(reverse_starts==1);
+}
+static void test_reference_return_before_two_seconds_never_reverses(void)
+{
+    start_500_mm_leg(); brake_near_target(); lose_reference(); reference_returns();
+    observe_reference(400,500,0); observe_reference(400,100,0);
+    assert(!reverse_starts && mission.leg.phase==LEG_BRAKING && !drive.verification_frames && map.current_node==0);
+    observe_reference(400,400,0); observe_reference(400,100,0); observe_reference(400,100,0);
+    assert(!drive.active && map.current_node==2);
+}
+static void test_reverse_without_rear_data_recovery_deadline_and_no_retry(void)
+{
+    // No rear reading is supplied anywhere in this fixture/input contract.
+    start_500_mm_leg();start_backup();tick(20);
+    assert(drive.active && mission.leg.phase==LEG_BACKING_UP && reverse_starts==1 && map.current_node==0);
+    tick(ONBOARD_DRIVE_BACKUP_MS-20u);
+    assert(drive.active && mission.leg.phase==LEG_REACQUIRING && !mission_motion_enabled(&mission));
+    tick(ONBOARD_DRIVE_SETTLE_MS+ONBOARD_DRIVE_REACQUIRE_MS);
+    assert(!drive.active && reverse_starts==1 && !strcmp(drive.result,"REFERENCE_REACQUISITION_TIMEOUT"));
+    assert(map.count==1 && map.current_node==0);
+    reference_returns();observe_reference(600,100,0);observe_reference(600,100,0);assert(starts==2);
+    start_500_mm_leg();observe_reference(800,100,0);start_backup();tick(ONBOARD_DRIVE_BACKUP_MS);
+    reference_returns();observe_reference(900,400,0);observe_reference(890,100,0);
+    assert(mission.leg.phase==LEG_APPROACHING && starts==3);
+    lose_reference();tick(ONBOARD_DRIVE_REFERENCE_MISSING_MS);
+    assert(!drive.active && reverse_starts==1 && !strcmp(drive.result,"REFERENCE_RECOVERY_EXHAUSTED"));
+}
+static void test_recovery_cannot_override_faults_cancel_or_camera_failure(void)
+{
+    start_500_mm_leg();start_backup();inputs.link_ok=false;tick(20);
+    assert(!drive.active && !strcmp(drive.result,"LINK_LOST") && map.current_node==0);
+    start_500_mm_leg();start_backup();inputs.safety_latched=true;tick(20);
+    assert(!drive.active && !strcmp(drive.result,"SAFETY_LOCKED"));
+    start_500_mm_leg();start_backup();inputs.sensor_valid=false;tick(20);
+    assert(!drive.active && !strcmp(drive.result,"SENSOR_STALE"));
+    start_500_mm_leg();start_backup();mission_pause(&mission,MISSION_REASON_OPERATOR_STOP,now);tick(20);
+    reference_returns();observe_reference(800,400,0);observe_reference(800,100,0);
+    assert(!drive.active && starts==2 && map.count==1);
+    start_500_mm_leg();lose_reference();inputs.camera_status=VISION_STATUS_STALLED;tick(ONBOARD_DRIVE_REFERENCE_MISSING_MS);
+    assert(!drive.active && !reverse_starts && !strcmp(drive.result,"CAMERA_RECOVERY_TIMEOUT"));
+    start_500_mm_leg();start_backup();tick(ONBOARD_DRIVE_BACKUP_MS);reference_returns();
+    observe_reference(1200,400,0); // Implausible reverse jump cannot confirm/restart.
+    assert(!drive.active && !strcmp(drive.result,"REFERENCE_RANGE_INCONSISTENT") && map.current_node==0);
+}
+static void test_backup_stops_early_on_new_reference_image(void)
+{
+    start_500_mm_leg();start_backup();reference_returns();observe_reference(950,40,0);
+    assert(mission.leg.phase==LEG_REACQUIRING && !mission_motion_enabled(&mission) && starts==2);
+    assert(!drive.recovery_frames && !drive.verification_frames && map.current_node==0);
+}
+
+static void test_brief_reference_return_restarts_missing_timer(void)
+{
+    start_500_mm_leg(); lose_reference(); reference_returns(); observe_reference(900,1000,0);
+    assert(drive.recovery_frames==1 && !drive.reference_missing && !reverse_starts);
+    lose_reference(); tick(ONBOARD_DRIVE_REFERENCE_MISSING_MS-1u);
+    assert(!reverse_starts && drive.active && mission.leg.phase==LEG_HOLDING);
+    tick(1); assert(reverse_starts==1 && mission.leg.phase==LEG_BACKING_UP);
+}
+
+static void test_selector_keeps_reference_locked_during_reverse_and_reacquisition(void)
+{
+    start_500_mm_leg();start_backup();
+    camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;
+    camera.received_ms=now;camera.generation++;camera.frame.seq++;
+    target_selector_tick(&selection,&mission,&map,&camera,false,now);
+    assert(mission.leg.phase==LEG_BACKING_UP && selection.state==TARGET_LOCKED);
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
+    tick(ONBOARD_DRIVE_BACKUP_MS);
+    camera.frame.status=VISION_STATUS_OK;camera.frame.count=1;
+    camera.frame.markers[0]=(camera_marker_t){.id=9,.range_mm=950};
+    for(unsigned i=0;i<3;++i) {
+        now+=200;camera.received_ms=now;camera.generation++;camera.frame.seq++;
+        target_selector_tick(&selection,&mission,&map,&camera,true,now);
+    }
+    assert(mission.leg.phase==LEG_REACQUIRING && selection.reference_available && selection.reference_marker==9);
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9 && !map.current_node);
+}
+
 int main(void)
 {
     test_start_and_drive_preserve_locked_leg();
@@ -568,6 +706,13 @@ int main(void)
     test_recovery_ignores_delayed_pre_brake_images();
     test_verification_keeps_good_samples_across_cached_frame_expiry();
     test_recovery_keeps_good_image_across_cached_frame_expiry();
+    test_missing_reference_waits_two_seconds_then_one_bounded_reverse();
+    test_reference_return_before_two_seconds_never_reverses();
+    test_reverse_without_rear_data_recovery_deadline_and_no_retry();
+    test_recovery_cannot_override_faults_cancel_or_camera_failure();
+    test_backup_stops_early_on_new_reference_image();
+    test_brief_reference_return_restarts_missing_timer();
+    test_selector_keeps_reference_locked_during_reverse_and_reacquisition();
     puts("Onboard reference progress, brake/verify, single arrival commit, bounded drive and failure tests passed");
     return 0;
 }

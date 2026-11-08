@@ -48,4 +48,5 @@ build/
 !/tests/test_onboard_dfs.c
 !/tests/test_dashboard_navigation.py
 !/tests/test_dashboard_onboard_map.py
+!/tests/test_camera_map.c
 mosquitto-rover.conf

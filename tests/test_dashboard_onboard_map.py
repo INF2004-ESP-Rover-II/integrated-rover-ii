@@ -11,6 +11,7 @@ import uuid
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
+from matplotlib.colors import to_rgba
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'dashboard'))
@@ -65,6 +66,57 @@ for name in names:
 
 
 class OnboardMapTests(unittest.TestCase):
+    def test_onboard_sightings_are_blue_and_only_arrival_snapshot_turns_node_green(self):
+        app = MapGUI()
+        data = snapshot([node(1, 0, 0, True)], current=1)
+        data['observed_nodes'] = [{'marker_id': 2, 'x': 0, 'y': 1}, {'marker_id': 9, 'x': 0, 'y': 2}]
+        app.receive_onboard_map(data)
+        self.assertEqual(len(app.onboard_map.snapshot.nodes), 1)
+        self.assertEqual(len(app.onboard_map.snapshot.observed_nodes), 2)
+        self.assertEqual(app.dfs_current_node_text.get(), '1')
+        self.assertEqual(tuple(app.ax.get_ylim()), (-0.5, 2.5))
+        self.assertEqual([p.get_facecolor() for p in app.ax.patches],
+                         [to_rgba('#27ae60', .65), to_rgba('#2980b9', .65), to_rgba('#2980b9', .65)])
+        self.assertEqual([p.get_linestyle() for p in app.ax.patches], ['-', '--', '--'])
+        before = app.onboard_map.snapshot
+        app.handle_mqtt_message('robot/camera', json.dumps(observation(markers=[
+            {'id': 2, 'range_mm': 10, 'bearing_cdeg': 0, 'quality': 0}])))
+        self.assertIs(app.onboard_map.snapshot, before)
+        app.handle_mqtt_message('robot/status', 'DFS_EVENT:NODE_ARRIVED')
+        self.assertIs(app.onboard_map.snapshot, before) # Even the event must await board map data.
+        data = snapshot([node(1, 0, 0, True), node(2, 0, 1, True)], current=2, revision=2)
+        data['observed_nodes'] = [{'marker_id': 9, 'x': 0, 'y': 2}]
+        app.receive_onboard_map(data)
+        self.assertEqual(app.dfs_current_node_text.get(), '2')
+        self.assertEqual([p.get_facecolor() for p in app.ax.patches],
+                         [to_rgba('#27ae60', .65), to_rgba('#27ae60', .65), to_rgba('#2980b9', .65)])
+        self.assertEqual(app.sent, [])
+
+    def test_rotated_sightings_use_received_coordinates_and_do_not_move_the_start(self):
+        app = MapGUI()
+        data = snapshot([node(1, 0, 0, True), node(2, 0, 1, True)], current=2)
+        data['observed_nodes'] = [{'marker_id': 9, 'x': 1, 'y': 1}]
+        app.receive_onboard_map(data)
+        self.assertEqual(app.onboard_map.snapshot.display_bounds, (0, 1, 0, 1))
+        self.assertEqual([(p.get_x()+.5, p.get_y()+.5) for p in app.ax.patches], [(0, 0), (0, 1), (1, 1)])
+        self.assertEqual(app.dfs_current_node_text.get(), '2')
+        self.assertEqual(app.onboard_map.snapshot.bounds, (0, 0, 0, 1))
+
+    def test_invalid_sighting_packets_cannot_overwrite_confirmed_nodes_or_visited_state(self):
+        cache = OnboardMapCache()
+        self.assertTrue(cache.update(snapshot(), 10))
+        previous = cache.snapshot
+        for observed in (None, [{'marker_id': 7, 'x': 0, 'y': 1}],
+                         [{'marker_id': 2, 'x': 0, 'y': 0}],
+                         [{'marker_id': 2, 'x': 0, 'y': 1, 'visited': True}],
+                         [{'marker_id': 2, 'x': 0, 'y': 32768}],
+                         [{'marker_id': 2, 'x': 0, 'y': 1}, {'marker_id': 3, 'x': 0, 'y': 1}],
+                         [{'marker_id': 2, 'x': 0, 'y': 1}, {'marker_id': 2, 'x': 0, 'y': 2}]):
+            self.assertFalse(cache.update({**snapshot(revision=2), 'observed_nodes': observed}, 11))
+            self.assertIs(cache.snapshot, previous)
+        self.assertFalse(cache.update({**snapshot(revision=2), 'current_node': 2,
+                                      'observed_nodes': [{'marker_id': 2, 'x': 0, 'y': 1}]}, 11))
+
     def test_set_start_waits_for_map_echo_and_ack_alone_cannot_change_view(self):
         app = MapGUI()
         app.receive_onboard_map(snapshot([node(9, -1, 3, True)], current=9))

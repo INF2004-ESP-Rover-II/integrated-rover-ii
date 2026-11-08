@@ -60,7 +60,7 @@
  * tests: strafe and diagonal need more (only 2 wheels push on a diagonal,
  * and mecanum rollers slip sideways). Forward also gets the team's pitch
  * boost on a slope. Tune on the floor, then rebuild. */
-#define MC_DASH_STRAIGHT_PCT    10    /* W / S      forward, backward  */
+#define MC_DASH_STRAIGHT_PCT    7    /* W / S      forward, backward  */
 #define MC_DASH_STRAFE_PCT      100   /* Q / E      strafe left, right (zigzag) */
 #define MC_DASH_DIAGONAL_PCT    60    /* R T F G    diagonals (bench: m 30 30 0) */
 #define MC_DASH_ROTATE_PCT      60    /* A / D      rotate on the spot */

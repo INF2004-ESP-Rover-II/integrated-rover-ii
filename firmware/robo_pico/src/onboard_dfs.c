@@ -21,6 +21,9 @@ static const map_node_t *neighbour(const rover_map_t *map, const map_node_t *nod
 }
 static bool whole_map_resolved(const onboard_dfs_t *d, const rover_map_t *map)
 {
+    // Sighted unvisited markers remain unresolved, even though their estimated
+    // display positions must not be used as verified planner connectivity.
+    if (map->observed_count) return false;
     for (size_t i=0; i<map->count; ++i) {
         const map_node_t *node = &map->nodes[i];
         if (!node->visited || !seen(d,node->marker_id)) return false;

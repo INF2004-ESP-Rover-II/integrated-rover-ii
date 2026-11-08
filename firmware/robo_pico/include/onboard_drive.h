@@ -19,6 +19,13 @@
 #define ONBOARD_DRIVE_CAMERA_RECOVERY_MS 1500u
 #define ONBOARD_DRIVE_RECOVERY_FRAMES 2u
 #define ONBOARD_DRIVE_MAX_WALL_MS 10000u
+// One timed attempt per leg; this is not calibrated reverse odometry.
+#define ONBOARD_DRIVE_REFERENCE_MISSING_MS 2000u
+#define ONBOARD_DRIVE_BACKUP_MS 250u
+#define ONBOARD_DRIVE_BACKUP_PCT 100
+#define ONBOARD_DRIVE_REACQUIRE_MS 2500u
+#define ONBOARD_DRIVE_RECOVERY_WALL_MS 6000u
+#define ONBOARD_DRIVE_RECOVERY_BACKWARDS_MM 250
 
 typedef struct {
     bool stopped, safety_latched, link_ok, sensor_valid, imu_ok, front_fault, front_urgent, camera_fresh;
@@ -28,6 +35,7 @@ typedef struct {
     bool camera_present;
     uint8_t camera_status;
     uint32_t camera_packet_age_ms, camera_image_age_ms;
+    bool reference_absent; // Explicit absence from a fresh OK/no-marker camera packet, not a stale stream.
 } onboard_drive_inputs_t;
 typedef struct {
     bool active;
@@ -46,6 +54,8 @@ typedef struct {
     bool camera_present;
     uint8_t camera_status;
     uint32_t camera_packet_age_ms, camera_image_age_ms, accepted_image_age_ms;
+    bool reference_recovery, backup_used, reference_missing;
+    uint32_t reference_wait_ms, reference_missing_ms, backup_started_ms, backup_stopped_ms;
 } onboard_drive_t;
 
 void onboard_drive_init(onboard_drive_t *drive);

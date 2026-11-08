@@ -30,6 +30,8 @@ const char *travel_leg_phase_name(leg_phase_t phase)
     case LEG_HOLDING: return "HOLDING";
     case LEG_BRAKING: return "BRAKING";
     case LEG_VERIFYING: return "VERIFYING";
+    case LEG_BACKING_UP: return "BACKING_UP";
+    case LEG_REACQUIRING: return "REACQUIRING";
     case LEG_COMPLETE: return "COMPLETE";
     case LEG_CANCELLED: return "CANCELLED";
     default: return "UNKNOWN";

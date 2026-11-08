@@ -28,6 +28,17 @@ class MapSnapshot:
     columns: int
     rows: int
     nodes: tuple
+    observed_nodes: tuple = ()
+
+    @property
+    def display_nodes(self):
+        return self.nodes + self.observed_nodes
+
+    @property
+    def display_bounds(self):
+        nodes = self.display_nodes
+        return None if not nodes else (min(n.x for n in nodes), max(n.x for n in nodes),
+                                      min(n.y for n in nodes), max(n.y for n in nodes))
 
 
 def decode_map(data):
@@ -75,8 +86,23 @@ def decode_map(data):
         bounds = expected
     elif bounds is not None or columns != 0 or rows != 0 or current is not None:
         raise ValueError('Empty map must have empty bounds/current node')
+    raw_observed = data.get('observed_nodes', [])
+    if not isinstance(raw_observed, list) or len(nodes) + len(raw_observed) > capacity or (raw_observed and not nodes):
+        raise ValueError('Invalid observed node count')
+    observed = []
+    for item in raw_observed:
+        if not isinstance(item, dict) or item.get('visited', False) is not False:
+            raise ValueError('Camera observations cannot confirm visits')
+        marker_id = bounded_int(item['marker_id'], 1, 255)
+        x, y = bounded_int(item['x'], -32768, 32767), bounded_int(item['y'], -32768, 32767)
+        if marker_id in ids or (x, y) in cells:
+            raise ValueError('Conflicting observed marker or coordinate')
+        ids.add(marker_id)
+        cells.add((x, y))
+        observed.append(MapNode(marker_id, x, y, False, (0, 0, 0, 0)))
     return MapSnapshot(boot, revision, capacity, request, current, bounds, columns, rows,
-                       tuple(sorted(nodes, key=lambda node: node.marker_id)))
+                       tuple(sorted(nodes, key=lambda node: node.marker_id)),
+                       tuple(sorted(observed, key=lambda node: node.marker_id)))
 
 
 class OnboardMapCache:

@@ -932,9 +932,11 @@ class RobotGUI:
         snapshot = self.onboard_map.snapshot
         if snapshot != previous:
             self.render_onboard_map()
-        self.onboard_map_status.set('RoboPico map: %d nodes / %d capacity | %d columns x %d rows | current node: %s' % (
-            len(snapshot.nodes), snapshot.capacity, snapshot.columns, snapshot.rows,
-            snapshot.current_node if snapshot.current_node is not None else 'unknown'))
+        bounds = snapshot.display_bounds
+        columns, rows = (bounds[1]-bounds[0]+1, bounds[3]-bounds[2]+1) if bounds else (0, 0)
+        self.onboard_map_status.set('RoboPico map: %d nodes / %d capacity | %d columns x %d rows | current node: %s | Green: arrival confirmed | Blue: unvisited (%d camera estimates)' % (
+            len(snapshot.display_nodes), snapshot.capacity, columns, rows,
+            snapshot.current_node if snapshot.current_node is not None else 'unknown', len(snapshot.observed_nodes)))
         pending = self.pending_start_request
         if pending is not None and snapshot.last_request == pending['token']:
             self.start_node_status.set('RoboPico confirmed start node %d at (0,0)' % pending['marker_id'])
@@ -961,7 +963,7 @@ class RobotGUI:
             self.ax.set_yticks([0])
             self.ax.set_title('RoboPico map is empty; set the start node', color='white')
         else:
-            min_x, max_x, min_y, max_y = snapshot.bounds
+            min_x, max_x, min_y, max_y = snapshot.display_bounds
             self.ax.set_xlim(min_x - 0.5, max_x + 0.5)
             self.ax.set_ylim(min_y - 0.5, max_y + 0.5)
             for axis, low, high in ((self.ax.xaxis, min_x, max_x), (self.ax.yaxis, min_y, max_y)):
@@ -971,13 +973,15 @@ class RobotGUI:
                 else:
                     axis.set_major_locator(MaxNLocator(nbins=8, integer=True))
             self.ax.grid(which='minor', color='#3498db', alpha=0.35)
-            for node in snapshot.nodes:
+            estimated_ids = {node.marker_id for node in snapshot.observed_nodes}
+            for node in snapshot.display_nodes:
                 self.ax.add_patch(Rectangle((node.x - 0.5, node.y - 0.5), 1, 1,
-                    facecolor='#27ae60' if node.visited else '#2980b9', edgecolor='#95a5a6', alpha=0.65))
+                    facecolor='#27ae60' if node.visited else '#2980b9', edgecolor='#95a5a6',
+                    linestyle='--' if node.marker_id in estimated_ids else '-', alpha=0.65))
                 self.ax.text(node.x, node.y + 0.12, str(node.marker_id), ha='center', va='center',
                              color='white', fontsize=12, fontweight='bold')
-            self.ax.set_title('RoboPico: %d columns x %d rows | %d discovered nodes' % (
-                snapshot.columns, snapshot.rows, len(snapshot.nodes)), color='white')
+            self.ax.set_title('RoboPico: %d columns x %d rows | %d nodes | dashed: camera estimate' % (
+                max_x-min_x+1, max_y-min_y+1, len(snapshot.display_nodes)), color='white')
         node = next((node for node in snapshot.nodes if node.marker_id == snapshot.current_node), None)
         self.rover_dot, = self.ax.plot([] if node is None else [node.x],
             [] if node is None else [node.y - 0.22], 'o', color='#f39c12', markersize=8, zorder=10)
@@ -1259,6 +1263,8 @@ class RobotGUI:
             self.last_dfs_reply = None
             leg_phase=report.leg.phase if report.leg is not None else 'NONE'
             message={'HOLDING':'Waiting for fresh camera observations; wheels stopped.',
+                'BACKING_UP':'RoboPico is briefly reversing to recover the locked reference.',
+                'REACQUIRING':'RoboPico has stopped and is reacquiring the locked reference.',
                 'BRAKING':'RoboPico is verifying target arrival.', 'VERIFYING':'RoboPico is verifying target arrival.',
                 'SCANNING':'RoboPico is checking ToF exits and planning the next DFS leg.',
                 'TURNING':'RoboPico is turning toward the next DFS direction.',

@@ -7,7 +7,7 @@
 
 typedef enum { LEG_NORTH, LEG_EAST, LEG_SOUTH, LEG_WEST, LEG_DIRECTION_UNKNOWN } leg_direction_t;
 typedef enum { LEG_NONE, LEG_SCANNING, LEG_SELECTING, LEG_CONFIGURED, LEG_TURNING, LEG_APPROACHING, LEG_HOLDING, LEG_BRAKING,
-               LEG_VERIFYING, LEG_COMPLETE, LEG_CANCELLED } leg_phase_t;
+               LEG_VERIFYING, LEG_BACKING_UP, LEG_REACQUIRING, LEG_COMPLETE, LEG_CANCELLED } leg_phase_t;
 
 typedef struct {
     uint32_t leg_id; // 0 before the first leg; clear preserves the last issued ID.

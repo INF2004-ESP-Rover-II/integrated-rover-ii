@@ -157,7 +157,8 @@ void target_selector_tick(target_selector_t *s, mission_t *m, const rover_map_t 
         return;
     }
     bool approaching = !m->test_mode && m->state == MISSION_EXPLORING && m->leg.configured &&
-        (m->leg.phase == LEG_APPROACHING || m->leg.phase == LEG_HOLDING || m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING) &&
+        (m->leg.phase == LEG_APPROACHING || m->leg.phase == LEG_HOLDING || m->leg.phase == LEG_BRAKING ||
+         m->leg.phase == LEG_VERIFYING || m->leg.phase == LEG_BACKING_UP || m->leg.phase == LEG_REACQUIRING) &&
         m->leg.leg_id == s->leg_id && s->state == TARGET_LOCKED;
     if (!approaching && !context_ok(m, map, safe)) {
         if (s->state == TARGET_WAITING || s->state == TARGET_LOCKED) {

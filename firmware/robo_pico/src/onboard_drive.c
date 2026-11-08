@@ -12,7 +12,7 @@ void onboard_drive_init(onboard_drive_t *drive)
     *drive = (onboard_drive_t){.result = "NOT_STARTED", .input_reason = "NONE"};
 }
 
-static const char *input_problem(const target_selector_t *s, const onboard_drive_inputs_t *in, uint32_t now)
+static const char *motion_problem(const onboard_drive_inputs_t *in, uint32_t now)
 {
     if (in->safety_latched) return "SAFETY_LOCKED";
     if (!in->link_ok) return "LINK_LOST";
@@ -25,6 +25,13 @@ static const char *input_problem(const target_selector_t *s, const onboard_drive
     // Permit this bounded visual approach; never turn it into a map/arrival fact.
     if (in->front_fault) return "FRONT_SENSOR_FAULT";
     if (in->front_urgent || front_obstacle_detected(in->front_mm, false)) return "FRONT_BLOCKED";
+    return NULL;
+}
+
+static const char *input_problem(const target_selector_t *s, const onboard_drive_inputs_t *in, uint32_t now)
+{
+    const char *problem=motion_problem(in,now);
+    if (problem) return problem;
     if (!in->camera_present) return "CAMERA_UART_MISSING";
     if (in->camera_status != VISION_STATUS_OK) return in->camera_status == VISION_STATUS_NO_MARKER ?
         "CAMERA_NO_MARKERS" : in->camera_status == VISION_STATUS_STALLED ? "CAMERA_PROCESSING_STALLED" : "CAMERA_LOST";
@@ -76,7 +83,9 @@ static const char *track(onboard_drive_t *d, const mission_t *m, const target_se
     if (s->sample_generation != d->last_sample_generation) {
         if (ref && d->reference_model_valid) {
             int32_t step = d->last_reference_mm - s->reference_range_mm;
-            if (step > ONBOARD_DRIVE_REFERENCE_MAX_STEP_MM || step < -ONBOARD_DRIVE_REFERENCE_BACKWARDS_MM)
+            int32_t backwards=d->reference_recovery && d->backup_used ?
+                ONBOARD_DRIVE_RECOVERY_BACKWARDS_MM : ONBOARD_DRIVE_REFERENCE_BACKWARDS_MM;
+            if (step > ONBOARD_DRIVE_REFERENCE_MAX_STEP_MM || step < -backwards)
                 return "REFERENCE_RANGE_INCONSISTENT";
         }
         // Freeze a synchronised pair when the target leaves view. This is the
@@ -184,8 +193,104 @@ void onboard_drive_stop(onboard_drive_t *d, mission_t *m, mission_reason_t reaso
     motor_emergency_stop();
     mission_pause(m, reason, now);
     d->active = false;
+    d->reference_recovery = false;
     d->estimate_valid = false;
     d->result = result;
+}
+
+static bool reference_absent(const onboard_drive_inputs_t *in)
+{
+    return in->reference_absent && in->camera_present &&
+        (in->camera_status==VISION_STATUS_OK || in->camera_status==VISION_STATUS_NO_MARKER) &&
+        in->camera_packet_age_ms<=TARGET_UART_MAX_AGE_MS && in->camera_image_age_ms<=ONBOARD_DRIVE_IMAGE_MAX_AGE_MS;
+}
+
+static bool recovery_failure(onboard_drive_t *d,mission_t *m,const char *problem,uint32_t now)
+{
+    d->input_reason=problem;
+    onboard_drive_stop(d,m,MISSION_REASON_INPUT_LOST,problem,now);
+    return true;
+}
+
+static void finish_backup(onboard_drive_t *d,mission_t *m,const target_selector_t *s,uint32_t now)
+{
+    motor_emergency_stop();
+    mission_reference_phase(m,LEG_REACQUIRING,now);
+    d->backup_stopped_ms=now; d->recovery_frames=0; d->verification_frames=0;
+    d->recovery_generation=s->sample_generation; d->estimate_valid=false;
+    d->result="SETTLING_AFTER_BACKUP";
+}
+
+// Returns true while recovery owns this tick (including a terminal failure).
+// Only explicit absence from a live camera stream can initiate the timed bump.
+static bool recover_reference(onboard_drive_t *d,mission_t *m,const target_selector_t *s,
+    const onboard_drive_inputs_t *in,uint32_t now,bool *resuming)
+{
+    const char *problem=input_problem(s,in,now);
+    if (m->leg.phase==LEG_BACKING_UP) {
+        bool seen_now=!problem && s->reference_available &&
+            (int32_t)(s->sample_received_ms-s->sample_age_ms-d->backup_started_ms)>=0;
+        if ((uint32_t)(now-d->backup_started_ms)>=ONBOARD_DRIVE_BACKUP_MS || seen_now) {
+            finish_backup(d,m,s,now); return true;
+        }
+        if (motor_auto_status()!=MOTOR_AUTO_RUNNING)
+            return recovery_failure(d,m,"BACKUP_MOTOR_STOPPED",now);
+        // A single non-renewed lease bounds reverse motion even if the main loop stalls.
+        d->result="BACKING_UP_FOR_REFERENCE";
+        return true;
+    }
+    bool after_backup=m->leg.phase==LEG_REACQUIRING;
+    if (reference_absent(in) && !d->reference_missing) {
+        d->reference_missing=true; d->reference_missing_ms=now;
+    }
+    uint32_t settled=after_backup ? d->backup_stopped_ms+ONBOARD_DRIVE_SETTLE_MS : d->reference_wait_ms;
+    if (after_backup && (uint32_t)(now-d->backup_stopped_ms)<ONBOARD_DRIVE_SETTLE_MS) return true;
+    uint32_t limit=after_backup ? ONBOARD_DRIVE_SETTLE_MS+ONBOARD_DRIVE_REACQUIRE_MS :
+        ONBOARD_DRIVE_REFERENCE_MISSING_MS+ONBOARD_DRIVE_REACQUIRE_MS;
+    if ((uint32_t)(now-(after_backup?d->backup_stopped_ms:d->reference_wait_ms))>=limit)
+        return recovery_failure(d,m,"REFERENCE_REACQUISITION_TIMEOUT",now);
+
+    // No geometry or confirmation is taken from a pre-recovery/moving image.
+    if (!problem && s->reference_available &&
+        (int32_t)(s->sample_received_ms-s->sample_age_ms-settled)>=0) {
+        problem=track(d,m,s);
+        if (problem && !recoverable_camera_problem(problem)) return recovery_failure(d,m,problem,now);
+        if (!problem && s->sample_generation!=d->recovery_generation) {
+            d->reference_missing=false;
+            d->recovery_generation=s->sample_generation;
+            if (++d->recovery_frames>=ONBOARD_DRIVE_RECOVERY_FRAMES) {
+                // Restart ordinary braking/verification from the new stationary
+                // position. No pre-backup verification count can survive motion.
+                d->reference_recovery=false; d->verification_frames=0;
+                mission_reference_phase(m,LEG_APPROACHING,now);
+                d->last_refresh_ms=now; *resuming=true;
+                return false;
+            }
+            d->result="CONFIRMING_REFERENCE_RECOVERY";
+            return true;
+        }
+    }
+    if (!after_backup && d->reference_missing &&
+        (uint32_t)(now-d->reference_missing_ms)>=ONBOARD_DRIVE_REFERENCE_MISSING_MS) {
+        if (reference_absent(in)) {
+            if (d->backup_used) return recovery_failure(d,m,"REFERENCE_RECOVERY_EXHAUSTED",now);
+            // This bounded camera-recovery pulse does not consult rear ranging.
+            if (motor_auto_drive_leased(-ONBOARD_DRIVE_BACKUP_PCT,ONBOARD_DRIVE_BACKUP_MS)!=MOTOR_OK)
+                return recovery_failure(d,m,"BACKUP_MOTOR_REFUSED",now);
+            d->backup_used=true; d->backup_started_ms=now;
+            d->recovery_frames=0; d->estimate_valid=false;
+            mission_reference_phase(m,LEG_BACKING_UP,now);
+            d->result="BACKING_UP_FOR_REFERENCE";
+            return true;
+        }
+        // A stream failure cannot authorise a blind reverse. A live reappearing
+        // reference gets the remaining bounded window to supply its second image.
+        if (problem) return recovery_failure(d,m,"CAMERA_RECOVERY_TIMEOUT",now);
+    }
+    if (reference_absent(in)) { d->recovery_frames=0; d->estimate_valid=false; }
+    d->input_reason=after_backup?"REFERENCE_REACQUISITION":"REFERENCE_NOT_VISIBLE";
+    d->result=after_backup?"REACQUIRING_REFERENCE":"WAITING_FOR_REFERENCE";
+    return true;
 }
 
 void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, const target_selector_t *s,
@@ -206,10 +311,24 @@ void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, cons
             m->reason == MISSION_REASON_ESTOP ? "SAFETY_LOCKED" : "CANCELLED";
         return;
     }
-    const char *problem = input_problem(s, in, now);
+    const char *problem = motion_problem(in,now);
+    uint32_t wall_limit=ONBOARD_DRIVE_MAX_WALL_MS+
+        ((d->reference_recovery || d->backup_used)?ONBOARD_DRIVE_RECOVERY_WALL_MS:0u);
     if ((!problem || recoverable_camera_problem(problem)) &&
-        (uint32_t)(now - d->started_ms) >= ONBOARD_DRIVE_MAX_WALL_MS) problem = "LEG_TIME_LIMIT";
+        (uint32_t)(now - d->started_ms) >= wall_limit) problem = "LEG_TIME_LIMIT";
     if (!problem && map->revision != d->map_revision) problem = "MAP_CHANGED_DURING_LEG";
+    bool reference_resuming=false;
+    if (!problem && !d->reference_recovery && d->reference_model_valid &&
+        m->leg.arrival_reference_node==d->reference_id && reference_absent(in)) {
+        motor_emergency_stop();
+        mission_reference_phase(m,LEG_HOLDING,now);
+        d->reference_recovery=true; d->reference_wait_ms=now;
+        d->reference_missing=true; d->reference_missing_ms=now;
+        d->recovery_generation=s->sample_generation; d->recovery_frames=0;
+        d->verification_frames=0; d->estimate_valid=false;
+    }
+    if (!problem && d->reference_recovery && recover_reference(d,m,s,in,now,&reference_resuming)) return;
+    if (!problem) problem=input_problem(s,in,now);
     if (!problem) problem = track(d, m, s);
     if (problem) {
         d->input_reason = problem;
@@ -247,7 +366,7 @@ void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, cons
             MISSION_REASON_INPUT_LOST, problem, now);
         return;
     }
-    bool resuming = false;
+    bool resuming = reference_resuming;
     if (m->leg.phase == LEG_HOLDING) {
         if ((uint32_t)(now - d->hold_started_ms) >= ONBOARD_DRIVE_CAMERA_RECOVERY_MS) {
             onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST, "CAMERA_RECOVERY_TIMEOUT", now);
@@ -328,7 +447,7 @@ void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, cons
             return;
         }
         d->last_refresh_ms = now;
-        d->result = "RESUMED_AFTER_CAMERA_GAP";
+        d->result = reference_resuming?"RESUMED_AFTER_REFERENCE_RECOVERY":"RESUMED_AFTER_CAMERA_GAP";
         return;
     }
     if (motor_auto_status() != MOTOR_AUTO_RUNNING) {

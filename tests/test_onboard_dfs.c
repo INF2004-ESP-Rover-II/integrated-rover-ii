@@ -112,6 +112,9 @@ static void test_unknown_exits_and_open_frontier_never_mean_complete(void)
     assert(onboard_dfs_choose(&dfs,&map,MAP_NORTH,false).kind==DFS_CHOOSE_UNRESOLVED);
     for(unsigned i=0;i<4;++i) assert(rover_map_set_exit(&map,1,(map_direction_t)i,MAP_EXIT_BLOCKED)==MAP_OK);
     assert(onboard_dfs_choose(&dfs,&map,MAP_NORTH,false).kind==DFS_CHOOSE_COMPLETE);
+    assert(rover_map_observe(&map,9,0,1)==MAP_OK);
+    assert(onboard_dfs_choose(&dfs,&map,MAP_NORTH,false).kind==DFS_CHOOSE_UNRESOLVED);
+    map.observed_count=0;
     assert(rover_map_set_exit(&map,1,MAP_EAST,MAP_EXIT_OPEN)==MAP_OK);
     dfs_choice_t choice=onboard_dfs_choose(&dfs,&map,MAP_NORTH,false);
     assert(choice.kind==DFS_CHOOSE_EXPLORE && choice.direction==MAP_EAST && choice.expected_id==0);

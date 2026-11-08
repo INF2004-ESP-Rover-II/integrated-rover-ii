@@ -13,6 +13,7 @@
 #include "uart_protocol.h"
 #include "camera_uart.h"
 #include "camera_telemetry.h"
+#include "camera_map.h"
 #include "mission_control.h"
 #include "rover_map.h"
 #include "target_selector.h"
@@ -78,6 +79,7 @@ static target_selector_t target_selector;
 static onboard_drive_t onboard_drive;
 static onboard_dfs_t onboard_dfs;
 static rover_map_t rover_map;
+static camera_map_t camera_map;
 static char map_last_request[33];
 static uint8_t last_start_marker;
 static bool map_publish_requested;
@@ -237,8 +239,34 @@ static onboard_drive_inputs_t drive_inputs(uint32_t now)
         in.camera_fresh = ob.frame.status == VISION_STATUS_OK &&
             in.camera_packet_age_ms <= TARGET_UART_MAX_AGE_MS &&
             in.camera_image_age_ms <= ONBOARD_DRIVE_IMAGE_MAX_AGE_MS;
+        if (mission.leg.arrival_reference_node && ob.frame.count<=VISION_MAX_MARKERS &&
+            (ob.frame.status==VISION_STATUS_OK || ob.frame.status==VISION_STATUS_NO_MARKER) &&
+            in.camera_packet_age_ms<=TARGET_UART_MAX_AGE_MS && in.camera_image_age_ms<=ONBOARD_DRIVE_IMAGE_MAX_AGE_MS) {
+            in.reference_absent=true;
+            for (uint8_t i=0;i<ob.frame.count;++i)
+                if (ob.frame.markers[i].id==mission.leg.arrival_reference_node) in.reference_absent=false;
+        }
     }
     return in;
+}
+
+static void service_camera_map(uint32_t now)
+{
+    bool stopped=target_selection_safe();
+    bool heading_valid=sensor_data_valid && latest_sensors.imu_status==0 &&
+        (uint32_t)(now-last_sensor_packet_ms)<=CAMERA_MAP_SENSOR_MAX_AGE_MS &&
+        motor_heading_sample_since(now-CAMERA_MAP_SENSOR_MAX_AGE_MS) &&
+        isfinite(latest_sensors.heading) && latest_sensors.heading>=0 && latest_sensors.heading<360;
+    // The first reliable stopped pose after Set start node establishes grid north.
+    // DFS and camera projection must share this frame, including before Start DFS.
+    if (!onboard_drive.frame_valid && rover_map.count==1u && rover_map.current_node && stopped && heading_valid) {
+        onboard_drive.north_heading_deg=latest_sensors.heading;
+        onboard_drive.frame_valid=true;
+    }
+    camera_observation_t ob;
+    const camera_observation_t *latest=camera_uart_latest(&ob)?&ob:NULL;
+    camera_map_tick(&camera_map,&rover_map,latest,stopped,heading_valid && onboard_drive.frame_valid,
+        latest_sensors.heading,onboard_drive.north_heading_deg,now);
 }
 
 static void service_onboard_drive(uint32_t now)
@@ -331,6 +359,7 @@ static bool handle_map_command(const char *command)
     }
     stop_mission_outputs();
     onboard_drive_init(&onboard_drive); // A new asserted origin also establishes a new grid frame.
+    camera_map_init(&camera_map);
     onboard_dfs_init(&onboard_dfs);
     target_selector_init(&target_selector);
     mission_test_event(&mission, "RESET", false, to_ms_since_boot(get_absolute_time()));
@@ -1003,6 +1032,7 @@ int main()
 
         now = to_ms_since_boot(get_absolute_time());
         mission_tick(&mission, motor_safety_is_latched(), mission_link_ok, now);
+        service_camera_map(now);
         service_onboard_dfs(now);
         service_target_selection();
         service_onboard_drive(now);

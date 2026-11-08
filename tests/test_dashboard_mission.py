@@ -285,6 +285,38 @@ class MissionDisplayTests(unittest.TestCase):
         app.clear_mission_display()
         self.assertEqual(app.dfs_tracking_text.get(), 'Tracking: waiting for RoboPico')
 
+    def test_reference_reverse_and_reacquisition_are_onboard_display_only(self):
+        app = FakeGUI()
+        leg = {'leg_id': 2, 'configured': True, 'departure_node': 1, 'next_target_node': 2,
+               'arrival_reference_node': 9, 'target_cell': {'x': 0, 'y': 1}, 'direction': 'NORTH', 'phase': 'BACKING_UP'}
+        app.update_mission_display({**report('EXPLORING', 'START_DFS', motion=True), 'leg': leg})
+        self.assertTrue(app.auto_mode.get())
+        self.assertEqual(app.mission_motion.get(), 'Enabled')
+        self.assertIn('reversing', app.dfs_feedback.get())
+        tracking = {'leg_id': 2, 'active': True, 'phase': 'BACKING_UP', 'source': 'NONE',
+            'remaining_mm': None, 'reference_progress_mm': 420, 'reference_model_valid': True,
+            'verification_frames': 0, 'result': 'BACKING_UP_FOR_REFERENCE'}
+        app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps(tracking))
+        self.assertIn('BACKING_UP_FOR_REFERENCE', app.dfs_tracking_text.get())
+        app.update_mission_display({**report('EXPLORING', 'START_DFS'), 'leg': {**leg, 'phase': 'REACQUIRING'}})
+        self.assertTrue(app.auto_mode.get())
+        self.assertEqual(app.mission_motion.get(), 'Disabled')
+        self.assertIn('reacquiring', app.dfs_feedback.get())
+        self.assertEqual(app.mission_leg_fields['next_target_node'].get(), '2')
+        self.assertEqual(app.mission_leg_fields['arrival_reference_node'].get(), '9')
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events, [])
+        app.handle_mqtt_message('robot/status', 'DFS_EVENT:REFERENCE_REACQUISITION_TIMEOUT')
+        self.assertFalse(app.auto_mode.get())
+        self.assertIn('Arrival remains unconfirmed', app.dfs_feedback.get())
+
+    def test_reverse_rear_refusal_does_not_claim_arrival(self):
+        app = FakeGUI()
+        app.handle_mqtt_message('robot/status', 'DFS_EVENT:REAR_BLOCKED')
+        self.assertFalse(app.auto_mode.get())
+        self.assertIn('250 mm', app.dfs_feedback.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+
     def test_start_dfs_is_high_level_send_only_and_board_reports_missing_start_node(self):
         app = FakeGUI()
         sent = []

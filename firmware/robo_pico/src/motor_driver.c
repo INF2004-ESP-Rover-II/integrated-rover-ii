@@ -374,7 +374,7 @@ motor_error_t motor_auto_drive(int speed_percent) {
 }
 
 motor_error_t motor_auto_drive_leased(int speed_percent, uint16_t lease_ms) {
-    if (speed_percent <= 0 || speed_percent > 100 || !lease_ms || lease_ms > 500u)
+    if (speed_percent == 0 || speed_percent < -100 || speed_percent > 100 || !lease_ms || lease_ms > 500u)
         return MOTOR_ERR_PIN;
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t result = motor_auto_drive(speed_percent);

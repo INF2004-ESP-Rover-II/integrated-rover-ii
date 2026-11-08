@@ -23,9 +23,14 @@ typedef struct {
     uint8_t exits[4]; // N, E, S, W: unknown/open/traversed/blocked.
 } map_node_t;
 
+// Display estimates only: never used for DFS connectivity or arrival localisation.
+typedef struct { uint8_t marker_id; int16_t x, y; } map_observed_node_t;
+
 typedef struct {
     map_node_t nodes[ROVER_MAP_CAPACITY];
     size_t count;
+    map_observed_node_t observed[ROVER_MAP_CAPACITY];
+    size_t observed_count; // count + observed_count never exceeds capacity.
     int16_t min_x, max_x, min_y, max_y;
     uint8_t current_node; // 0 = unknown/between nodes; otherwise an existing marker ID.
     uint64_t boot_id;
@@ -37,6 +42,8 @@ map_result_t rover_map_start(rover_map_t *map, uint8_t marker_id);
 // Coordinates must already be confirmed by the onboard localiser/caller.
 // Camera sightings alone must never call this function with invented coordinates.
 map_result_t rover_map_add(rover_map_t *map, uint8_t marker_id, int16_t x, int16_t y, bool visited);
+// Estimated camera grid slots remain separate until verified localisation/arrival.
+map_result_t rover_map_observe(rover_map_t *map, uint8_t marker_id, int16_t x, int16_t y);
 const map_node_t *rover_map_find_id(const rover_map_t *map, uint8_t marker_id);
 const map_node_t *rover_map_find_cell(const rover_map_t *map, int16_t x, int16_t y);
 map_result_t rover_map_arrive(rover_map_t *map, uint8_t marker_id);

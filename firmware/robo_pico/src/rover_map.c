@@ -26,6 +26,29 @@ const map_node_t *rover_map_find_cell(const rover_map_t *map, int16_t x, int16_t
     return NULL;
 }
 
+map_result_t rover_map_observe(rover_map_t *map, uint8_t marker_id, int16_t x, int16_t y)
+{
+    if (!marker_id) return MAP_INVALID_ID;
+    if (rover_map_find_id(map, marker_id)) return MAP_OK;
+    // Keep a first sighting stable when nearer markers leave the camera view.
+    for (size_t i=0; i<map->observed_count; ++i)
+        if (map->observed[i].marker_id == marker_id) return MAP_OK;
+    if (rover_map_find_cell(map,x,y)) return MAP_CELL_OCCUPIED;
+    for (size_t i=0; i<map->observed_count; ++i)
+        if (map->observed[i].x==x && map->observed[i].y==y) return MAP_CELL_OCCUPIED;
+    if (map->count + map->observed_count >= ROVER_MAP_CAPACITY) return MAP_FULL;
+    map->observed[map->observed_count++] = (map_observed_node_t){.marker_id=marker_id,.x=x,.y=y};
+    map->revision++;
+    return MAP_OK;
+}
+
+static void remove_observed(rover_map_t *map, size_t i)
+{
+    memmove(&map->observed[i], &map->observed[i+1u],
+        (map->observed_count-i-1u)*sizeof(map->observed[0]));
+    map->observed_count--;
+}
+
 map_result_t rover_map_add(rover_map_t *map, uint8_t marker_id, int16_t x, int16_t y, bool visited)
 {
     if (!marker_id) return MAP_INVALID_ID;
@@ -38,6 +61,15 @@ map_result_t rover_map_add(rover_map_t *map, uint8_t marker_id, int16_t x, int16
     }
     if (rover_map_find_cell(map, x, y)) return MAP_CELL_OCCUPIED;
     if (map->count >= ROVER_MAP_CAPACITY) return MAP_FULL;
+    // Confirmed coordinates take priority over display estimates, including a
+    // mistaken estimate occupying this cell. Camera sightings never set visited.
+    for (size_t i=0; i<map->observed_count; ) {
+        if (map->observed[i].marker_id==marker_id || (map->observed[i].x==x && map->observed[i].y==y))
+            remove_observed(map,i);
+        else ++i;
+    }
+    if (map->count + map->observed_count >= ROVER_MAP_CAPACITY)
+        map->observed_count--;
     map->nodes[map->count] = (map_node_t){.marker_id = marker_id, .x = x, .y = y, .visited = visited};
     if (!map->count) {
         map->min_x = map->max_x = x;
@@ -154,6 +186,12 @@ size_t rover_map_format(const rover_map_t *map, const char *last_request, char *
             i ? "," : "", (unsigned)node->marker_id, (int)node->x, (int)node->y,
             node->visited ? "true" : "false", (unsigned)node->exits[0], (unsigned)node->exits[1],
             (unsigned)node->exits[2], (unsigned)node->exits[3])) goto full;
+    }
+    if (!append(out, capacity, &used, "],\"observed_nodes\":[")) goto full;
+    for (size_t i=0; i<map->observed_count; ++i) {
+        const map_observed_node_t *node=&map->observed[i];
+        if (!append(out,capacity,&used,"%s{\"marker_id\":%u,\"x\":%d,\"y\":%d}",
+            i?",":"",(unsigned)node->marker_id,(int)node->x,(int)node->y)) goto full;
     }
     if (!append(out, capacity, &used, "]}")) goto full;
     return used;

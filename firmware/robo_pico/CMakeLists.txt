@@ -33,6 +33,7 @@ add_executable(mecanum_robot
     src/onboard_drive.c
     src/onboard_dfs.c
     src/camera_telemetry.c
+    src/camera_map.c
     src/rover_map.c
     ${CAMERA_RECEIVER_SOURCES}
 )
