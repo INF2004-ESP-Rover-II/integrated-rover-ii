@@ -15,6 +15,9 @@
 #include "camera_telemetry.h"
 #include "mission_control.h"
 #include "rover_map.h"
+#include "target_selector.h"
+#include "onboard_drive.h"
+#include "onboard_dfs.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
 
@@ -71,6 +74,9 @@ static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
 static bool heading_zero_pending;
 static uint32_t heading_zero_ready_ms;
 static mission_t mission;
+static target_selector_t target_selector;
+static onboard_drive_t onboard_drive;
+static onboard_dfs_t onboard_dfs;
 static rover_map_t rover_map;
 static char map_last_request[33];
 static uint8_t last_start_marker;
@@ -103,7 +109,14 @@ static void map_note_translation(const char *command, motor_error_t result)
     const char *translations[] = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "FRONT_LEFT", "FRONT_RIGHT",
                                   "BACK_LEFT", "BACK_RIGHT", "MOVE_FORWARD", "MOVE_BACKWARD"};
     for (size_t i = 0; i < sizeof(translations) / sizeof(translations[0]); ++i)
-        if (strcmp(command, translations[i]) == 0) { rover_map_depart(&rover_map); return; }
+        if (strcmp(command, translations[i]) == 0) {
+            mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
+            rover_map_depart(&rover_map);
+            return;
+        }
+    if (strcmp(command, "ROTATE_LEFT") == 0 || strcmp(command, "ROTATE_RIGHT") == 0 ||
+        strcmp(command, "TURN_TO") == 0 || strcmp(command, "TURN_BY") == 0)
+        mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
 }
 
 static void service_camera_relay(void)
@@ -135,11 +148,14 @@ static void report_mission(bool force)
     uint32_t now = to_ms_since_boot(get_absolute_time());
     bool changed = serial_revision != mission.revision;
     if (!force && !changed && (uint32_t)(now - last_publish_ms) < 1000u) return;
-    char status[192];
-    snprintf(status, sizeof(status),
-             "MISSION_STATE:%s test=%u motion=disabled reason=%s revision=%lu",
+    static char status[512], leg_status[256];
+    if (!travel_leg_format_status(&mission.leg, leg_status, sizeof(leg_status))) return;
+    int length = snprintf(status, sizeof(status),
+             "MISSION_STATE:%s test=%u motion=%s reason=%s revision=%lu %s",
              mission_state_name(mission.state), (unsigned)mission.test_mode,
-             mission_reason_name(mission.reason), (unsigned long)mission.revision);
+             mission_motion_enabled(&mission) ? "enabled" : "disabled",
+             mission_reason_name(mission.reason), (unsigned long)mission.revision, leg_status);
+    if (length < 0 || (size_t)length >= sizeof(status)) return;
     if (force || changed) {
         printf("[MISSION] %s\n", status);
         serial_revision = mission.revision;
@@ -157,6 +173,130 @@ static void stop_mission_outputs(void)
     motor_emergency_stop();
     arm_set_direction(ARM_STOP);
     claw_set_direction(CLAW_STOP);
+}
+
+static bool target_selection_safe(void)
+{
+    // Selection is local and does not require a dashboard heartbeat.
+    return !autonomous_mode && !heading_zero_pending && !motor_safety_is_latched() &&
+        motor_motion_state() == 1;
+}
+
+static void service_target_selection(void)
+{
+    static char previous[768];
+    static uint32_t last_sent_ms;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    camera_observation_t observation;
+    const camera_observation_t *latest = camera_uart_latest(&observation) ? &observation : NULL;
+    if (!onboard_dfs.active || onboard_drive.active || onboard_dfs_selecting(&onboard_dfs,now))
+        target_selector_tick(&target_selector, &mission, &rover_map, latest, target_selection_safe(), now);
+    if (!mqtt_is_connected() || (uint32_t)(now - last_sent_ms) < 200u) return;
+    static char payload[768], status[800];
+    if (!target_selector_format(&target_selector, payload, sizeof(payload))) return;
+    if (strcmp(previous, payload) == 0 && (uint32_t)(now - last_sent_ms) < 1000u) return;
+    snprintf(status, sizeof(status), "TARGET_SELECTION:%s", payload);
+    if (mqtt_publish_status(status) == WIFI_OK) {
+        memcpy(previous, payload, strlen(payload) + 1u);
+        last_sent_ms = now;
+    }
+}
+
+static bool handle_target_command(const char *command)
+{
+    if (strcmp(command, "CLEAR_TARGET") == 0) {
+        if (onboard_drive.active || onboard_dfs.active) { mqtt_publish_status("TARGET_REFUSED:STOP_DFS_FIRST"); return true; }
+        mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
+        mqtt_publish_status("TARGET_ACK:CLEARED");
+        report_mission(true);
+        return true;
+    }
+    if (strncmp(command, "SELECT_NEXT", 11) != 0) return false;
+    mqtt_publish_status("TARGET_REFUSED:SELECTION_IS_AUTOMATIC");
+    return true;
+}
+
+static onboard_drive_inputs_t drive_inputs(uint32_t now)
+{
+    uint32_t rx = mqtt_last_link_rx_ms();
+    onboard_drive_inputs_t in = {.stopped = target_selection_safe(), .safety_latched = motor_safety_is_latched(),
+        .link_ok = rx != 0 && (uint32_t)(now - rx) <= LINK_TIMEOUT_MS,
+        .sensor_valid = sensor_data_valid, .sensor_received_ms = last_sensor_packet_ms,
+        .heading_deg = latest_sensors.heading,
+        .imu_ok = sensor_data_valid && latest_sensors.imu_status == 0 &&
+            motor_heading_sample_since(now - ONBOARD_DRIVE_SENSOR_MAX_AGE_MS),
+        .front_mm = (uint16_t)((latest_sensors.tof_bits >> 10u) & 0x3ffu),
+        .front_fault = (latest_sensors.obstacle_flags & (2u << 6u)) != 0,
+        .front_urgent = (latest_sensors.obstacle_flags & (2u << 3u)) != 0};
+    camera_observation_t ob;
+    if (camera_uart_latest(&ob)) {
+        in.camera_present = true;
+        in.camera_status = ob.frame.status;
+        in.camera_packet_age_ms = now - ob.received_ms;
+        in.camera_image_age_ms = in.camera_packet_age_ms + ob.frame.age_ms;
+        in.camera_fresh = ob.frame.status == VISION_STATUS_OK &&
+            in.camera_packet_age_ms <= TARGET_UART_MAX_AGE_MS &&
+            in.camera_image_age_ms <= ONBOARD_DRIVE_IMAGE_MAX_AGE_MS;
+    }
+    return in;
+}
+
+static void service_onboard_drive(uint32_t now)
+{
+    bool was_active = onboard_drive.active;
+    onboard_drive_inputs_t inputs = drive_inputs(now);
+    onboard_drive_tick(&onboard_drive, &mission, &rover_map, &target_selector, &inputs, now);
+    if (was_active && !onboard_drive.active) {
+        char reply[96];
+        snprintf(reply, sizeof(reply), "DFS_EVENT:%s", onboard_dfs.active && strcmp(onboard_drive.result,"ARRIVED")==0 ?
+            "NODE_ARRIVED" : onboard_drive.result);
+        mqtt_publish_status(reply);
+        printf("[DFS] %s\n", reply);
+        map_publish_requested = true;
+    }
+    static char previous[768], payload[768], packet[800];
+    static uint32_t last_sent;
+    if (mqtt_is_connected() && (uint32_t)(now - last_sent) >= 200u &&
+        onboard_drive_format(&onboard_drive, &mission, payload, sizeof(payload)) &&
+        (strcmp(previous, payload) != 0 || (uint32_t)(now - last_sent) >= 1000u)) {
+        snprintf(packet, sizeof(packet), "DFS_TRACKING:%s", payload);
+        if (mqtt_publish_status(packet) == WIFI_OK) {
+            memcpy(previous, payload, strlen(payload) + 1u);
+            last_sent = now;
+        }
+    }
+}
+
+static onboard_dfs_inputs_t dfs_inputs(uint32_t now)
+{
+    onboard_dfs_inputs_t inputs={.drive=drive_inputs(now),
+        .fault_mask=(uint8_t)((latest_sensors.obstacle_flags>>6u)&7u), .heading_offset_deg=motor_heading_offset()};
+    for (unsigned i=0;i<3;++i) inputs.tof_mm[i]=(uint16_t)((latest_sensors.tof_bits>>(10u*i))&1023u);
+    return inputs;
+}
+
+static void service_onboard_dfs(uint32_t now)
+{
+    bool was_active=onboard_dfs.active;
+    onboard_dfs_inputs_t inputs=dfs_inputs(now);
+    camera_observation_t ob;
+    const camera_observation_t *camera=camera_uart_latest(&ob)?&ob:NULL;
+    onboard_dfs_tick(&onboard_dfs,&mission,&rover_map,&onboard_drive,&target_selector,&inputs,camera,now);
+    if (was_active && !onboard_dfs.active) {
+        if (strcmp(onboard_dfs.detail,"CANCELLED")!=0) {
+            char event[96]; snprintf(event,sizeof(event),"DFS_EVENT:%s",onboard_dfs.stage==DFS_FINISHED?"COMPLETE":onboard_dfs.detail);
+            mqtt_publish_status(event);
+        }
+        map_publish_requested=true;
+    }
+    static char previous[384],payload[384],packet[400];
+    static uint32_t last;
+    if (mqtt_is_connected() && (uint32_t)(now-last)>=200u &&
+        onboard_dfs_format(&onboard_dfs,&rover_map,payload,sizeof(payload)) &&
+        (strcmp(previous,payload)!=0 || (uint32_t)(now-last)>=1000u)) {
+        snprintf(packet,sizeof(packet),"DFS_STATE:%s",payload);
+        if (mqtt_publish_status(packet)==WIFI_OK) { memcpy(previous,payload,strlen(payload)+1u);last=now; }
+    }
 }
 
 static bool handle_map_command(const char *command)
@@ -183,12 +323,18 @@ static bool handle_map_command(const char *command)
         mqtt_publish_status("MAP_ACK:SET_START_DUPLICATE");
         return true;
     }
-    if (mission.state != MISSION_IDLE || motor_safety_is_latched() || heading_zero_pending ||
+    if ((mission.state != MISSION_IDLE && (mission.state != MISSION_PAUSED || mission.test_mode)) ||
+        motor_safety_is_latched() || heading_zero_pending ||
         (motor_motion_state() != 0 && motor_motion_state() != 1)) {
         mqtt_publish_status("MAP_REFUSED:STOP_RESET_MISSION_AND_CLEAR_SAFETY_FIRST");
         return true;
     }
     stop_mission_outputs();
+    onboard_drive_init(&onboard_drive); // A new asserted origin also establishes a new grid frame.
+    onboard_dfs_init(&onboard_dfs);
+    target_selector_init(&target_selector);
+    mission_test_event(&mission, "RESET", false, to_ms_since_boot(get_absolute_time()));
+    mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
     rover_map_start(&rover_map, (uint8_t)marker_id);
     memcpy(map_last_request, request, sizeof(map_last_request));
     last_start_marker = (uint8_t)marker_id;
@@ -208,9 +354,36 @@ static bool handle_mission_command(const char *command)
         report_mission(true);
         return true;
     }
-    if (strcmp(command, "START_DFS") == 0) {
-        mqtt_publish_status("MISSION_REFUSED:ONBOARD_DFS_NOT_IMPLEMENTED");
-        printf("[MISSION] START_DFS refused: onboard DFS/executor not implemented\n");
+    if (strcmp(command, "START_DFS") == 0 || strncmp(command,"START_DFS:",10)==0) {
+        if (command[9]==':') {
+            char *end; unsigned long opening=strtoul(command+10,&end,10);
+            if (command[10]<'0' || command[10]>'9' || *end || opening<=FRONT_STOP_DISTANCE_MM || opening>1000u) {
+                mqtt_publish_status("DFS_REFUSED:INVALID_OPENING_THRESHOLD"); return true;
+            }
+            if (onboard_dfs.active && opening!=onboard_dfs.open_distance_mm) {
+                mqtt_publish_status("DFS_REFUSED:STOP_DFS_BEFORE_CONFIG_CHANGE"); return true;
+            }
+            onboard_dfs.open_distance_mm=(uint16_t)opening;
+        }
+        service_target_selection(); // Validate the latest camera packet before authorising motion.
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        onboard_dfs_inputs_t inputs = dfs_inputs(now);
+        const char *result = onboard_dfs_start(&onboard_dfs, &mission, &rover_map, &onboard_drive, &target_selector, &inputs, now);
+        bool ok = strcmp(result, "STARTED") == 0 || strcmp(result, "ALREADY_RUNNING") == 0;
+        char reply[96];
+        snprintf(reply, sizeof(reply), "DFS_%s:%s", ok ? "ACK" : "REFUSED", result);
+        mqtt_publish_status(reply);
+        printf("[DFS] %s\n", reply);
+        report_mission(true);
+        map_publish_requested = true;
+        return true;
+    }
+    if (strcmp(command, "STOP_DFS") == 0) {
+        onboard_dfs.active=false; onboard_dfs.stage=DFS_STOPPED; onboard_dfs.detail="OPERATOR_STOP";
+        onboard_drive_stop(&onboard_drive, &mission, MISSION_REASON_OPERATOR_STOP, "OPERATOR_STOP", to_ms_since_boot(get_absolute_time()));
+        stop_mission_outputs();
+        mqtt_publish_status("DFS_ACK:STOPPED");
+        report_mission(true);
         return true;
     }
     const char *event;
@@ -221,6 +394,11 @@ static bool handle_mission_command(const char *command)
     mission_result_t result = mission_test_event(&mission, event,
         motor_safety_is_latched(), to_ms_since_boot(get_absolute_time()));
     if (result == MISSION_ACCEPTED) stop_mission_outputs();
+    if (result == MISSION_ACCEPTED && strcmp(event,"RESET")==0) {
+        onboard_dfs_init(&onboard_dfs);
+        target_selector_init(&target_selector);
+        onboard_drive.active=false; onboard_drive.estimate_valid=false; onboard_drive.result="MISSION_RESET";
+    }
     char reply[96];
     snprintf(reply, sizeof(reply), "MISSION_TEST:%s state=%s",
              mission_result_name(result), mission_state_name(mission.state));
@@ -271,7 +449,8 @@ static void service_safety_stop(void)
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         forward_boost_active = false;
-        mission_pause(&mission, MISSION_REASON_FRONT_STOP, to_ms_since_boot(get_absolute_time()));
+        if (!onboard_dfs.active || onboard_drive.active || mission.test_mode)
+            mission_pause(&mission, MISSION_REASON_FRONT_STOP, to_ms_since_boot(get_absolute_time()));
         mqtt_publish_status("FRONT_STOPPED");
     }
     if (motor_safety_is_latched())
@@ -364,12 +543,14 @@ static void process_command(const char *command)
     service_safety_stop();
     if (handle_map_command(command)) return;
     if (handle_mission_command(command)) return;
+    if (handle_target_command(command)) return;
     if (!mission_command_allowed(&mission, command)) {
-        mqtt_publish_status("MISSION_REFUSED:TEST_MODE_MOVEMENT_DISABLED");
+        mqtt_publish_status(mission.test_mode ? "MISSION_REFUSED:TEST_MODE_MOVEMENT_DISABLED" : "MISSION_REFUSED:STOP_DFS_BEFORE_MANUAL_CONTROL");
         return;
     }
     if (strcmp(cmd_buffer, "ZERO_HEADING") == 0)
     {
+        mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         motor_emergency_stop();
@@ -397,6 +578,7 @@ static void process_command(const char *command)
     }
     if (strcmp(cmd_buffer, "RESET_SAFETY") == 0)
     {
+        mission_clear_leg(&mission, to_ms_since_boot(get_absolute_time()));
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         if (motor_safety_reset())
@@ -614,6 +796,8 @@ static void publish_sensor_data(void)
         return;
 
     static char telemetry[2048]; // ← Reduced size since no LIDAR
+    static char leg_json[384];
+    if (!travel_leg_format_json(&mission.leg, leg_json, sizeof(leg_json))) return;
 
     memset(telemetry, 0, sizeof(telemetry));
 
@@ -622,7 +806,7 @@ static void publish_sensor_data(void)
              "\"timestamp\":%lu,"
              "\"heading_epoch\":%lu,\"heading_offset_deg\":%.3f,"
              "\"mission\":{\"state\":\"%s\",\"reason\":\"%s\",\"test_mode\":%s,"
-             "\"motion_enabled\":false,\"revision\":%lu},"
+             "\"motion_enabled\":%s,\"revision\":%lu,\"leg\":%s},"
              "\"imu\":{"
              "\"accel\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
              "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
@@ -652,7 +836,8 @@ static void publish_sensor_data(void)
              (unsigned long)latest_sensors.timestamp_ms,
              (unsigned long)motor_heading_epoch(), motor_heading_offset(),
              mission_state_name(mission.state), mission_reason_name(mission.reason),
-             mission.test_mode ? "true" : "false", (unsigned long)mission.revision,
+             mission.test_mode ? "true" : "false", mission_motion_enabled(&mission) ? "true" : "false",
+             (unsigned long)mission.revision, leg_json,
              latest_sensors.accel_x, latest_sensors.accel_y, latest_sensors.accel_z,
              latest_sensors.gyro_x, latest_sensors.gyro_y, latest_sensors.gyro_z,
              motor_heading_relative(latest_sensors.heading), latest_sensors.pitch, latest_sensors.roll,
@@ -685,6 +870,9 @@ int main()
     stdio_init_all();
     sleep_ms(2000);
     mission_init(&mission, to_ms_since_boot(get_absolute_time()));
+    target_selector_init(&target_selector);
+    onboard_drive_init(&onboard_drive);
+    onboard_dfs_init(&onboard_dfs);
     rover_map_init(&rover_map, get_rand_64());
     report_mission(true);
 
@@ -786,7 +974,7 @@ int main()
     while (true)
     {
         service_safety_stop();
-        camera_uart_poll(); // UART1 diagnostics only; no navigation/motor actions.
+        camera_uart_poll(); // Decode UART1; selection below never commands motors.
         cyw43_arch_poll();
         service_safety_stop();
         service_camera_relay();
@@ -796,8 +984,6 @@ int main()
         uint32_t mission_last_rx = mqtt_last_link_rx_ms();
         bool mission_link_ok = mission_last_rx != 0 &&
             (uint32_t)(now - mission_last_rx) <= LINK_TIMEOUT_MS;
-        mission_tick(&mission, motor_safety_is_latched(), mission_link_ok, now);
-        report_mission(false);
 
         if (now - last_timeout_check >= 100)
         {
@@ -814,6 +1000,13 @@ int main()
                 sensor_packet_count++;
             }
         }
+
+        now = to_ms_since_boot(get_absolute_time());
+        mission_tick(&mission, motor_safety_is_latched(), mission_link_ok, now);
+        service_onboard_dfs(now);
+        service_target_selection();
+        service_onboard_drive(now);
+        report_mission(false);
 
         // --- Proximity buzzer (disabled during autonomous) ---
         if (!autonomous_mode && sensor_data_valid)

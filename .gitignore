@@ -42,5 +42,10 @@ build/
 !/tests/test_camera_telemetry.c
 !/tests/test_dashboard_camera_relay.py
 !/tests/test_rover_map.c
+!/tests/test_travel_leg.c
+!/tests/test_target_selector.c
+!/tests/test_onboard_drive.c
+!/tests/test_onboard_dfs.c
+!/tests/test_dashboard_navigation.py
 !/tests/test_dashboard_onboard_map.py
 mosquitto-rover.conf

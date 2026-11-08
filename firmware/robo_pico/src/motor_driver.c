@@ -28,6 +28,7 @@
 #include "motor_config.h"
 #include "motor_hw.h"
 #include "motor_types.h"
+#include "motor_lease.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -75,6 +76,8 @@ static volatile uint8_t   s_safe_reason = MOTOR_SAFE_NONE;
 static uint32_t           s_auto_word;      /* auto move being held (0 = none) */
 static uint8_t            s_auto_seq;
 static volatile uint8_t   s_auto_status = MOTOR_AUTO_IDLE;
+static motor_lease_t s_auto_lease;
+static void hard_stop(mc_stop_kind_t kind);
 
 static inline uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
@@ -115,6 +118,7 @@ static bool motion_tick(struct repeating_timer *t) {
             s_word = 0;   /* caller went quiet: Motion Control times out (FR-42) */
         }
     }
+    if (s_auto_word && motor_lease_expired(&s_auto_lease, nm)) hard_stop(MC_STOP_OPERATOR);
     if (s_auto_word) {
         mc_out_clear(&out);
         mc_command(&s_mc, s_auto_word, nm, hw, &out);  /* keep the auto move alive */
@@ -153,6 +157,7 @@ static void hard_stop(mc_stop_kind_t kind) {
     motor_hw_apply(&out);
     s_word = 0;
     s_auto_word = 0;
+    s_auto_lease.duration_ms = 0;
     if (s_auto_status == MOTOR_AUTO_RUNNING) s_auto_status = MOTOR_AUTO_STOPPED;
     if (before != MS_SAFE_STOP && mc_state(&s_mc) == MS_SAFE_STOP)
         s_safe_reason = MOTOR_SAFE_MANUAL_ESTOP;
@@ -198,6 +203,8 @@ motor_error_t motor_init(void) {
     s_front_stop_pending = false;
     s_word = 0;
     s_heading_offset = 0;
+    s_auto_word = 0;
+    s_auto_lease = (motor_lease_t){0};
     s_heading_epoch = 0;
     s_have_raw_heading = false;
 
@@ -325,6 +332,7 @@ static bool heading_ready(void) { return s_mc.heading_seen && !s_mc.stale_latche
 static int  heading_deg_now(void) { return (int)((s_mc.heading + 5u) / 10u) % 360; }
 
 static motor_error_t start_auto(uint32_t word) {
+    s_auto_lease.duration_ms = 0;
     s_word = 0;                              /* a manual move can't be held now */
     s_auto_seq = mc_seq(word);
     s_auto_status = MOTOR_AUTO_RUNNING;
@@ -365,6 +373,27 @@ motor_error_t motor_auto_drive(int speed_percent) {
     return r;
 }
 
+motor_error_t motor_auto_drive_leased(int speed_percent, uint16_t lease_ms) {
+    if (speed_percent <= 0 || speed_percent > 100 || !lease_ms || lease_ms > 500u)
+        return MOTOR_ERR_PIN;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t result = motor_auto_drive(speed_percent);
+    if (result == MOTOR_OK)
+        s_auto_lease = (motor_lease_t){.refreshed_ms = now_ms(), .duration_ms = lease_ms};
+    restore_interrupts(irq);
+    return result;
+}
+
+bool motor_auto_renew_lease(void) {
+    uint32_t irq = save_and_disable_interrupts();
+    bool ok = s_auto_word && s_auto_lease.duration_ms && s_auto_status == MOTOR_AUTO_RUNNING &&
+        !motor_lease_expired(&s_auto_lease, now_ms());
+    if (ok) s_auto_lease.refreshed_ms = now_ms();
+    else if (s_auto_lease.duration_ms) hard_stop(MC_STOP_OPERATOR);
+    restore_interrupts(irq);
+    return ok;
+}
+
 motor_error_t motor_auto_rotate_to(int heading_deg) {
     heading_deg %= 360;
     if (heading_deg < 0) heading_deg += 360;
@@ -378,6 +407,15 @@ motor_error_t motor_auto_rotate_to(int heading_deg) {
     return r;
 }
 
+motor_error_t motor_auto_rotate_leased(int heading_deg, uint16_t lease_ms) {
+    if (!lease_ms || lease_ms > 500u) return MOTOR_ERR_PIN;
+    uint32_t irq = save_and_disable_interrupts();
+    motor_error_t result = motor_auto_rotate_to(heading_deg);
+    if (result == MOTOR_OK) s_auto_lease = (motor_lease_t){.refreshed_ms = now_ms(), .duration_ms = lease_ms};
+    restore_interrupts(irq);
+    return result;
+}
+
 motor_error_t motor_auto_rotate_by(int delta_deg) {
     uint32_t irq = save_and_disable_interrupts();
     motor_error_t r = auto_checks();
@@ -388,6 +426,7 @@ motor_error_t motor_auto_rotate_by(int delta_deg) {
 
 motor_error_t motor_auto_stop(void) {
     uint32_t irq = save_and_disable_interrupts();
+    s_auto_lease.duration_ms = 0;
     if (s_auto_word) {
         s_auto_word = 0;                     /* stop refreshing the move */
         mc_out_t out;

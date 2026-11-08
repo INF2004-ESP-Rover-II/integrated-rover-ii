@@ -28,6 +28,10 @@ add_executable(mecanum_robot
     src/uart_protocol.c
     src/safety_interlock.c
     src/mission_control.c
+    src/travel_leg.c
+    src/target_selector.c
+    src/onboard_drive.c
+    src/onboard_dfs.c
     src/camera_telemetry.c
     src/rover_map.c
     ${CAMERA_RECEIVER_SOURCES}

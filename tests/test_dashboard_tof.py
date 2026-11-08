@@ -115,7 +115,7 @@ class ToFDisplayTests(unittest.TestCase):
         self.app.update_tof_readings(snapshot(left=0, front=65535, right=None, blocked=0, urgent=0, stop=False))
         for label in self.app.tof_labels.values():
             self.assertEqual(label.values["text"], "--")
-        self.assertEqual(self.app.tof_state_labels["left"].values["text"], "Unavailable")
+        self.assertEqual(self.app.tof_state_labels["left"].values["text"], "No usable return")
         self.assertEqual(self.app.tof_state_labels["front"].values["text"], "No target")
 
     def test_missing_obstacle_clears_previous_values(self):
@@ -125,12 +125,13 @@ class ToFDisplayTests(unittest.TestCase):
             self.assertEqual(self.app.tof_labels["front"].values["text"], "--")
             self.assertIsNone(self.app.last_tof_rx)
 
-    def test_healthy_rejected_results_show_unavailable_then_detect_a_hand(self):
+    def test_healthy_no_return_is_distinct_from_fault_then_detects_a_hand(self):
         self.app.update_tof_readings(snapshot(front=740, blocked=0, urgent=0, stop=False))
         for _ in range(10):
             self.app.update_tof_readings(snapshot(front=0, blocked=0, urgent=0, stop=False, faults=0))
             self.assertEqual(self.app.tof_labels['front'].values['text'], '--')
-            self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'Unavailable')
+            self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'No usable return')
+            self.assertFalse(self.app.front_obstacle_snapshot)
         self.app.update_tof_readings(snapshot(front=100))
         self.assertEqual(self.app.tof_labels['front'].values['text'], '100 mm')
         self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'Urgent')
@@ -140,7 +141,7 @@ class ToFDisplayTests(unittest.TestCase):
         self.app.update_tof_readings(snapshot(front=0, blocked=0, urgent=0, stop=False, faults=2))
         self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'Sensor fault')
         self.app.update_tof_readings(snapshot(front=0, blocked=0, urgent=0, stop=False, faults=0))
-        self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'Unavailable')
+        self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'No usable return')
         self.app.update_tof_readings(snapshot(front=1023, blocked=0, urgent=0, stop=False, faults=0))
         self.assertEqual(self.app.tof_state_labels['front'].values['text'], 'No target within 1 m')
 

@@ -21,16 +21,97 @@ void mission_init(mission_t *mission, uint32_t now_ms)
         .reason = MISSION_REASON_BOOT,
         .changed_ms = now_ms
     };
+    travel_leg_init(&mission->leg);
+}
+
+void mission_clear_leg(mission_t *mission, uint32_t now_ms)
+{
+    if (travel_leg_clear(&mission->leg)) {
+        mission->changed_ms = now_ms;
+        mission->revision++;
+    }
 }
 
 void mission_pause(mission_t *mission, mission_reason_t reason, uint32_t now_ms)
 {
+    mission->dfs_active = false;
+    mission_clear_leg(mission, now_ms);
     if (mission->state == MISSION_READY || mission->state == MISSION_EXPLORING)
         transition(mission, MISSION_PAUSED, reason, mission->test_mode, now_ms);
 }
 
+bool mission_begin_drive(mission_t *mission, uint32_t now_ms)
+{
+    if (mission->test_mode || (mission->state != MISSION_IDLE && mission->state != MISSION_READY &&
+        !(mission->state == MISSION_EXPLORING && mission->dfs_active)) ||
+        !mission->leg.configured || !mission->leg.next_target_node || mission->leg.phase != LEG_CONFIGURED)
+        return false;
+    mission->leg.phase = LEG_APPROACHING;
+    uint32_t revision = mission->revision;
+    transition(mission, MISSION_EXPLORING, MISSION_REASON_START_DFS, false, now_ms);
+    if (mission->revision == revision) { mission->revision++; mission->changed_ms = now_ms; }
+    return true;
+}
+
+bool mission_motion_enabled(const mission_t *mission)
+{
+    return !mission->test_mode && mission->state == MISSION_EXPLORING &&
+        (mission->leg.phase == LEG_APPROACHING || (mission->dfs_active && mission->leg.phase == LEG_TURNING));
+}
+
+bool mission_arrival_phase(mission_t *mission, leg_phase_t phase, uint32_t now_ms)
+{
+    if (mission->test_mode || mission->state != MISSION_EXPLORING || !mission->leg.configured ||
+        !((phase == LEG_BRAKING && (mission->leg.phase == LEG_APPROACHING || mission->leg.phase == LEG_HOLDING)) ||
+          (phase == LEG_VERIFYING && mission->leg.phase == LEG_BRAKING))) return false;
+    mission->leg.phase = phase;
+    mission->changed_ms = now_ms;
+    mission->revision++;
+    return true;
+}
+
+bool mission_camera_hold(mission_t *mission, bool holding, uint32_t now_ms)
+{
+    if (mission->test_mode || mission->state != MISSION_EXPLORING || !mission->leg.configured ||
+        mission->leg.phase != (holding ? LEG_APPROACHING : LEG_HOLDING)) return false;
+    mission->leg.phase = holding ? LEG_HOLDING : LEG_APPROACHING;
+    mission->changed_ms = now_ms;
+    mission->revision++;
+    return true;
+}
+
+bool mission_complete_target(mission_t *mission, uint32_t now_ms)
+{
+    if (mission->test_mode || mission->state != MISSION_EXPLORING || mission->leg.phase != LEG_VERIFYING)
+        return false;
+    mission->leg.phase = LEG_COMPLETE;
+    transition(mission, mission->dfs_active ? MISSION_EXPLORING : MISSION_READY,
+               MISSION_REASON_TARGET_ARRIVED, false, now_ms);
+    return true;
+}
+
+bool mission_start_dfs(mission_t *mission, uint32_t now_ms)
+{
+    if (mission->test_mode || (mission->state != MISSION_IDLE && mission->state != MISSION_READY)) return false;
+    mission_clear_leg(mission, now_ms);
+    mission->dfs_active = true;
+    transition(mission, MISSION_EXPLORING, MISSION_REASON_START_DFS, false, now_ms);
+    return true;
+}
+
+bool mission_finish_dfs(mission_t *mission, uint32_t now_ms)
+{
+    if (!mission->dfs_active || mission->test_mode || mission->state != MISSION_EXPLORING) return false;
+    mission_clear_leg(mission, now_ms);
+    mission->dfs_active = false;
+    transition(mission, MISSION_COMPLETE, MISSION_REASON_DFS_COMPLETE, false, now_ms);
+    return true;
+}
+
 void mission_fault(mission_t *mission, mission_reason_t reason, uint32_t now_ms)
 {
+    mission->dfs_active = false;
+    mission_clear_leg(mission, now_ms);
     // Preserve the first fault; an actual ESTOP overrides a diagnostic fault.
     if (mission->state != MISSION_FAULT || reason == MISSION_REASON_ESTOP)
         transition(mission, MISSION_FAULT, reason, mission->test_mode, now_ms);
@@ -52,12 +133,15 @@ mission_result_t mission_test_event(mission_t *mission, const char *event,
         return MISSION_REJECTED_SAFETY;
     }
     if (reset) {
+        mission->dfs_active = false;
+        mission_clear_leg(mission, now_ms);
         // Reset does not start/resume a mission or clear the motor safety latch.
         if (mission->state != MISSION_IDLE || mission->test_mode)
             transition(mission, MISSION_IDLE, MISSION_REASON_RESET, false, now_ms);
         return MISSION_ACCEPTED;
     }
     if (fault) {
+        mission_clear_leg(mission, now_ms);
         transition(mission, MISSION_FAULT,
                    mission->state == MISSION_FAULT ? mission->reason : MISSION_REASON_TEST_FAULT,
                    true, now_ms);
@@ -91,14 +175,14 @@ mission_result_t mission_test_event(mission_t *mission, const char *event,
 void mission_tick(mission_t *mission, bool safety_latched, bool link_ok, uint32_t now_ms)
 {
     if (safety_latched) mission_fault(mission, MISSION_REASON_ESTOP, now_ms);
-    else if (mission->test_mode && !link_ok)
+    else if ((mission->test_mode || mission->state == MISSION_EXPLORING) && !link_ok)
         mission_pause(mission, MISSION_REASON_LINK_LOST, now_ms);
-    // No DFS/executor yet: EXPLORING is stationary and never auto-completes.
+    // Diagnostic EXPLORING remains stationary; real motion belongs to the executor.
 }
 
 bool mission_command_allowed(const mission_t *mission, const char *command)
 {
-    if (!mission->test_mode) return true; // Preserve existing laptop/manual mode.
+    if (!mission->test_mode && mission->state != MISSION_EXPLORING) return true;
     return strcmp(command, "STOP") == 0 || strcmp(command, "AUTO_STOP") == 0 ||
            strcmp(command, "MOVE_STOP") == 0 || strcmp(command, "ESTOP") == 0 ||
            strcmp(command, "RESET_SAFETY") == 0;
@@ -130,6 +214,13 @@ const char *mission_reason_name(mission_reason_t reason)
     case MISSION_REASON_FRONT_STOP: return "FRONT_STOP";
     case MISSION_REASON_LINK_LOST: return "LINK_LOST";
     case MISSION_REASON_RESET: return "RESET";
+    case MISSION_REASON_START_DFS: return "START_DFS";
+    case MISSION_REASON_INPUT_LOST: return "INPUT_LOST";
+    case MISSION_REASON_APPROACH_LIMIT: return "APPROACH_LIMIT";
+    case MISSION_REASON_DRIVE_TIMEOUT: return "DRIVE_TIMEOUT";
+    case MISSION_REASON_MOTOR_STOPPED: return "MOTOR_STOPPED";
+    case MISSION_REASON_TARGET_ARRIVED: return "TARGET_ARRIVED";
+    case MISSION_REASON_DFS_COMPLETE: return "DFS_COMPLETE";
     default: return "UNKNOWN";
     }
 }

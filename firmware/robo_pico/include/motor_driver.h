@@ -63,10 +63,15 @@ motor_error_t motor_parallel_park(int direction, int power_percent);
 /** Drive straight, holding the current heading. speed: +1..100 forward,
  *  -1..-100 backward (0 = motor_auto_stop). */
 motor_error_t motor_auto_drive(int speed_percent);
+/** Onboard executor only: requires periodic renewal by the main loop.
+ * The independent 20 ms motor timer brakes when the lease expires. */
+motor_error_t motor_auto_drive_leased(int speed_percent, uint16_t lease_ms);
+bool motor_auto_renew_lease(void);
 
 /** Rotate on the spot to an absolute heading 0..359 (shortest way).
  *  Stops by itself within +/-3 deg; status becomes HEADING_REACHED. */
 motor_error_t motor_auto_rotate_to(int heading_deg);
+motor_error_t motor_auto_rotate_leased(int heading_deg, uint16_t lease_ms);
 
 /** Rotate on the spot by an angle: +90 = turn right 90, -90 = left 90. */
 motor_error_t motor_auto_rotate_by(int delta_deg);

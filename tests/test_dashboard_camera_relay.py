@@ -73,6 +73,18 @@ for name in names:
 
 
 class CameraRelayTests(unittest.TestCase):
+    def test_visible_nearest_marker_does_not_replace_onboard_locked_target(self):
+        app = CameraGUI()
+        app.update_mission_display({'state': 'IDLE', 'reason': 'BOOT', 'test_mode': False,
+            'motion_enabled': False, 'revision': 2, 'leg': {
+                'leg_id': 1, 'configured': True, 'departure_node': 7, 'next_target_node': 12,
+                'arrival_reference_node': 12, 'target_cell': {'x': 1, 'y': 0},
+                'direction': 'EAST', 'phase': 'CONFIGURED'}})
+        app.handle_mqtt_message('robot/camera', json.dumps(observation(markers=[
+            {'id': 9, 'range_mm': 100, 'bearing_cdeg': 0, 'quality': 0}])))
+        self.assertEqual(app.mission_leg_fields['next_target_node'].get(), '12')
+        self.assertIsNone(app.onboard_map.snapshot)
+
     def test_live_observation_updates_existing_fields_without_navigation(self):
         app = CameraGUI()
         with patch("time.monotonic", return_value=100.0):
@@ -144,6 +156,13 @@ class CameraRelayTests(unittest.TestCase):
                                                        payload=json.dumps(observation()).encode()))
         self.assertFalse(app.queued)
         self.assertFalse(app.rover_camera.seen)
+
+    def test_retained_target_status_cannot_restore_a_live_selection(self):
+        app = CameraGUI()
+        app.on_mqtt_message(None, None, SimpleNamespace(retain=True, topic='robot/status',
+            payload=b'TARGET_SELECTION:{}'))
+        self.assertFalse(app.queued)
+        self.assertIsNone(app.target_selection_report)
 
     def test_disconnect_clears_marker_and_does_not_restore_legacy_camera(self):
         app = CameraGUI()

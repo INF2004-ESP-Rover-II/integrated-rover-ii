@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from tkinter import ttk
 import os
 from laptop_navigation import LaptopNavigator
-from mission_display import parse_mission_report
+from mission_display import parse_mission_report, parse_target_selection, parse_dfs_reply, parse_dfs_tracking, parse_dfs_state, LEG_FIELDS
 from rover_camera import RoverCameraCache, QUALITY_NAMES
 from onboard_map import OnboardMapCache
 from vision_feed import VisionFeed
@@ -86,7 +86,7 @@ KEYMAP = {
 class RobotGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Rover II Controller - MQTT + TOF")
+        self.root.title("Rover II Controller - MQTT + TOF | Reference tracking")
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         w, h = min(1600, int(sw * 0.95)), min(900, int(sh * 0.9))
         self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+0")
@@ -108,7 +108,15 @@ class RobotGUI:
         self.mission_reason = tk.StringVar(value="--")
         self.mission_mode = tk.StringVar(value="Unknown")
         self.mission_motion = tk.StringVar(value="--")
+        self.mission_leg_fields = {key: tk.StringVar(value='Unknown' if key == 'phase' else '--') for key in LEG_FIELDS}
         self.mission_report = None
+        self.target_selection_report = None
+        self.target_selection_status = tk.StringVar(value='Waiting for RoboPico selection report')
+        self.dfs_tracking_text = tk.StringVar(value='Tracking: waiting for RoboPico')
+        self.dfs_tracking_report = None
+        self.dfs_planner_report = None
+        self.dfs_planner_text = tk.StringVar(value='DFS: waiting for RoboPico')
+        self.last_dfs_reply = None
         self.last_mission_rx = None
         self.last_mission_reply = None
         self.onboard_map = OnboardMapCache()
@@ -178,6 +186,7 @@ class RobotGUI:
         # Set this from measured maze geometry before starting a mission.
         self.dfs_threshold = tk.StringVar(value="500")
         self.dfs_status = tk.StringVar(value="Set the starting node under the rover before starting DFS")
+        self.dfs_feedback = tk.StringVar(value='')
         self.start_node_id = tk.StringVar(value="")
         self.current_marker_text = tk.StringVar(value="--")
         self.marker_distance_text = tk.StringVar(value="--")
@@ -201,6 +210,7 @@ class RobotGUI:
         self.log_file = open(os.path.join(LOG_DIR, log_name), "a", encoding="utf-8", buffering=1)
 
         self.setup_ui()
+        self.log('Dashboard source: ' + os.path.abspath(__file__))
         self.root.after(100, self.navigation_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -214,11 +224,18 @@ class RobotGUI:
                  font=("Arial", 20, "bold"), fg='white', bg='#2c3e50').grid(row=0, column=0, padx=20, sticky='w')
                 
         # Autonomous mode toggle (top right)
-        self.auto_btn = tk.Checkbutton(header, text="ONBOARD DFS (pending)", variable=self.auto_mode, state='disabled',
+        dfs_controls = tk.Frame(header, bg='#2c3e50')
+        dfs_controls.grid(row=0, column=1, padx=20, sticky='e')
+        self.auto_btn = tk.Checkbutton(dfs_controls, text="Start DFS", variable=self.auto_mode,
                       command=self.toggle_auto_mode,
                       bg='#2c3e50', fg='yellow', selectcolor='#1a1a1a',
                       font=("Arial", 12, "bold"))
-        self.auto_btn.grid(row=0, column=1, padx=20, sticky='e')
+        self.auto_btn.grid(row=0, column=0, sticky='w')
+        tk.Button(dfs_controls, text='Reset mission', command=lambda: self.send_command('RESET_MISSION'),
+                  bg='#7f8c8d', fg='white').grid(row=0, column=1, padx=6)
+        self.dfs_feedback_label = tk.Label(dfs_controls, textvariable=self.dfs_feedback, fg='#f1c40f',
+            bg='#2c3e50', wraplength=340, justify='left', font=('Arial', 9))
+        self.dfs_feedback_label.grid(row=1, column=0, columnspan=2, sticky='w')
 
         # Connection bar
         conn_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
@@ -322,6 +339,18 @@ class RobotGUI:
             label.grid(row=0, column=2 * column + 1, padx=(0, 20), sticky='w')
             if column == 0:
                 self.mission_state_label = label
+        leg_captions = (('Leg ID:', 'leg_id'), ('Departure:', 'departure_node'),
+                        ('Next target marker:', 'next_target_node'), ('Reference:', 'arrival_reference_node'),
+                        ('Expected cell:', 'target_cell'), ('Direction:', 'direction'),
+                        ('Leg phase:', 'phase'), ('Configured:', 'configured'))
+        for index, (caption, key) in enumerate(leg_captions):
+            row, column = 1 + index // 4, (index % 4) * 2
+            tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
+                     font=("Arial", 9, "bold")).grid(row=row, column=column, padx=(0, 5), sticky='w')
+            tk.Label(mission_frame, textvariable=self.mission_leg_fields[key],
+                     fg='#f1c40f' if key == 'next_target_node' else '#bdc3c7', bg='#34495e',
+                     font=("Arial", 10, "bold") if key == 'next_target_node' else ("Arial", 9),
+                     wraplength=180).grid(row=row, column=column + 1, padx=(0, 20), sticky='w')
 
         # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
         tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
@@ -396,11 +425,21 @@ class RobotGUI:
         tk.Entry(dfs_frame, textvariable=self.start_node_id, width=4).pack(side='left')
         tk.Button(dfs_frame, text="Set start node", command=self.set_start_node,
                   bg='#2980b9', fg='white').pack(side='left', padx=6)
-        tk.Label(dfs_frame, text="Target visits (separate):", fg='white', bg='#34495e').pack(side='left', padx=6)
-        tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
-        tk.Label(dfs_frame, text="Side opening ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Label(dfs_frame, text="Finish: all reachable exits explored", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Label(dfs_frame, text="Open exit ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
         tk.Label(dfs_frame, textvariable=self.start_node_status, fg='yellow', bg='#34495e', wraplength=450).pack(side='left', padx=12)
+
+        select_frame = tk.Frame(self.root, bg='#34495e')
+        select_frame.pack(padx=20, pady=2, fill='x')
+        tk.Label(select_frame, text='RoboPico selects targets and tracks reference range. Arrival uses the configured empirical range rule.',
+                 fg='#bdc3c7', bg='#34495e').grid(row=0, column=0, padx=6, sticky='w')
+        tk.Label(select_frame, textvariable=self.target_selection_status, fg='#f1c40f', bg='#34495e',
+                 wraplength=1200, justify='left').grid(row=1, column=0, columnspan=7, padx=6, sticky='w')
+        tk.Label(select_frame, textvariable=self.dfs_tracking_text, fg='#3498db', bg='#34495e',
+                 wraplength=1200, justify='left').grid(row=2, column=0, columnspan=7, padx=6, sticky='w')
+        tk.Label(select_frame, textvariable=self.dfs_planner_text, fg='#2ecc71', bg='#34495e',
+                 wraplength=1200, justify='left').grid(row=3, column=0, columnspan=7, padx=6, sticky='w')
 
         turn_frame = tk.Frame(self.root, bg='#34495e')
         turn_frame.pack(padx=20, pady=2, fill='x')
@@ -548,6 +587,8 @@ class RobotGUI:
                 text, state, color = "--", "Sensor fault", '#e74c3c'
             elif type(distance) is int and distance == 1023:
                 text, state, color = ">1000 mm", "No target within 1 m", '#3498db'
+            elif type(distance) is int and distance == 0 and faults is not None:
+                text, state, color = "--", "No usable return", '#95a5a6'
             elif not usable:
                 text = "--"
                 state = "No target" if type(distance) is int and distance in (1023, 65535) else "Unavailable"
@@ -576,7 +617,7 @@ class RobotGUI:
             fg='#e74c3c' if stop is True else '#ecf0f1')
         age_text = f"{age_ms:.0f} ms" if age_known else "unknown"
         self.tof_age_label.config(
-            text=f"Sensor packet age: {age_text}   |   -- = no target / unavailable; see each label. "
+            text=f"Sensor packet age: {age_text}   |   No usable return = sensor responding, distance unknown; see each label. "
                  "Front stop disables W only; other movement keys remain available.")
         self.last_tof_rx = time.time()
 
@@ -750,12 +791,32 @@ class RobotGUI:
                 self.log("Turn to %d° complete." % target)
 
     def toggle_auto_mode(self):
-        self.auto_mode.set(False)
-        self.log("Laptop DFS is disabled: the displayed map is owned by RoboPico. Onboard DFS is pending.")
+        requested = self.auto_mode.get()
+        if requested:
+            self.last_dfs_reply = None
+        self.auto_mode.set(not requested) # Retain the last confirmed running state until the reply.
+        if requested:
+            try:
+                opening=int(self.dfs_threshold.get().strip())
+                if not 151<=opening<=1000:
+                    raise ValueError('Opening threshold must be 151..1000 mm')
+            except (TypeError,ValueError):
+                self.dfs_feedback.set('Enter an opening threshold from 151 to 1000 mm.')
+                self.dfs_feedback_label.config(fg='#e74c3c')
+                return
+            command='START_DFS:%d' % opening
+        else:
+            command='STOP_DFS'
+        self.dfs_feedback.set('Waiting for RoboPico to start DFS...' if requested else 'Waiting for RoboPico to stop DFS...')
+        self.dfs_feedback_label.config(fg='#f1c40f')
+        if not self.send_command(command):
+            self.dfs_feedback.set('Could not send the request. Connect to the broker and try again.')
+            self.dfs_feedback_label.config(fg='#e74c3c')
+        # Checkbox running state is confirmed by RoboPico replies/mission reports.
 
     def report_navigation(self, message):
         self.dfs_status.set(message)
-        self.log(message)
+        self.log('Dashboard monitor: ' + message)
 
     def set_start_node(self):
         if (self.active_command is not None or self.pressed_keys or
@@ -808,8 +869,7 @@ class RobotGUI:
         else:
             self.set_front_blocked(False)
         self.navigator.tick()
-        if not self.navigator.active:
-            self.auto_mode.set(False)
+        # Only RoboPico mission reports/replies own the onboard DFS checkbox.
         self.update_current_marker()
         self.root.after(100, self.navigation_tick)
 
@@ -879,6 +939,8 @@ class RobotGUI:
         if pending is not None and snapshot.last_request == pending['token']:
             self.start_node_status.set('RoboPico confirmed start node %d at (0,0)' % pending['marker_id'])
             self.pending_start_request = None
+            self.dfs_feedback.set('Start node confirmed. Wait for a target, then select Start DFS.')
+            self.dfs_feedback_label.config(fg='#f1c40f')
         self.update_current_marker()
 
     def render_onboard_map(self):
@@ -1191,12 +1253,43 @@ class RobotGUI:
         self.mission_reason.set(report.reason)
         self.mission_mode.set(report.mode)
         self.mission_motion.set("Enabled" if report.motion_enabled else "Disabled")
+        running = not report.test_mode and report.state == 'EXPLORING'
+        self.auto_mode.set(running)
+        if running:
+            self.last_dfs_reply = None
+            leg_phase=report.leg.phase if report.leg is not None else 'NONE'
+            message={'HOLDING':'Waiting for fresh camera observations; wheels stopped.',
+                'BRAKING':'RoboPico is verifying target arrival.', 'VERIFYING':'RoboPico is verifying target arrival.',
+                'SCANNING':'RoboPico is checking ToF exits and planning the next DFS leg.',
+                'TURNING':'RoboPico is turning toward the next DFS direction.',
+                'SELECTING':'RoboPico is waiting for a reliable marker in the chosen exit.',
+                'CONFIGURED':'RoboPico is preparing the next DFS travel leg.',
+                'COMPLETE':'Node reached. RoboPico is continuing DFS.'}.get(leg_phase,'RoboPico is approaching the locked target.')
+            self.dfs_feedback.set(message)
+            self.dfs_feedback_label.config(fg='#2ecc71')
+        elif report.state == 'COMPLETE' and report.reason == 'DFS_COMPLETE':
+            self.dfs_feedback.set('DFS complete: all reachable mapped exits have been explored.')
+            self.dfs_feedback_label.config(fg='#2ecc71')
+        elif report.state == 'COMPLETE' and report.reason == 'TARGET_ARRIVED':
+            self.dfs_feedback.set('RoboPico confirmed arrival at the locked target.')
+            self.dfs_feedback_label.config(fg='#2ecc71')
+        elif previous is not None and previous.state == 'EXPLORING' and not previous.test_mode:
+            if self.last_dfs_reply is not None and self.last_dfs_reply.error:
+                self.dfs_feedback.set(self.last_dfs_reply.message)
+                self.dfs_feedback_label.config(fg='#e74c3c')
+            else:
+                self.dfs_feedback.set('Onboard approach stopped: ' + report.reason)
+                self.dfs_feedback_label.config(fg='#f39c12')
+        leg_values = report.leg.display_fields if report.leg is not None else {}
+        for key, variable in self.mission_leg_fields.items():
+            variable.set(leg_values.get(key, 'Unknown' if key == 'phase' else '--'))
         colours = {"IDLE": '#95a5a6', "READY": '#27ae60', "EXPLORING": '#3498db',
                    "PAUSED": '#f39c12', "COMPLETE": '#27ae60', "FAULT": '#e74c3c'}
         self.mission_state_label.config(fg=colours[report.state])
         if previous is None or previous.display_values != report.display_values:
-            self.log("Mission: %s | %s | %s | mission motion %s" % (
-                report.state, report.reason, report.mode, self.mission_motion.get().lower()))
+            leg_text = '' if report.leg is None else ' | leg: ' + ', '.join('%s=%s' % item for item in leg_values.items())
+            self.log("Mission: %s | %s | %s | mission motion %s%s" % (
+                report.state, report.reason, report.mode, self.mission_motion.get().lower(), leg_text))
         return True
 
     def clear_mission_display(self, state="Unknown"):
@@ -1207,6 +1300,18 @@ class RobotGUI:
         self.mission_reason.set("--")
         self.mission_mode.set("Unknown")
         self.mission_motion.set("--")
+        for key, variable in self.mission_leg_fields.items():
+            variable.set('Unknown' if key == 'phase' else '--')
+        self.target_selection_report = None
+        self.target_selection_status.set('Waiting for RoboPico selection report')
+        self.dfs_tracking_text.set('Tracking: waiting for RoboPico')
+        self.dfs_tracking_report = None
+        self.dfs_planner_report = None
+        self.dfs_planner_text.set('DFS: waiting for RoboPico')
+        self.last_dfs_reply = None
+        self.auto_mode.set(False)
+        self.dfs_feedback.set('RoboPico mission status unavailable. Reconnect before starting DFS.')
+        self.dfs_feedback_label.config(fg='#e74c3c')
         self.mission_state_label.config(fg='#95a5a6')
 
     def watchdog_tick(self):
@@ -1357,7 +1462,7 @@ class RobotGUI:
 
     def on_mqtt_message(self, client, userdata, msg):
         # Replayed broker state cannot constitute a live camera/sensor observation.
-        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER, TOPIC_ROVER_CAMERA, TOPIC_ROVER_MAP):
+        if msg.retain and msg.topic in (TOPIC_STATUS, TOPIC_TELEMETRY, TOPIC_MARKER, TOPIC_ROVER_CAMERA, TOPIC_ROVER_MAP):
             return
         payload = msg.payload.decode(errors="replace")
         self.root.after(0, self.handle_mqtt_message, msg.topic, payload)
@@ -1368,6 +1473,52 @@ class RobotGUI:
         self.msg_count += 1
 
         if topic == TOPIC_STATUS:
+            if payload.startswith('DFS_STATE:'):
+                try:
+                    planner=parse_dfs_state(payload[len('DFS_STATE:'):])
+                except ValueError:
+                    return
+                if self.dfs_planner_report!=planner:
+                    self.log(f'[{ts}] RoboPico ' + planner.display_text)
+                self.dfs_planner_report=planner
+                self.dfs_planner_text.set(planner.display_text)
+                return
+            if payload.startswith('DFS_TRACKING:'):
+                try:
+                    tracking = parse_dfs_tracking(payload[len('DFS_TRACKING:'):])
+                except ValueError:
+                    return
+                previous_tracking = self.dfs_tracking_report
+                self.dfs_tracking_report = tracking
+                self.dfs_tracking_text.set(tracking.display_text)
+                if previous_tracking is None or previous_tracking.change_key != tracking.change_key:
+                    self.log(f'[{ts}] RoboPico tracking: ' + tracking.log_text)
+                return
+            if payload.startswith(('DFS_ACK:', 'DFS_REFUSED:', 'DFS_EVENT:')):
+                try:
+                    reply = parse_dfs_reply(payload)
+                except ValueError:
+                    return
+                self.auto_mode.set(reply.running)
+                self.last_dfs_reply = reply
+                self.dfs_feedback.set(reply.message)
+                self.dfs_feedback_label.config(fg='#e74c3c' if reply.error else '#2ecc71')
+                self.log('RoboPico DFS: ' + reply.message)
+                return
+            if payload.startswith('TARGET_SELECTION:'):
+                try:
+                    selection = parse_target_selection(payload[len('TARGET_SELECTION:'):])
+                except ValueError:
+                    return
+                previous = self.target_selection_report
+                self.target_selection_report = selection
+                self.target_selection_status.set(selection.display_text)
+                if previous is None or previous.change_key != selection.change_key:
+                    self.log('RoboPico target: ' + selection.display_text)
+                return
+            if payload.startswith(('TARGET_ACK:', 'TARGET_REFUSED:')):
+                self.log(payload)
+                return
             if payload.startswith(('MAP_ACK:', 'MAP_REFUSED:')):
                 self.log(payload)
                 if payload.startswith('MAP_REFUSED:'):
