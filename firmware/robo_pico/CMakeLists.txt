@@ -28,6 +28,7 @@ add_executable(mecanum_robot
     src/uart_protocol.c
     src/safety_interlock.c
     src/mission_control.c
+    src/camera_telemetry.c
     ${CAMERA_RECEIVER_SOURCES}
 )
 

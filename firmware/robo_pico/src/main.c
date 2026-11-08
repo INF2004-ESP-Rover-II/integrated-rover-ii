@@ -11,6 +11,7 @@
 #include "wifi_mqtt.h"
 #include "uart_protocol.h"
 #include "camera_uart.h"
+#include "camera_telemetry.h"
 #include "mission_control.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
@@ -68,6 +69,28 @@ static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
 static bool heading_zero_pending;
 static uint32_t heading_zero_ready_ms;
 static mission_t mission;
+
+static void service_camera_relay(void)
+{
+    static uint32_t last_attempt_ms, last_sent_ms, sent_generation;
+    static bool sent;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!mqtt_is_connected() || (uint32_t)(now - last_attempt_ms) < 100u) return;
+    camera_observation_t observation;
+    if (!camera_uart_latest(&observation)) return;
+    if (sent && observation.generation == sent_generation &&
+        (uint32_t)(now - last_sent_ms) < 1000u) return;
+    last_attempt_ms = now;
+    char payload[768];
+    if (!camera_telemetry_format(payload, sizeof(payload), &observation.frame,
+                                 observation.received_ms, now)) return;
+    if (mqtt_publish_camera(payload) == WIFI_OK) {
+        sent = true;
+        sent_generation = observation.generation;
+        last_sent_ms = now;
+    }
+    // Backpressure: retry the latest observation later; never queue old frames.
+}
 
 static void report_mission(bool force)
 {
@@ -683,6 +706,7 @@ int main()
         camera_uart_poll(); // UART1 diagnostics only; no navigation/motor actions.
         cyw43_arch_poll();
         service_safety_stop();
+        service_camera_relay();
         service_heading_zero();
         uint32_t now = to_ms_since_boot(get_absolute_time());
         uint32_t mission_last_rx = mqtt_last_link_rx_ms();

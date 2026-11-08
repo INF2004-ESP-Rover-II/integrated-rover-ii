@@ -26,6 +26,8 @@ static volatile bool receive_loss;
 static volatile uint32_t received_bytes, dropped_bytes, uart_errors;
 static camera_parser_t parser;
 static uint32_t last_stats_ms;
+static camera_observation_t latest_observation;
+static bool have_observation;
 
 static void camera_uart_irq(void)
 {
@@ -54,6 +56,8 @@ static void camera_uart_irq(void)
 void camera_uart_init(void)
 {
     camera_parser_init(&parser);
+    have_observation = false;
+    latest_observation.generation = 0;
     receive_head = receive_tail = 0;
     receive_loss = false;
     received_bytes = dropped_bytes = uart_errors = 0;
@@ -109,8 +113,13 @@ void camera_uart_poll(void)
         restore_interrupts(irq_state);
 
         camera_frame_t frame;
-        if (camera_parser_feed(&parser, received.byte, received.receive_ms, &frame))
+        if (camera_parser_feed(&parser, received.byte, received.receive_ms, &frame)) {
+            latest_observation.frame = frame;
+            latest_observation.received_ms = received.receive_ms;
+            latest_observation.generation++;
+            have_observation = true;
             print_frame(&frame, received.receive_ms);
+        }
     }
 
     uint32_t now = to_ms_since_boot(get_absolute_time());
@@ -126,4 +135,11 @@ void camera_uart_poll(void)
                (unsigned long)errors);
         last_stats_ms = now;
     }
+}
+
+bool camera_uart_latest(camera_observation_t *observation)
+{
+    if (!have_observation) return false;
+    *observation = latest_observation;
+    return true;
 }

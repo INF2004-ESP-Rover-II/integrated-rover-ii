@@ -29,6 +29,8 @@ from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
 from mapping.config import CAMERA_HEIGHT_CM, CAMERA_FORWARD_CM
 import os
 from laptop_navigation import LaptopNavigator
+from mission_display import parse_mission_report
+from rover_camera import RoverCameraCache, QUALITY_NAMES
 from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
 
 
@@ -48,6 +50,7 @@ TOPIC_COMMAND = "robot/command"
 TOPIC_STATUS = "robot/status"
 TOPIC_TELEMETRY = "robot/telemetry"
 TOPIC_MARKER = "camera/marker"
+TOPIC_ROVER_CAMERA = "robot/camera"
 
 TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
@@ -99,6 +102,13 @@ class RobotGUI:
         self.broker_connected = tk.StringVar(value="Not Connected")
         self.robot_connected = tk.StringVar(value="Unknown")
         self.robot_status = tk.StringVar(value="Unknown")
+        self.mission_state = tk.StringVar(value="Unknown")
+        self.mission_reason = tk.StringVar(value="--")
+        self.mission_mode = tk.StringVar(value="Unknown")
+        self.mission_motion = tk.StringVar(value="--")
+        self.mission_report = None
+        self.last_mission_rx = None
+        self.last_mission_reply = None
         self.robot_ip = tk.StringVar(value="N/A")
         self.last_msg_time = tk.StringVar(value="Never")
         self.msg_count = 0
@@ -166,6 +176,10 @@ class RobotGUI:
         self.current_marker_text = tk.StringVar(value="--")
         self.marker_distance_text = tk.StringVar(value="--")
         self.marker_bearing_text = tk.StringVar(value="--")
+        self.rover_camera = RoverCameraCache()
+        self.camera_relay_text = tk.StringVar(value="RoboPico camera: waiting for UART observations")
+        self.camera_marker_count = tk.StringVar(value="Markers in view: 0")
+        self.camera_marker_rows = None
         self.last_reached_marker_text = tk.StringVar(value="--")
         self.dfs_current_node_text = tk.StringVar(value="--")
         self.marker_confirmation_text = tk.StringVar(value="Waiting for fresh camera data")
@@ -251,7 +265,8 @@ class RobotGUI:
         tk.Label(status_frame, text="Status:", fg='white', bg='#34495e',
                  font=("Arial", 10, "bold")).grid(row=0, column=4, padx=10, pady=8, sticky='w')
         self.robot_status_label = tk.Label(status_frame, textvariable=self.robot_status,
-                                           fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"))
+                                           fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"),
+                                           wraplength=220, justify='left')
         self.robot_status_label.grid(row=0, column=5, padx=5, pady=8, sticky='w')
 
         # Heading display
@@ -298,6 +313,20 @@ class RobotGUI:
             bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
         self.reset_safety_btn.grid(row=1, column=14, padx=15, pady=(0, 8))
 
+        # Onboard mission reports have their own row, separate from robot status.
+        mission_frame = tk.Frame(status_frame, bg='#34495e')
+        mission_frame.grid(row=1, column=0, columnspan=14, padx=10, pady=(0, 8), sticky='w')
+        for column, (caption, variable) in enumerate((
+                ("Mission state:", self.mission_state), ("Reason:", self.mission_reason),
+                ("Mode:", self.mission_mode), ("Mission motion:", self.mission_motion))):
+            tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
+                     font=("Arial", 10, "bold")).grid(row=0, column=2 * column, padx=(0, 5), sticky='w')
+            label = tk.Label(mission_frame, textvariable=variable, fg='#95a5a6', bg='#34495e',
+                             font=("Arial", 10, "bold"), wraplength=180, justify='left')
+            label.grid(row=0, column=2 * column + 1, padx=(0, 20), sticky='w')
+            if column == 0:
+                self.mission_state_label = label
+
         # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
         tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
                                   fg='white', bg='#34495e', font=("Arial", 8, "bold"))
@@ -327,7 +356,7 @@ class RobotGUI:
         marker_frame = tk.Frame(self.root, bg='#34495e')
         marker_frame.pack(padx=20, pady=2, fill='x')
         for column, (title, value) in enumerate((
-                ("Current camera marker:", self.current_marker_text),
+                ("Selected camera marker:", self.current_marker_text),
                 ("Lens distance:", self.marker_distance_text),
                 ("Bearing:", self.marker_bearing_text),
                 ("Last reached:", self.last_reached_marker_text),
@@ -337,6 +366,9 @@ class RobotGUI:
             tk.Label(marker_frame, textvariable=value, fg='#3498db', bg='#34495e',
                      font=("Arial", 10, "bold")).grid(
                 row=0, column=column * 2 + 1, padx=(0, 12), sticky='w')
+        tk.Label(marker_frame, textvariable=self.camera_relay_text, fg='#bdc3c7', bg='#34495e',
+                 font=("Arial", 9), wraplength=1100, justify='left').grid(
+                     row=3, column=0, columnspan=10, padx=8, pady=(0, 3), sticky='w')
         self.marker_confirmation_label = tk.Label(
             marker_frame, textvariable=self.marker_confirmation_text,
             fg='#bdc3c7', bg='#34495e', anchor='w')
@@ -345,6 +377,22 @@ class RobotGUI:
         tk.Label(marker_frame, textvariable=self.node_confirmation_text,
                  fg='#bdc3c7', bg='#34495e', anchor='w', justify='left', wraplength=1100).grid(
                      row=2, column=0, columnspan=10, padx=8, pady=(0, 2), sticky='w')
+
+        marker_list_frame = tk.Frame(marker_frame, bg='#34495e')
+        marker_list_frame.grid(row=4, column=0, columnspan=10, sticky='ew', padx=8, pady=(0, 5))
+        tk.Label(marker_list_frame, textvariable=self.camera_marker_count, fg='white', bg='#34495e',
+                 font=("Arial", 10, "bold")).pack(side='left', anchor='n', padx=(0, 16), pady=3)
+        style = ttk.Style(self.root)
+        style.configure('Camera.Treeview', background='#2c3e50', fieldbackground='#2c3e50',
+                        foreground='white', rowheight=20)
+        self.camera_marker_table = ttk.Treeview(marker_list_frame, columns=('id', 'range', 'bearing', 'quality'),
+                                               show='headings', height=1, selectmode='none', style='Camera.Treeview')
+        for name, title, width in (('id', 'Marker ID', 90), ('range', 'Lens distance (mm)', 150),
+                                   ('bearing', 'Bearing (deg)', 130), ('quality', 'Quality', 150)):
+            self.camera_marker_table.heading(name, text=title)
+            self.camera_marker_table.column(name, width=width, minwidth=width, anchor='center')
+        self.camera_marker_table.tag_configure('unusable', foreground='#f39c12')
+        self.camera_marker_table.pack(side='left', fill='x', expand=True)
 
         dfs_frame = tk.Frame(self.root, bg='#34495e')
         dfs_frame.pack(padx=20, pady=2, fill='x')
@@ -795,6 +843,9 @@ class RobotGUI:
         node = nav.explorer.current
         node_state = "confirmed" if nav.explorer.current_confirmed else "unconfirmed"
         self.dfs_current_node_text.set("--" if node is None else "%d (%s)" % (node, node_state))
+        if getattr(self, 'rover_camera', None) is not None and self.rover_camera.seen:
+            self.update_rover_camera_display()
+            return
         if nav.grid is not None:
             self.update_grid_map()
             sensor_age = (now - nav.sensor.received_at + nav.sensor.age_s
@@ -851,6 +902,39 @@ class RobotGUI:
                 colour = '#2ecc71'
         self.marker_confirmation_text.set(message)
         self.marker_confirmation_label.config(fg=colour)
+
+    def update_rover_camera_display(self):
+        now = time.monotonic()
+        marker, message, details, colour = self.rover_camera.display(now)
+        self.update_camera_marker_list(now)
+        self.current_marker_text.set("--" if marker is None else str(marker.id))
+        self.marker_distance_text.set("--" if marker is None else "%d mm" % marker.range_mm)
+        self.marker_bearing_text.set("--" if marker is None else "%+.2f°" % (marker.bearing_cdeg / 100))
+        self.marker_confirmation_text.set(message)
+        self.marker_confirmation_label.config(fg=colour)
+        self.camera_relay_text.set(details)
+
+    def update_camera_marker_list(self, now):
+        markers = sorted(self.rover_camera.markers_in_view(now), key=lambda item: (
+            item.range_mm if item.quality != 1 and item.range_mm > 0 else float('inf'), item.id))
+        rows = tuple((marker.id,
+                      str(marker.range_mm) if marker.quality != 1 and marker.range_mm > 0 else '--',
+                      '%+.2f' % (marker.bearing_cdeg / 100) if marker.quality != 1 and marker.range_mm > 0 else '--',
+                      QUALITY_NAMES[marker.quality]) for marker in markers)
+        if rows == self.camera_marker_rows:
+            return
+        self.camera_marker_rows = rows
+        self.camera_marker_count.set('Markers in view: %d' % len(rows))
+        for item in self.camera_marker_table.get_children():
+            self.camera_marker_table.delete(item)
+        self.camera_marker_table.configure(height=max(1, len(rows)))
+        for index, row in enumerate(rows):
+            self.camera_marker_table.insert('', 'end', iid=str(index), values=row,
+                tags=() if row[3] == 'OK' and row[1] != '--' else ('unusable',))
+
+    def clear_rover_camera_display(self):
+        self.rover_camera.clear()
+        self.update_rover_camera_display()
 
     def update_grid_map(self):
         nav = self.navigator
@@ -1188,8 +1272,42 @@ class RobotGUI:
 
         self.stop_hold()
 
+    def update_mission_display(self, value):
+        """Display authoritative rover state only; never issue a movement command."""
+        try:
+            report = parse_mission_report(value)
+        except ValueError:
+            return False
+        previous = self.mission_report
+        self.mission_report = report
+        self.last_mission_rx = time.time()
+        self.mission_state.set(report.state)
+        self.mission_reason.set(report.reason)
+        self.mission_mode.set(report.mode)
+        self.mission_motion.set("Enabled" if report.motion_enabled else "Disabled")
+        colours = {"IDLE": '#95a5a6', "READY": '#27ae60', "EXPLORING": '#3498db',
+                   "PAUSED": '#f39c12', "COMPLETE": '#27ae60', "FAULT": '#e74c3c'}
+        self.mission_state_label.config(fg=colours[report.state])
+        if previous is None or previous.display_values != report.display_values:
+            self.log("Mission: %s | %s | %s | mission motion %s" % (
+                report.state, report.reason, report.mode, self.mission_motion.get().lower()))
+        return True
+
+    def clear_mission_display(self, state="Unknown"):
+        self.mission_report = None
+        self.last_mission_rx = None
+        self.last_mission_reply = None
+        self.mission_state.set(state)
+        self.mission_reason.set("--")
+        self.mission_mode.set("Unknown")
+        self.mission_motion.set("--")
+        self.mission_state_label.config(fg='#95a5a6')
+
     def watchdog_tick(self):
         if self.connected:
+            last_mission = getattr(self, 'last_mission_rx', None)
+            if last_mission is not None and time.time() - last_mission > ROBOT_LOST_S:
+                self.clear_mission_display("Stale")
             if self.last_tof_rx is not None and time.time() - self.last_tof_rx > ROBOT_LOST_S:
                 self.clear_tof_readings("Telemetry stale")
             # Time since the last telemetry. If none yet, count from connect.
@@ -1299,6 +1417,8 @@ class RobotGUI:
         self.clear_tof_readings("Disconnected")
         self.robot_status.set("Unknown")
         self.robot_status_label.config(fg='#95a5a6')
+        self.clear_mission_display()
+        self.clear_rover_camera_display()
         self.robot_ip.set("N/A")
         self.connect_btn.config(text="Connect", bg='#27ae60')
         self.log("Disconnected from MQTT broker")
@@ -1308,6 +1428,7 @@ class RobotGUI:
             client.subscribe(TOPIC_STATUS)
             client.subscribe(TOPIC_TELEMETRY)
             client.subscribe(TOPIC_MARKER)
+            client.subscribe(TOPIC_ROVER_CAMERA)
         self.root.after(0, self.handle_mqtt_connect, rc)
 
     def handle_mqtt_connect(self, rc):
@@ -1315,7 +1436,7 @@ class RobotGUI:
             self.broker_connected.set("Connected")
             self.broker_status_label.config(fg='#27ae60')
             self.log("Connected to MQTT broker")
-            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}, {TOPIC_MARKER}")
+            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}, {TOPIC_MARKER}, {TOPIC_ROVER_CAMERA}")
             self.start_link_heartbeat()
         else:
             self.log(f"MQTT connection failed (code {rc})")
@@ -1324,7 +1445,7 @@ class RobotGUI:
 
     def on_mqtt_message(self, client, userdata, msg):
         # Replayed broker state cannot constitute a live camera/sensor observation.
-        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER):
+        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER, TOPIC_ROVER_CAMERA):
             return
         payload = msg.payload.decode(errors="replace")
         self.root.after(0, self.handle_mqtt_message, msg.topic, payload)
@@ -1335,6 +1456,14 @@ class RobotGUI:
         self.msg_count += 1
 
         if topic == TOPIC_STATUS:
+            if payload.startswith("MISSION_STATE:"):
+                self.update_mission_display(payload)
+                return
+            if payload.startswith(("MISSION_TEST:", "MISSION_REFUSED:")):
+                if payload != self.last_mission_reply:
+                    self.log(f"[{ts}] Mission: {payload}")
+                    self.last_mission_reply = payload
+                return
             if payload.startswith("HEADING_ZERO_") or payload == "HEADING_ZEROED":
                 self.handle_heading_zero_status(payload)
             if getattr(self, 'manual_turn_target', None) is not None:
@@ -1415,11 +1544,20 @@ class RobotGUI:
             except (KeyError, TypeError, ValueError):
                 self.log("Rejected invalid camera marker event")
 
+        elif topic == TOPIC_ROVER_CAMERA:
+            try:
+                data = json.loads(payload)
+            except (TypeError, ValueError):
+                return
+            if self.rover_camera.update(data, time.monotonic()):
+                self.update_rover_camera_display()
         elif topic == TOPIC_TELEMETRY:
             try:
                 data = json.loads(payload)
                 if not isinstance(data, dict):
                     return
+                if "mission" in data:
+                    self.update_mission_display(data["mission"])
                 self.navigator.sensor_received(data)
                 self.update_tof_readings(data.get("obstacle"))
                 imu = data.get("imu", {})
@@ -1485,6 +1623,8 @@ class RobotGUI:
             self.cancel_manual_turn()
         self.navigator.stop("MQTT connection lost")
         self.clear_tof_readings("Disconnected")
+        self.clear_mission_display()
+        self.clear_rover_camera_display()
         self.log(f"MQTT disconnected (code {rc})")
         self.broker_connected.set("Disconnected")
         self.broker_status_label.config(fg='#e74c3c')

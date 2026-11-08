@@ -38,4 +38,7 @@ build/
 /markdowns
 !/tests/test_camera_protocol.c
 !/tests/test_mission_control.c
+!/tests/test_dashboard_mission.py
+!/tests/test_camera_telemetry.c
+!/tests/test_dashboard_camera_relay.py
 mosquitto-rover.conf

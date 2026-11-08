@@ -100,6 +100,7 @@ class DashboardMarkerMapTests(unittest.TestCase):
                      "grid_cell": grid_cell, "place_markers": place_markers,
                      "TOPIC_TELEMETRY": "robot/telemetry", "TOPIC_MARKER": "camera/marker",
                      "TOPIC_STATUS": "robot/status"}
+        namespace["TOPIC_ROVER_CAMERA"] = "robot/camera"
         methods = [node for node in gui.body if isinstance(node, ast.FunctionDef) and node.name in names]
         self.assertEqual(len(methods), len(names))
         exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)

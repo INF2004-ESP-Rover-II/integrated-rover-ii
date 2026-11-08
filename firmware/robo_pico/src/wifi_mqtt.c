@@ -19,6 +19,8 @@ static bool mqtt_connected_flag = false;
 static mqtt_command_callback_t command_callback = NULL;
 static unsigned publishes_in_flight = 0;
 static bool telemetry_in_flight = false;
+static bool camera_in_flight = false;
+typedef enum { PUBLISH_STATUS, PUBLISH_SENSOR, PUBLISH_CAMERA } publish_kind_t;
 static uint32_t telemetry_queued_ms = 0;
 static uint32_t last_publish_warning_ms = 0;
 static bool publish_warning_logged = false;
@@ -33,6 +35,7 @@ static volatile uint32_t last_link_rx_ms = 0;
 static void reset_publish_state(void) {
     publishes_in_flight = 0;
     telemetry_in_flight = false;
+    camera_in_flight = false;
     publish_warning_logged = false;
     first_telemetry_queued = false;
     first_telemetry_completed = false;
@@ -139,6 +142,7 @@ static void mqtt_subscribe_cb(void *arg, err_t result) {
 
 static void mqtt_publish_cb(void *arg, err_t result) {
     if (publishes_in_flight != 0) --publishes_in_flight;
+    if (arg == &camera_in_flight) camera_in_flight = false;
     if (arg == &telemetry_in_flight) {
         telemetry_in_flight = false;
         if (result == ERR_OK && !first_telemetry_completed) {
@@ -151,11 +155,15 @@ static void mqtt_publish_cb(void *arg, err_t result) {
     }
 }
 
-static wifi_mqtt_error_t publish_message(const char *topic, const char *data, bool telemetry) {
+static wifi_mqtt_error_t publish_message(const char *topic, const char *data, publish_kind_t kind) {
+    bool telemetry = kind == PUBLISH_SENSOR;
+    bool camera = kind == PUBLISH_CAMERA;
     if (!mqtt_connected_flag || mqtt_client == NULL || !mqtt_client_is_connected(mqtt_client)) {
         return MQTT_ERR_CONNECT_FAILED;
     }
 
+    if (camera && (camera_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 2u))
+        return MQTT_ERR_BUSY;
     if (telemetry && (telemetry_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 1u)) {
         uint32_t age = to_ms_since_boot(get_absolute_time()) - telemetry_queued_ms;
         if (telemetry_in_flight && age >= 1000u && publish_warning_due()) {
@@ -177,15 +185,18 @@ static wifi_mqtt_error_t publish_message(const char *topic, const char *data, bo
 
     // Reserve before calling lwIP so a completion callback cannot underflow counts.
     ++publishes_in_flight;
+    if (camera) camera_in_flight = true;
     if (telemetry) {
         telemetry_in_flight = true;
         telemetry_queued_ms = to_ms_since_boot(get_absolute_time());
     }
     err_t err = mqtt_publish(mqtt_client, topic, data, (u16_t)length, 0, 0,
-                            mqtt_publish_cb, telemetry ? &telemetry_in_flight : NULL);
+                            mqtt_publish_cb, telemetry ? &telemetry_in_flight :
+                                             camera ? &camera_in_flight : NULL);
     if (err != ERR_OK) {
         if (publishes_in_flight != 0) --publishes_in_flight;
         if (telemetry) telemetry_in_flight = false;
+        if (camera) camera_in_flight = false;
         if (publish_warning_due()) {
             printf("[MQTT] Publish rejected: err=%d payload=%u pending=%u/%u TX ring=%u\n",
                    (int)err, (unsigned)length, publishes_in_flight,
@@ -377,11 +388,15 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
 }
 
 wifi_mqtt_error_t mqtt_publish_status(const char *status) {
-    return publish_message(MQTT_TOPIC_STATUS, status, false);
+    return publish_message(MQTT_TOPIC_STATUS, status, PUBLISH_STATUS);
 }
 
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
-    return publish_message(MQTT_TOPIC_TELEMETRY, data, true);
+    return publish_message(MQTT_TOPIC_TELEMETRY, data, PUBLISH_SENSOR);
+}
+
+wifi_mqtt_error_t mqtt_publish_camera(const char *data) {
+    return publish_message("robot/camera", data, PUBLISH_CAMERA);
 }
 
 bool mqtt_is_connected(void) {
