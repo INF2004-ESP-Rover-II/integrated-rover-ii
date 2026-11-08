@@ -233,15 +233,15 @@ Notes:
 
 The ESP32-S3 can now find ArUco markers and measure range and bearing by itself, with no laptop, and send the results over UART. The firmware is in `firmware/esp32_s3_vision/`. It is an ESP-IDF project (v5.2.7, target `esp32s3`) and is **not** part of the Pico CMake build.
 
-The normal Robo Pico application now reads S3 UART1, builds its dynamic map locally and executes DFS. The default dashboard receives map snapshots and sends high-level commands. UART reception has been confirmed; camera geometry is unmeasured, so autonomous movement is gated until it is set. Follow [the next stationary test](docs/ONBOARD_DFS.md). The separate [UART diagnostic](docs/CAMERA_UART_BRINGUP.md) still prints packets without initialising motors. Earlier laptop mapping instructions above describe the legacy pipeline.
+**Nothing on the Robo Pico reads this link yet.** The rover still gets markers from the laptop (`vision/vision_publisher.py`, see Test 5) until the receiver exists.
 
 | Work | Status |
 |---|---|
 | Detection, range and bearing on the S3 | Done |
 | UART sender on the S3 | Done, tested by loopback only |
-| Robo Pico receiver on UART1 (GP21) | Real reception confirmed; normal-firmware integration restored |
+| Robo Pico receiver on UART1 (GP21) | **Not started** (Vivi's side) |
 | End-to-end test with a Pico | Not done |
-| Local UART-driven map/DFS | Implemented and simulated; geometry and physical movement acceptance pending |
+| Moving the rover from the laptop publisher to UART | Not done |
 
 ### What changed
 

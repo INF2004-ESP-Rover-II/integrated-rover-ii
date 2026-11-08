@@ -37,8 +37,6 @@ wifi_mqtt_error_t wifi_connect(const char *ssid, const char *password, uint32_t 
  * @brief Check WiFi connection status
  */
 bool wifi_is_connected(void);
-int wifi_link_status(void); /* Overall TCP/IP state, including DHCP readiness. */
-wifi_mqtt_error_t wifi_connect_async(const char *ssid, const char *password);
 
 /**
  * @brief Get IP address
@@ -70,7 +68,6 @@ wifi_mqtt_error_t mqtt_publish_status(const char *status);
  * At most one telemetry publish is awaiting completion; poll the network before retrying.
  */
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
-wifi_mqtt_error_t mqtt_publish_map(const char *data);
 
 /**
  * @brief Check MQTT connection status

@@ -16,9 +16,6 @@ static ip_addr_t mqtt_broker_ip;
 static bool wifi_initialized = false;
 static bool wifi_connected_flag = false;
 static bool mqtt_connected_flag = false;
-static char incoming_message[256];
-static size_t incoming_length;
-static bool incoming_oversized;
 static mqtt_command_callback_t command_callback = NULL;
 static unsigned publishes_in_flight = 0;
 static bool telemetry_in_flight = false;
@@ -89,13 +86,19 @@ static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection
 }
 
 static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
-    if (incoming_length + len < sizeof(incoming_message) && !incoming_oversized) {
-        memcpy(incoming_message+incoming_length,data,len);incoming_length+=len;
-    } else incoming_oversized=true;
+    // Accumulate message data
+    static char message_buffer[256];
+    static size_t buffer_pos = 0;
+
+    // Copy incoming data to buffer
+    if (buffer_pos + len < sizeof(message_buffer)) {
+        memcpy(message_buffer + buffer_pos, data, len);
+        buffer_pos += len;
+    }
+
     // Check if this is the last fragment
     if (flags & MQTT_DATA_FLAG_LAST) {
-        if(incoming_oversized){incoming_length=0;return;}
-        incoming_message[incoming_length] = '\0';
+        message_buffer[buffer_pos] = '\0';
         
         // Process command
         uint32_t t = to_ms_since_boot(get_absolute_time());
@@ -103,8 +106,8 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
         case IN_TOPIC_COMMAND:
             last_link_rx_ms = t;
             if (command_callback != NULL) {
-                printf("[MQTT] Received command: %s\n", incoming_message);
-                command_callback(incoming_message);
+                printf("[MQTT] Received command: %s\n", message_buffer);
+                command_callback(message_buffer);
             }
             break;
         case IN_TOPIC_HEARTBEAT:
@@ -115,13 +118,12 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
         }
         
         // Reset buffer
-        incoming_length = 0;
+        buffer_pos = 0;
     }
 }
 
 static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
     (void)arg; (void)tot_len;
-    incoming_length=0;incoming_oversized=tot_len>=sizeof(incoming_message);
     if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0)        current_in_topic = IN_TOPIC_COMMAND;
     else if (strcmp(topic, MQTT_TOPIC_HEARTBEAT) == 0) current_in_topic = IN_TOPIC_HEARTBEAT;
     else                                               current_in_topic = IN_TOPIC_OTHER;
@@ -253,29 +255,21 @@ wifi_mqtt_error_t wifi_connect(const char *ssid, const char *password, uint32_t 
     return WIFI_OK;
 }
 
-wifi_mqtt_error_t wifi_connect_async(const char *ssid, const char *password) {
-    if(!wifi_initialized)return WIFI_ERR_INIT_FAILED;
-    printf("[WIFI] Connecting asynchronously to '%s'...\n",ssid);
-    int result=cyw43_arch_wifi_connect_async(ssid,password,CYW43_AUTH_WPA2_AES_PSK);
-    if(result)printf("[WIFI] Connection request failed: %d\n",result);
-    return result==0?WIFI_OK:WIFI_ERR_NOT_CONNECTED;
-}
-int wifi_link_status(void) {
-    /* cyw43_wifi_link_status reports JOIN even after association succeeds.
-     * The TCP/IP API advances through NOIP to UP when DHCP completes. */
-    return wifi_initialized ? cyw43_tcpip_link_status(&cyw43_state,CYW43_ITF_STA) : CYW43_LINK_DOWN;
-}
 bool wifi_is_connected(void) {
-    wifi_connected_flag=wifi_link_status()==CYW43_LINK_UP;
     return wifi_connected_flag;
 }
 
 const char* wifi_get_ip_address(void) {
-    if (!wifi_is_connected()) {
+    if (!wifi_connected_flag) {
         return NULL;
     }
 
-    return ip4addr_ntoa(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA]));
+    extern struct netif *netif_list;
+    if (netif_list) {
+        return ip4addr_ntoa(netif_ip4_addr(netif_list));
+    }
+
+    return NULL;
 }
 
 wifi_mqtt_error_t mqtt_init(const char *broker_ip, uint16_t broker_port, const char *client_id) {
@@ -299,7 +293,7 @@ wifi_mqtt_error_t mqtt_init(const char *broker_ip, uint16_t broker_port, const c
 }
 
 wifi_mqtt_error_t mqtt_connect(void) {
-    if (!wifi_is_connected()) {
+    if (!wifi_connected_flag) {
         printf("[MQTT] ERROR: WiFi not connected\n");
         return WIFI_ERR_NOT_CONNECTED;
     }
@@ -372,7 +366,6 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
         NULL
     );
 
-    if (err != ERR_OK) return MQTT_ERR_SUBSCRIBE_FAILED;
     // FR-08: also listen for the dashboard heartbeat
     err = mqtt_subscribe(mqtt_client, MQTT_TOPIC_HEARTBEAT, 0, mqtt_subscribe_cb, NULL);
     if (err != ERR_OK) {
@@ -391,26 +384,13 @@ wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
     return publish_message(MQTT_TOPIC_TELEMETRY, data, true);
 }
 
-wifi_mqtt_error_t mqtt_publish_map(const char *data) {
-    return publish_message("robot/map",data,true);
-}
 bool mqtt_is_connected(void) {
-    return mqtt_client && mqtt_connected_flag && mqtt_client_is_connected(mqtt_client);
+    return mqtt_connected_flag && mqtt_client_is_connected(mqtt_client);
 }
 
 void wifi_mqtt_poll(void) {
     if (wifi_initialized) {
         cyw43_arch_poll();
-        static int last_status=99;
-        int status=wifi_link_status();
-        if(status!=last_status) {
-            printf("[WIFI] Link state=%d (0=down 1=joining 2=waiting-IP 3=ready; negative=failure)\n",status);
-            if(status==CYW43_LINK_UP) {
-                cyw43_wifi_pm(&cyw43_state,cyw43_pm_value(CYW43_NO_POWERSAVE_MODE,20,1,1,1));
-                printf("[WIFI] Connected! IP: %s\n",wifi_get_ip_address());
-            }
-            last_status=status;
-        }
     }
 }
 

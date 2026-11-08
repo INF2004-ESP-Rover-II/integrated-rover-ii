@@ -3,9 +3,6 @@
 /firmware/robo_pico/include/config.h
 /.venv
 *.md
-!/docs/CAMERA_UART_BRINGUP.md
-!/docs/ONBOARD_DFS.md
-!/docs/B1_TO_B3_LOCAL_MAP_HANDOVER_2026-11-06.md
 /tests/*
 !/tests/test_marker_mapping.py
 /dashboard/__pycache__
