@@ -29,6 +29,7 @@ add_executable(mecanum_robot
     src/safety_interlock.c
     src/mission_control.c
     src/camera_telemetry.c
+    src/rover_map.c
     ${CAMERA_RECEIVER_SOURCES}
 )
 
@@ -47,6 +48,7 @@ target_compile_definitions(mecanum_robot PRIVATE MC_HEADING_STALE_MS=600u)
 
 target_link_libraries(mecanum_robot
     pico_stdlib
+    pico_rand
     pico_cyw43_arch_lwip_poll    # WiFi + lwIP for Pico W
     hardware_pwm
     hardware_gpio

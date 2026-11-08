@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "pico/rand.h"
 #include "pico/cyw43_arch.h"
 #include "hardware/pwm.h"
 #include "config.h"
@@ -13,6 +14,7 @@
 #include "camera_uart.h"
 #include "camera_telemetry.h"
 #include "mission_control.h"
+#include "rover_map.h"
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
 
@@ -69,6 +71,40 @@ static motor_auto_status_t last_auto_reported = MOTOR_AUTO_IDLE;
 static bool heading_zero_pending;
 static uint32_t heading_zero_ready_ms;
 static mission_t mission;
+static rover_map_t rover_map;
+static char map_last_request[33];
+static uint8_t last_start_marker;
+static bool map_publish_requested;
+_Static_assert(ROVER_MAP_JSON_CAPACITY + 32u < MQTT_OUTPUT_RINGBUF_SIZE,
+               "Increase MQTT ring or add snapshot chunking for this map capacity");
+
+static void service_map_publish(void)
+{
+    static char payload[ROVER_MAP_JSON_CAPACITY];
+    static uint32_t last_attempt_ms, last_sent_ms, sent_revision;
+    static bool sent;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!mqtt_is_connected() || (uint32_t)(now - last_attempt_ms) < 100u) return;
+    if (sent && !map_publish_requested && sent_revision == rover_map.revision &&
+        (uint32_t)(now - last_sent_ms) < 2000u) return;
+    last_attempt_ms = now;
+    if (!rover_map_format(&rover_map, map_last_request, payload, sizeof(payload))) return;
+    if (mqtt_publish_map(payload) == WIFI_OK) {
+        sent = true;
+        sent_revision = rover_map.revision;
+        last_sent_ms = now;
+        map_publish_requested = false;
+    }
+}
+
+static void map_note_translation(const char *command, motor_error_t result)
+{
+    if (result != MOTOR_OK) return;
+    const char *translations[] = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "FRONT_LEFT", "FRONT_RIGHT",
+                                  "BACK_LEFT", "BACK_RIGHT", "MOVE_FORWARD", "MOVE_BACKWARD"};
+    for (size_t i = 0; i < sizeof(translations) / sizeof(translations[0]); ++i)
+        if (strcmp(command, translations[i]) == 0) { rover_map_depart(&rover_map); return; }
+}
 
 static void service_camera_relay(void)
 {
@@ -121,6 +157,49 @@ static void stop_mission_outputs(void)
     motor_emergency_stop();
     arm_set_direction(ARM_STOP);
     claw_set_direction(CLAW_STOP);
+}
+
+static bool handle_map_command(const char *command)
+{
+    if (strcmp(command, "MAP_GET") == 0) { map_publish_requested = true; return true; }
+    if (strncmp(command, "SET_START:", 10) != 0) return false;
+    const char *token = command + 10;
+    size_t length = strlen(token);
+    if (length < 34 || length > 36 || token[32] != ':') goto invalid;
+    for (size_t i = 0; i < 32; ++i)
+        if (!strchr("0123456789abcdef", token[i])) goto invalid;
+    unsigned marker_id = 0;
+    for (size_t i = 33; i < length; ++i) {
+        if (token[i] < '0' || token[i] > '9') goto invalid;
+        marker_id = marker_id * 10u + (unsigned)(token[i] - '0');
+    }
+    if (!marker_id || marker_id > UINT8_MAX) goto invalid;
+    char request[33];
+    memcpy(request, token, 32);
+    request[32] = '\0';
+    if (strcmp(request, map_last_request) == 0) {
+        if (last_start_marker != marker_id) { mqtt_publish_status("MAP_REFUSED:REQUEST_ID_REUSED"); return true; }
+        map_publish_requested = true;
+        mqtt_publish_status("MAP_ACK:SET_START_DUPLICATE");
+        return true;
+    }
+    if (mission.state != MISSION_IDLE || motor_safety_is_latched() || heading_zero_pending ||
+        (motor_motion_state() != 0 && motor_motion_state() != 1)) {
+        mqtt_publish_status("MAP_REFUSED:STOP_RESET_MISSION_AND_CLEAR_SAFETY_FIRST");
+        return true;
+    }
+    stop_mission_outputs();
+    rover_map_start(&rover_map, (uint8_t)marker_id);
+    memcpy(map_last_request, request, sizeof(map_last_request));
+    last_start_marker = (uint8_t)marker_id;
+    map_publish_requested = true;
+    printf("[MAP] Start node %u at (0,0), current_node=%u, revision=%lu\n",
+        marker_id, (unsigned)rover_map.current_node, (unsigned long)rover_map.revision);
+    mqtt_publish_status("MAP_ACK:SET_START_ACCEPTED");
+    return true;
+invalid:
+    mqtt_publish_status("MAP_REFUSED:EXPECTED_SET_START_REQUEST32HEX_ID1_TO_255");
+    return true;
 }
 
 static bool handle_mission_command(const char *command)
@@ -283,6 +362,7 @@ static void process_command(const char *command)
         *colon = '\0';
 
     service_safety_stop();
+    if (handle_map_command(command)) return;
     if (handle_mission_command(command)) return;
     if (!mission_command_allowed(&mission, command)) {
         mqtt_publish_status("MISSION_REFUSED:TEST_MODE_MOVEMENT_DISABLED");
@@ -443,6 +523,7 @@ static void process_command(const char *command)
             mission_pause(&mission, MISSION_REASON_OPERATOR_STOP, to_ms_since_boot(get_absolute_time()));
             result = motor_auto_stop();
         }
+        map_note_translation(cmd_buffer, result);
 
         char msg[80];
         static char last_move[32] = "";
@@ -503,6 +584,7 @@ static void process_command(const char *command)
     }
     printf("[CMD] %s -> result %d (motion state %d)\n",
            cmd_buffer, (int)result, motor_motion_state());
+    map_note_translation(cmd_buffer, result);
 
     if (result == MOTOR_OK)
     {
@@ -603,6 +685,7 @@ int main()
     stdio_init_all();
     sleep_ms(2000);
     mission_init(&mission, to_ms_since_boot(get_absolute_time()));
+    rover_map_init(&rover_map, get_rand_64());
     report_mission(true);
 
     printf("\n========================================\n");
@@ -707,6 +790,7 @@ int main()
         cyw43_arch_poll();
         service_safety_stop();
         service_camera_relay();
+        service_map_publish();
         service_heading_zero();
         uint32_t now = to_ms_since_boot(get_absolute_time());
         uint32_t mission_last_rx = mqtt_last_link_rx_ms();

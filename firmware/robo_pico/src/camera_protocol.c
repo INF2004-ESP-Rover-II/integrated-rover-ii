@@ -63,7 +63,7 @@ bool camera_parser_feed(camera_parser_t *parser, uint8_t byte,
         bool fields_ok = true;
         for (uint8_t i = 0; i < count; ++i) {
             const uint8_t *marker = data + 6 + 6 * i;
-            if (marker[0] < 1 || marker[0] > 36 || marker[5] > 4) fields_ok = false;
+            if (marker[0] < ROVER_MARKER_ID_MIN || marker[5] > 4) fields_ok = false;
         }
         if (!fields_ok) {
             parser->format_errors++;

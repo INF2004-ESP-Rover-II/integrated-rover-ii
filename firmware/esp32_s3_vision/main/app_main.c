@@ -46,6 +46,7 @@
 #include "aruco_detect.h"
 #include "aruco_pose.h"
 #include "vision_frame.h"
+#include "../../common/marker_limits.h"
 // WIFI_SSID, WIFI_PASSWORD: copy wifi_secrets.example.h
 #include "wifi_secrets.h"
 
@@ -56,10 +57,9 @@ static const char * TAG = "web_cam";
 #define VISION_UART UART_NUM_1
 #define VISION_TX_PIN 17
 #define VISION_BAUD 115200
-// The rover uses IDs 1 to 36; widen these to test with the rest of the printed
-// set.
-#define VISION_ID_MIN 1
-#define VISION_ID_MAX 36
+// Wire IDs are 1..255; the compiled DICT_6X6_250 table supplies IDs 1..249.
+#define VISION_ID_MIN ROVER_MARKER_ID_MIN
+#define VISION_ID_MAX ROVER_MARKER_ID_MAX
 // Health limits are not agreed with Vivi yet. STALLED is early enough that the
 // Pico sees a failure within 1 s; CAMERA_LOST keeps the laptop publisher's 5 s.
 #define VISION_STALL_US (500 * 1000)

@@ -118,7 +118,8 @@ void camera_uart_poll(void)
             latest_observation.received_ms = received.receive_ms;
             latest_observation.generation++;
             have_observation = true;
-            print_frame(&frame, received.receive_ms);
+            // commented out cuz it spams the serial monitor with prints, uncomment to see the camera data
+            // print_frame(&frame, received.receive_ms);
         }
     }
 

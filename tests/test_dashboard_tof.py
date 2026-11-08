@@ -19,6 +19,7 @@ namespace = {
     "TOPIC_STATUS": "robot/status", "TOPIC_TELEMETRY": "robot/telemetry",
     "TOPIC_MARKER": "camera/marker",
     "TOPIC_ROVER_CAMERA": "robot/camera",
+    "TOPIC_ROVER_MAP": "robot/map",
     "TOF_UART_STALE_MS": 500, "ROBOT_LOST_S": 2.0, "WATCHDOG_CHECK_MS": 250,
 }
 methods = [node for node in gui.body if isinstance(node, ast.FunctionDef) and node.name in names]
@@ -61,6 +62,7 @@ class FakeGUI:
         self.last_telemetry_rx = time.time()
         self.connect_time = time.time()
         self.robot_link = "live"
+        self.onboard_map = SimpleNamespace(snapshot=None)
         self.root = Root()
         self.last_msg_time = Variable()
         self.msg_count = 0

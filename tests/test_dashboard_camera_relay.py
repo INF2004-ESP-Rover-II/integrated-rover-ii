@@ -17,7 +17,8 @@ tree = ast.parse((ROOT / "dashboard/robot_dashboard.py").read_text(encoding="utf
 gui = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RobotGUI")
 names = {"update_rover_camera_display", "update_camera_marker_list", "clear_rover_camera_display", "update_current_marker", "on_mqtt_message", "on_mqtt_connect"}
 namespace = {"time": time, "TOPIC_STATUS": "robot/status", "TOPIC_TELEMETRY": "robot/telemetry",
-             "TOPIC_MARKER": "camera/marker", "TOPIC_ROVER_CAMERA": "robot/camera", "QUALITY_NAMES": QUALITY_NAMES}
+             "TOPIC_MARKER": "camera/marker", "TOPIC_ROVER_CAMERA": "robot/camera", "TOPIC_ROVER_MAP": "robot/map",
+             "QUALITY_NAMES": QUALITY_NAMES}
 exec(compile(ast.Module(body=[node for node in gui.body if isinstance(node, ast.FunctionDef)
                              and node.name in names], type_ignores=[]), "camera_relay_handlers", "exec"), namespace)
 

@@ -70,6 +70,8 @@ wifi_mqtt_error_t mqtt_publish_status(const char *status);
 wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
 // robot/camera, QoS 0, not retained; one camera publish in flight at most.
 wifi_mqtt_error_t mqtt_publish_camera(const char *data);
+// Full authoritative map, QoS 0/not retained; one snapshot in flight.
+wifi_mqtt_error_t mqtt_publish_map(const char *data);
 
 /**
  * @brief Check MQTT connection status

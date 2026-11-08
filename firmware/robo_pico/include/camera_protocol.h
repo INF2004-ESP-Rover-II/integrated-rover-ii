@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "vision_frame.h" // Existing ESP32 wire contract; do not duplicate it.
+#include "../../common/marker_limits.h"
 
 #define CAMERA_BYTE_GAP_MS 50u
 

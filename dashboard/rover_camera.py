@@ -46,7 +46,7 @@ class RoverCameraCache:
                 return False
             if (status == "OK") != bool(data["markers"]):
                 return False
-            markers = tuple(CameraMarker(integer(item["id"], 1, 36),
+            markers = tuple(CameraMarker(integer(item["id"], 1, 255),
                 integer(item["range_mm"], 0, 65535), integer(item["bearing_cdeg"], -32768, 32767),
                 integer(item["quality"], 0, 4)) for item in data["markers"])
         except (KeyError, TypeError, ValueError):

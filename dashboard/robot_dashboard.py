@@ -23,15 +23,16 @@ from collections import deque
 import gc
 import os
 import sys
+import uuid
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
 from tkinter import ttk
-from mapping.ui_panel import MappingPanel   # Subsystem 4: map + path tab
-from mapping.config import CAMERA_HEIGHT_CM, CAMERA_FORWARD_CM
 import os
 from laptop_navigation import LaptopNavigator
 from mission_display import parse_mission_report
 from rover_camera import RoverCameraCache, QUALITY_NAMES
-from vision_feed import GRID_SIZE, VisionFeed, grid_cell, place_markers
+from onboard_map import OnboardMapCache
+from vision_feed import VisionFeed
+from matplotlib.ticker import MaxNLocator
 
 
 def make_mqtt_client(client_id):
@@ -51,6 +52,7 @@ TOPIC_STATUS = "robot/status"
 TOPIC_TELEMETRY = "robot/telemetry"
 TOPIC_MARKER = "camera/marker"
 TOPIC_ROVER_CAMERA = "robot/camera"
+TOPIC_ROVER_MAP = "robot/map"
 
 TOPIC_HEARTBEAT = "robot/heartbeat"
 LINK_HEARTBEAT_MS = 500
@@ -109,6 +111,10 @@ class RobotGUI:
         self.mission_report = None
         self.last_mission_rx = None
         self.last_mission_reply = None
+        self.onboard_map = OnboardMapCache()
+        self.pending_start_request = None
+        self.start_node_status = tk.StringVar(value="Set the node under the rover; RoboPico will confirm the map")
+        self.onboard_map_status = tk.StringVar(value="Waiting for RoboPico map")
         self.robot_ip = tk.StringVar(value="N/A")
         self.last_msg_time = tk.StringVar(value="Never")
         self.msg_count = 0
@@ -186,16 +192,6 @@ class RobotGUI:
         self.node_confirmation_text = tk.StringVar(value="")
         self.navigator = LaptopNavigator(self.send_navigation_command, self.report_navigation)
         self.navigator.grid_required = True
-        # Marker grid map: its own feed so it never shares sequence state with the navigator.
-        self.map_feed = VisionFeed()
-        self.map_start_cell = (3, 0)  # 4th column (middle), bottom row; starting IMU heading defines up the map.
-        self.found_markers = {}
-        self.map_rover = {}  # Last rover position worked out from a mapped marker.
-        self.map_title = ""
-        self.map_drawn_at = 0.0
-        self.grid_map_signature = None
-        self.grid_marker_artists = {}
-        self.grid_marker_labels = {}
 
         # Keyboard drive controls and the manual heading test share this window.
 
@@ -218,7 +214,7 @@ class RobotGUI:
                  font=("Arial", 20, "bold"), fg='white', bg='#2c3e50').grid(row=0, column=0, padx=20, sticky='w')
                 
         # Autonomous mode toggle (top right)
-        self.auto_btn = tk.Checkbutton(header, text="LAPTOP DFS", variable=self.auto_mode,
+        self.auto_btn = tk.Checkbutton(header, text="ONBOARD DFS (pending)", variable=self.auto_mode, state='disabled',
                       command=self.toggle_auto_mode,
                       bg='#2c3e50', fg='yellow', selectcolor='#1a1a1a',
                       font=("Arial", 12, "bold"))
@@ -360,7 +356,7 @@ class RobotGUI:
                 ("Lens distance:", self.marker_distance_text),
                 ("Bearing:", self.marker_bearing_text),
                 ("Last reached:", self.last_reached_marker_text),
-                ("DFS current node:", self.dfs_current_node_text))):
+                ("Current node (RoboPico):", self.dfs_current_node_text))):
             tk.Label(marker_frame, text=title, fg='white', bg='#34495e').grid(
                 row=0, column=column * 2, padx=(8, 4), sticky='w')
             tk.Label(marker_frame, textvariable=value, fg='#3498db', bg='#34495e',
@@ -400,11 +396,11 @@ class RobotGUI:
         tk.Entry(dfs_frame, textvariable=self.start_node_id, width=4).pack(side='left')
         tk.Button(dfs_frame, text="Set start node", command=self.set_start_node,
                   bg='#2980b9', fg='white').pack(side='left', padx=6)
-        tk.Label(dfs_frame, text="DFS target markers (1–36):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Label(dfs_frame, text="Target visits (separate):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_target, width=4).pack(side='left')
         tk.Label(dfs_frame, text="Side opening ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
-        tk.Label(dfs_frame, textvariable=self.dfs_status, fg='yellow', bg='#34495e').pack(side='left', padx=12)
+        tk.Label(dfs_frame, textvariable=self.start_node_status, fg='yellow', bg='#34495e', wraplength=450).pack(side='left', padx=12)
 
         turn_frame = tk.Frame(self.root, bg='#34495e')
         turn_frame.pack(padx=20, pady=2, fill='x')
@@ -461,30 +457,24 @@ class RobotGUI:
         self.map_tabs = ttk.Notebook(self.map_frame)
         self.map_tabs.pack(fill='both', expand=True)
         live_tab = tk.Frame(self.map_tabs, bg='#2c3e50')
-        self.map_tabs.add(live_tab, text="Live view")
-        self.mapping = MappingPanel(
-            self.map_tabs, self.navigator,
-            get_threshold=lambda: int(self.dfs_threshold.get() or 0),
-            log=lambda m: self.log(m))
-        self.map_tabs.add(self.mapping, text="Mapping & path")
-        self.map_tabs.select(self.mapping)
+        self.map_tabs.add(live_tab, text="RoboPico map")
+        tk.Label(live_tab, textvariable=self.onboard_map_status, fg='white', bg='#2c3e50',
+                 wraplength=750).pack(fill='x', padx=10, pady=(5, 0))
 
         # !! ToF mapping display to be here
         self.fig = Figure(figsize=(6, 6), dpi=100, facecolor='#2c3e50')
         self.ax = self.fig.add_subplot(111, facecolor='#1a1a1a')
-        # Initial 6x6 grid of 60 cm cells; expand for markers beyond its edges.
-        self.ax.set_xlim(0, GRID_SIZE)
-        self.ax.set_ylim(0, GRID_SIZE)
+        # Empty view until an authoritative snapshot arrives. Coordinates are cell centres.
+        self.ax.set_xlim(-0.5, 0.5)
+        self.ax.set_ylim(-0.5, 0.5)
         self.ax.set_aspect('equal')
-        self.ax.set_xticks(range(GRID_SIZE + 1))
-        self.ax.set_yticks(range(GRID_SIZE + 1))
-        self.ax.grid(True, color='#3498db', alpha=0.6, linewidth=1)
-        self.ax.set_xlabel('Column (60 cm cells)', color='white', fontsize=10)
-        self.ax.set_ylabel('Row (60 cm cells)', color='white', fontsize=10)
-        self.ax.set_title('Set start node ID to begin grid mapping', color='white', pad=15, fontsize=12)
+        self.ax.set_xticks([0])
+        self.ax.set_yticks([0])
+        self.ax.set_xlabel('Grid x (east)', color='white', fontsize=10)
+        self.ax.set_ylabel('Grid y (north)', color='white', fontsize=10)
+        self.ax.set_title('Waiting for RoboPico map', color='white', pad=15, fontsize=12)
         self.ax.tick_params(colors='white', labelsize=8)
-        self.rover_dot, = self.ax.plot(self.map_start_cell[0] + 0.5, self.map_start_cell[1] + 0.5,
-                                      'go', markersize=10, zorder=10)
+        self.rover_dot, = self.ax.plot([], [], 'o', color='#f39c12', markersize=8, zorder=10)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=live_tab)
         self.canvas.draw()
@@ -760,21 +750,8 @@ class RobotGUI:
                 self.log("Turn to %d° complete." % target)
 
     def toggle_auto_mode(self):
-        """The laptop owns exploration; never start the inherited Pico AUTO mode."""
-        if getattr(self, 'heading_zero_pending', False):
-            self.auto_mode.set(False)
-            self.log("Wait for heading zero to finish before starting DFS.")
-            return
-        if self.auto_mode.get():
-            self.stop_hold()
-            self.cancel_heartbeat()
-            try:
-                self.navigator.start(int(self.dfs_target.get()), int(self.dfs_threshold.get()))
-            except (ValueError, TypeError) as error:
-                self.auto_mode.set(False)
-                self.log("Cannot start laptop DFS: " + str(error))
-        else:
-            self.navigator.stop()
+        self.auto_mode.set(False)
+        self.log("Laptop DFS is disabled: the displayed map is owned by RoboPico. Onboard DFS is pending.")
 
     def report_navigation(self, message):
         self.dfs_status.set(message)
@@ -786,21 +763,24 @@ class RobotGUI:
             self.log("Stop driving and release the keys before setting the starting node.")
             return
         try:
-            self.navigator.configure_grid_start(int(self.start_node_id.get()),
-                camera_height_mm=CAMERA_HEIGHT_CM * 10, camera_forward_mm=CAMERA_FORWARD_CM * 10)
+            marker_id = int(self.start_node_id.get())
+            if not 1 <= marker_id <= 255:
+                raise ValueError("Marker ID must be 1..255")
         except (TypeError, ValueError) as error:
             self.log("Cannot set starting node: " + str(error))
             return
-        self.found_markers.clear()
-        if self.mapping.bridge.ctrl.state.value != 'IDLE':
-            self.mapping.bridge.reset_map()
-        self.mapping.adapter.session = None
-        self.grid_map_signature = None
-        self.grid_marker_artists.clear()
-        self.grid_marker_labels.clear()
-        for artist in list(self.ax.patches) + list(self.ax.texts):
-            artist.remove()
-        self.update_current_marker()
+        pending = self.pending_start_request
+        if pending is not None:
+            if marker_id != pending['marker_id']:
+                self.log("Waiting for the previous start-node request; retry it or wait for RoboPico.")
+                return
+        else:
+            token = uuid.uuid4().hex
+            pending = {'marker_id': marker_id, 'token': token, 'command': 'SET_START:%s:%d' % (token, marker_id)}
+        if self.send_command(pending['command']):
+            self.pending_start_request = pending
+            self.start_node_status.set('Requested node %d; waiting for RoboPico map confirmation' % marker_id)
+        # No local map/current-node mutation. Only robot/map can change the view.
 
     def send_navigation_command(self, command):
         if command != 'STOP':
@@ -828,80 +808,25 @@ class RobotGUI:
         else:
             self.set_front_blocked(False)
         self.navigator.tick()
-        self.mapping.sync()              # Subsystem 4: read the DFS graph / drive routes
         if not self.navigator.active:
             self.auto_mode.set(False)
         self.update_current_marker()
         self.root.after(100, self.navigation_tick)
 
     def update_current_marker(self):
-        """Show the live marker selected by navigation, separately from a reached node."""
-        nav = self.navigator
-        now = nav.clock()
-        current = nav.last_reached_marker
-        self.last_reached_marker_text.set("--" if current is None else str(current))
-        node = nav.explorer.current
-        node_state = "confirmed" if nav.explorer.current_confirmed else "unconfirmed"
-        self.dfs_current_node_text.set("--" if node is None else "%d (%s)" % (node, node_state))
-        if getattr(self, 'rover_camera', None) is not None and self.rover_camera.seen:
+        snapshot = self.onboard_map.snapshot
+        current = snapshot.current_node if snapshot is not None else None
+        suffix = '' if self.onboard_map.is_fresh(time.monotonic()) else ' (last reported)'
+        self.dfs_current_node_text.set('--' if current is None else str(current) + suffix)
+        last = self.onboard_map.last_confirmed_node
+        self.last_reached_marker_text.set('--' if last is None else str(last))
+        if self.rover_camera.seen:
             self.update_rover_camera_display()
-            return
-        if nav.grid is not None:
-            self.update_grid_map()
-            sensor_age = (now - nav.sensor.received_at + nav.sensor.age_s
-                          if nav.sensor is not None else float('inf'))
-            camera_age = now - nav.last_camera_at if nav.last_camera_at is not None else float('inf')
-            self.node_confirmation_text.set('%s | Camera age %.2fs | Sensor age %.2fs' % (
-                nav.grid.confirmation_summary(now), camera_age, sensor_age))
-        fresh = (nav.last_camera_at is not None and
-                 now - nav.last_camera_at <= VisionFeed.MAX_AGE_MS / 1000)
-        marker = nav.visible_marker if fresh else None
-        self.current_marker_text.set("--" if marker is None else str(marker))
-        distance = nav.visible_distance_mm if marker is not None else None
-        bearing = nav.visible_bearing_deg if marker is not None else None
-        self.marker_distance_text.set("--" if distance is None else "%.0f mm" % distance)
-        self.marker_bearing_text.set("--" if bearing is None else "%+.1f°" % bearing)
-        colour = '#f39c12'
-        if nav.grid_required and nav.grid is None:
-            message = "Enter the marker under the rover in Start node ID; click Set start node."
-        elif nav.grid is not None:
-            grid = nav.grid
-            if not fresh:
-                message = "Camera data unavailable/stale; grid estimate held"
-            elif grid.approaching_wall and grid.current != grid.terminal:
-                message = "Wall <60 cm | Terminal node: %s | Confirm only at front stop <15 cm" % (
-                    grid.terminal if grid.terminal is not None else 'unknown')
-            else:
-                message = grid.message
-        elif not fresh:
-            message = ("Waiting for fresh camera data" if nav.last_camera_at is None
-                       else "Camera data stale; waiting for a fresh marker observation")
-        elif marker is None:
-            message = "No marker selected in the current camera frame"
-        elif distance is None or bearing is None:
-            message = "Marker seen; valid camera distance and bearing required for confirmation"
         else:
-            count = (min(nav._arrival_count, nav.ARRIVAL_CONFIRM_FRAMES)
-                     if nav._arrival_marker == marker and
-                     now - nav._arrival_at <= VisionFeed.MAX_AGE_MS / 1000 else 0)
-            minimum = nav.ARRIVAL_DISTANCE_MM - nav.ARRIVAL_TOLERANCE_MM
-            maximum = nav.ARRIVAL_DISTANCE_MM + nav.ARRIVAL_TOLERANCE_MM
-            if not minimum <= distance <= maximum:
-                message = "Move to %.0f–%.0f mm from the lens | Confirmation: %d/%d frames" % (
-                    minimum, maximum, count, nav.ARRIVAL_CONFIRM_FRAMES)
-            elif abs(bearing) > nav.ARRIVAL_BEARING_DEG:
-                message = "Centre the marker within ±%.0f° | Confirmation: %d/%d frames" % (
-                    nav.ARRIVAL_BEARING_DEG, count, nav.ARRIVAL_CONFIRM_FRAMES)
-            elif nav.active:
-                message = "DFS: %s | Arrival confirmation: %d/%d frames" % (
-                    nav.phase.replace('_', ' '), count, nav.ARRIVAL_CONFIRM_FRAMES)
-            elif count < nav.ARRIVAL_CONFIRM_FRAMES:
-                message = "Hold steady | Confirmation: %d/%d frames" % (count, nav.ARRIVAL_CONFIRM_FRAMES)
-            else:
-                message = "Starting marker confirmed: %d/%d frames" % (count, nav.ARRIVAL_CONFIRM_FRAMES)
-                colour = '#2ecc71'
-        self.marker_confirmation_text.set(message)
-        self.marker_confirmation_label.config(fg=colour)
+            self.current_marker_text.set('--')
+            self.marker_distance_text.set('--')
+            self.marker_bearing_text.set('--')
+            self.marker_confirmation_text.set('Waiting for RoboPico camera observations')
 
     def update_rover_camera_display(self):
         now = time.monotonic()
@@ -936,94 +861,75 @@ class RobotGUI:
         self.rover_camera.clear()
         self.update_rover_camera_display()
 
-    def update_grid_map(self):
-        nav = self.navigator
-        grid = nav.grid
-        # Sightings and visits share pinned positions. Rendering never reprojects
-        # an existing marker as its camera range changes.
-        positions = grid.cells
-        signature = (tuple(sorted(positions.items())), grid.current, tuple(sorted(grid.visited)))
-        if signature == self.grid_map_signature:
+    def receive_onboard_map(self, payload):
+        try:
+            data = json.loads(payload) if isinstance(payload, str) else payload
+        except (TypeError, ValueError):
             return
-        self.grid_map_signature = signature
-        sx, sy = self.map_start_cell
-        for marker, (x, y) in positions.items():
-            colour = '#27ae60' if marker in grid.visited else '#3498db'
-            col, row = sx + x, sy + y
-            self.found_markers[marker] = (col * 600.0, row * 600.0)
-            patch = self.grid_marker_artists.get(marker)
-            if patch is None:
-                patch = Rectangle((col, row), 1, 1, color=colour, alpha=0.7)
-                self.grid_marker_artists[marker] = patch
-                self.ax.add_patch(patch)
-                self.grid_marker_labels[marker] = self.ax.text(
-                    col + 0.5, row + 0.72, str(marker), ha='center', va='center',
-                    color='white', fontsize=14, fontweight='bold')
-            patch.set_facecolor(colour)
-            patch.set_alpha(.7 if marker in grid.visited else .4)
-        x, y = grid.cells[grid.current]
-        self.rover_dot.set_data([sx + x + 0.5], [sy + y + 0.5])
-        cells = [(sx + x, sy + y) for x, y in positions.values()]
-        xmin, xmax = min(0, min(x for x, y in cells)), max(GRID_SIZE, max(x + 1 for x, y in cells))
-        ymin, ymax = min(0, min(y for x, y in cells)), max(GRID_SIZE, max(y + 1 for x, y in cells))
-        self.ax.set_xlim(xmin, xmax)
-        self.ax.set_ylim(ymin, ymax)
-        self.ax.set_xticks(range(xmin, xmax + 1))
-        self.ax.set_yticks(range(ymin, ymax + 1))
-        self.ax.set_title('Grid estimate: node %d | Blue: seen estimates | Green: reached' % grid.current,
-                          color='white', pad=15)
+        previous = self.onboard_map.snapshot
+        if not self.onboard_map.update(data, time.monotonic()):
+            return
+        snapshot = self.onboard_map.snapshot
+        if snapshot != previous:
+            self.render_onboard_map()
+        self.onboard_map_status.set('RoboPico map: %d nodes / %d capacity | %d columns x %d rows | current node: %s' % (
+            len(snapshot.nodes), snapshot.capacity, snapshot.columns, snapshot.rows,
+            snapshot.current_node if snapshot.current_node is not None else 'unknown'))
+        pending = self.pending_start_request
+        if pending is not None and snapshot.last_request == pending['token']:
+            self.start_node_status.set('RoboPico confirmed start node %d at (0,0)' % pending['marker_id'])
+            self.pending_start_request = None
+        self.update_current_marker()
+
+    def render_onboard_map(self):
+        """Draw a validated received snapshot; never infer coordinates or arrivals."""
+        snapshot = self.onboard_map.snapshot
+        if snapshot is None:
+            return
+        self.ax.clear()
+        self.ax.set_facecolor('#1a1a1a')
+        self.ax.set_aspect('equal', adjustable='box')
+        self.ax.set_xlabel('Grid x (east)', color='white')
+        self.ax.set_ylabel('Grid y (north)', color='white')
+        self.ax.tick_params(colors='white')
+        if not snapshot.nodes:
+            self.ax.set_xlim(-0.5, 0.5)
+            self.ax.set_ylim(-0.5, 0.5)
+            self.ax.set_xticks([0])
+            self.ax.set_yticks([0])
+            self.ax.set_title('RoboPico map is empty; set the start node', color='white')
+        else:
+            min_x, max_x, min_y, max_y = snapshot.bounds
+            self.ax.set_xlim(min_x - 0.5, max_x + 0.5)
+            self.ax.set_ylim(min_y - 0.5, max_y + 0.5)
+            for axis, low, high in ((self.ax.xaxis, min_x, max_x), (self.ax.yaxis, min_y, max_y)):
+                if high - low < 32:
+                    axis.set_ticks(list(range(low, high + 1)))
+                    axis.set_ticks([i - 0.5 for i in range(low, high + 2)], minor=True)
+                else:
+                    axis.set_major_locator(MaxNLocator(nbins=8, integer=True))
+            self.ax.grid(which='minor', color='#3498db', alpha=0.35)
+            for node in snapshot.nodes:
+                self.ax.add_patch(Rectangle((node.x - 0.5, node.y - 0.5), 1, 1,
+                    facecolor='#27ae60' if node.visited else '#2980b9', edgecolor='#95a5a6', alpha=0.65))
+                self.ax.text(node.x, node.y + 0.12, str(node.marker_id), ha='center', va='center',
+                             color='white', fontsize=12, fontweight='bold')
+            self.ax.set_title('RoboPico: %d columns x %d rows | %d discovered nodes' % (
+                snapshot.columns, snapshot.rows, len(snapshot.nodes)), color='white')
+        node = next((node for node in snapshot.nodes if node.marker_id == snapshot.current_node), None)
+        self.rover_dot, = self.ax.plot([] if node is None else [node.x],
+            [] if node is None else [node.y - 0.22], 'o', color='#f39c12', markersize=8, zorder=10)
         self.canvas.draw_idle()
+
+    def update_grid_map(self):
+        """Legacy local grid rendering is disabled; only robot/map owns the view."""
 
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
         self.root.after(0, self.navigator.vision_received, message)
 
     def update_marker_map(self, data):
-        """Place fresh camera observations using the current healthy IMU heading."""
-        if self.navigator.grid is not None or self.navigator.grid_required:
-            return  # The calibrated grid tracker owns marker positions in this mode.
-        frame = self.map_feed.decode(data, time.time() * 1000)
-        if frame is None:
-            return
-        sensor = self.navigator.sensor
-        heading = None
-        if (sensor is not None and self.navigator.initial_sensor_heading is not None and
-                self.navigator.clock() - sensor.received_at + sensor.age_s <= self.navigator.SENSOR_MAX_AGE_S):
-            heading = (sensor.heading - self.navigator.initial_sensor_heading) % 360
-        new = (place_markers(frame.markers, self.found_markers, self.map_start_cell, heading_deg=heading,
-                             rover=self.map_rover,
-                             front_mm=sensor.distances.get("front"))
-               if heading is not None else [])
-        for marker_id in new:
-            col, row = grid_cell(self.found_markers[marker_id])
-            self.ax.add_patch(Rectangle((col, row), 1, 1, color='#27ae60', alpha=0.7))
-            self.ax.text(col + 0.5, row + 0.5, str(marker_id), ha='center', va='center',
-                         color='white', fontsize=14, fontweight='bold')
-            self.log(f"Marker {marker_id} mapped to grid cell (col {col}, row {row})")
-        if new:
-            cells = [grid_cell(position) for position in self.found_markers.values()]
-            min_col = min(0, min(col for col, row in cells))
-            max_col = max(GRID_SIZE, max(col + 1 for col, row in cells))
-            min_row = min(0, min(row for col, row in cells))
-            max_row = max(GRID_SIZE, max(row + 1 for col, row in cells))
-            self.ax.set_xlim(min_col, max_col)
-            self.ax.set_ylim(min_row, max_row)
-            self.ax.set_xticks(range(min_col, max_col + 1))
-            self.ax.set_yticks(range(min_row, max_row + 1))
-        ahead = min(frame.markers, key=lambda marker: marker.camera_distance_mm, default=None)
-        if frame.status not in ("ok", "no_marker"):
-            title = "Camera " + frame.status
-        elif heading is None:
-            title = "Waiting for fresh IMU heading"
-        elif ahead:
-            title = f"Marker ahead: ID {ahead.marker_id} at {ahead.camera_distance_mm:.0f} mm"
-        else:
-            title = "No marker ahead"
-        # Redraw at most 5 times a second; the camera sends ~30 frames a second.
-        if new or (title != self.map_title and time.monotonic() - self.map_drawn_at >= 0.2):
-            self.map_title, self.map_drawn_at = title, time.monotonic()
-            self.ax.set_title(title, color='white', pad=15, fontsize=12)
-            self.canvas.draw_idle()
+        """Camera detections are observations, never authoritative map updates."""
 
     def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
         """Queue a simple lens-relative observation; an ID alone is not arrival."""
@@ -1305,6 +1211,8 @@ class RobotGUI:
 
     def watchdog_tick(self):
         if self.connected:
+            if self.onboard_map.snapshot is not None and not self.onboard_map.is_fresh(time.monotonic()):
+                self.onboard_map_status.set('RoboPico map reports stale; displaying last received map')
             last_mission = getattr(self, 'last_mission_rx', None)
             if last_mission is not None and time.time() - last_mission > ROBOT_LOST_S:
                 self.clear_mission_display("Stale")
@@ -1419,6 +1327,8 @@ class RobotGUI:
         self.robot_status_label.config(fg='#95a5a6')
         self.clear_mission_display()
         self.clear_rover_camera_display()
+        self.onboard_map.received_at = None
+        self.onboard_map_status.set('Disconnected; retaining the last RoboPico map')
         self.robot_ip.set("N/A")
         self.connect_btn.config(text="Connect", bg='#27ae60')
         self.log("Disconnected from MQTT broker")
@@ -1429,6 +1339,7 @@ class RobotGUI:
             client.subscribe(TOPIC_TELEMETRY)
             client.subscribe(TOPIC_MARKER)
             client.subscribe(TOPIC_ROVER_CAMERA)
+            client.subscribe(TOPIC_ROVER_MAP)
         self.root.after(0, self.handle_mqtt_connect, rc)
 
     def handle_mqtt_connect(self, rc):
@@ -1436,8 +1347,9 @@ class RobotGUI:
             self.broker_connected.set("Connected")
             self.broker_status_label.config(fg='#27ae60')
             self.log("Connected to MQTT broker")
-            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}, {TOPIC_MARKER}, {TOPIC_ROVER_CAMERA}")
+            self.log(f"Subscribed to {TOPIC_STATUS}, {TOPIC_TELEMETRY}, {TOPIC_MARKER}, {TOPIC_ROVER_CAMERA}, {TOPIC_ROVER_MAP}")
             self.start_link_heartbeat()
+            self.send_command('MAP_GET', quiet=True)
         else:
             self.log(f"MQTT connection failed (code {rc})")
             self.broker_connected.set("Failed")
@@ -1445,7 +1357,7 @@ class RobotGUI:
 
     def on_mqtt_message(self, client, userdata, msg):
         # Replayed broker state cannot constitute a live camera/sensor observation.
-        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER, TOPIC_ROVER_CAMERA):
+        if msg.retain and msg.topic in (TOPIC_TELEMETRY, TOPIC_MARKER, TOPIC_ROVER_CAMERA, TOPIC_ROVER_MAP):
             return
         payload = msg.payload.decode(errors="replace")
         self.root.after(0, self.handle_mqtt_message, msg.topic, payload)
@@ -1456,6 +1368,12 @@ class RobotGUI:
         self.msg_count += 1
 
         if topic == TOPIC_STATUS:
+            if payload.startswith(('MAP_ACK:', 'MAP_REFUSED:')):
+                self.log(payload)
+                if payload.startswith('MAP_REFUSED:'):
+                    self.start_node_status.set(payload)
+                    self.pending_start_request = None
+                return
             if payload.startswith("MISSION_STATE:"):
                 self.update_mission_display(payload)
                 return
@@ -1544,6 +1462,8 @@ class RobotGUI:
             except (KeyError, TypeError, ValueError):
                 self.log("Rejected invalid camera marker event")
 
+        elif topic == TOPIC_ROVER_MAP:
+            self.receive_onboard_map(payload)
         elif topic == TOPIC_ROVER_CAMERA:
             try:
                 data = json.loads(payload)
@@ -1625,6 +1545,8 @@ class RobotGUI:
         self.clear_tof_readings("Disconnected")
         self.clear_mission_display()
         self.clear_rover_camera_display()
+        self.onboard_map.received_at = None
+        self.onboard_map_status.set('Disconnected; retaining the last RoboPico map')
         self.log(f"MQTT disconnected (code {rc})")
         self.broker_connected.set("Disconnected")
         self.broker_status_label.config(fg='#e74c3c')

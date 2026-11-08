@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 from mission_display import parse_mission_report
+from onboard_map import OnboardMapCache
 
 SOURCE = ROOT / "dashboard" / "robot_dashboard.py"
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
@@ -22,6 +23,7 @@ names = {"update_mission_display", "clear_mission_display", "handle_mqtt_message
 namespace = {"parse_mission_report": parse_mission_report, "datetime": datetime, "time": time,
              "json": json, "TOPIC_STATUS": "robot/status", "TOPIC_TELEMETRY": "robot/telemetry",
              "TOPIC_MARKER": "camera/marker", "TOPIC_ROVER_CAMERA": "robot/camera",
+             "TOPIC_ROVER_MAP": "robot/map",
              "ROBOT_LOST_S": 2.0, "WATCHDOG_CHECK_MS": 250}
 exec(compile(ast.Module(body=[node for node in gui.body if isinstance(node, ast.FunctionDef)
                              and node.name in names], type_ignores=[]), str(SOURCE), "exec"), namespace)
@@ -70,6 +72,8 @@ class FakeGUI:
         self.mission_report = None
         self.last_mission_rx = None
         self.last_mission_reply = None
+        self.onboard_map = OnboardMapCache()
+        self.onboard_map_status = Variable()
         self.mission_state_label = Label()
         self.robot_status_label = Label()
         self.last_msg_time = Variable()

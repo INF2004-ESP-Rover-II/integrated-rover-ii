@@ -40,7 +40,7 @@ int main(void)
     // Sender/receiver interoperability: four markers, embedded sync bytes,
     // positive/negative signed limits, failed pose and saturated age/range.
     vision_marker_t markers[4] = {
-        {1, 165, 1.65f, 0}, {36, 70000, -400, 4},
+        {1, 165, 1.65f, 0}, {249, 70000, -400, 4},
         {7, 0, 0, 1}, {12, 600, 400, 3}
     };
     size_t length = vision_frame_build(bytes, 0, VISION_STATUS_OK, 70000, markers, 4);
@@ -48,6 +48,7 @@ int main(void)
     assert(feed(&parser, bytes, 5, 20, &frame) == 0);
     assert(feed(&parser, bytes + 5, length - 5, 21, &frame) == 1);
     assert(frame.seq == 0 && frame.count == 4 && frame.age_ms == 65535);
+    assert(frame.markers[1].id == 249);
     assert(frame.markers[0].range_mm == 165 && frame.markers[0].bearing_cdeg == 165);
     assert(frame.markers[1].range_mm == 65535 && frame.markers[1].bearing_cdeg == -32768);
     assert(frame.markers[2].quality == 1 && frame.markers[2].range_mm == 0);
@@ -94,7 +95,7 @@ int main(void)
         if (variant == 0) bytes[5] = 255;
         if (variant == 1) bytes[2] = 255;
         if (variant == 2) bytes[2] = VISION_STATUS_STALLED;
-        if (variant == 3) bytes[6] = 37;
+        if (variant == 3) bytes[6] = 0;
         if (variant == 4) bytes[11] = 5;
         fix_crc(bytes, length);
         assert(feed(&parser, bytes, length, 200, &frame) == 0);
