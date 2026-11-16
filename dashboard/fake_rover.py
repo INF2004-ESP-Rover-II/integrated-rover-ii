@@ -11,13 +11,15 @@ tested without the real robot. Matches the firmware on main (30 Oct 2026):
              SAFETY_LOCKED / SAFETY_READY / SAFETY_RESET_REFUSED,
              SAFE STOP: ... / REFUSED: SAFE STOP (...),
              STOPPED: LINK LOST, AUTO_START_DISABLED_USE_LAPTOP_DFS
-  Safety     - boots with the collision interlock LOCKED (needs Reset Safety)
-             - front urgent obstacle locks it again
+  Safety     - matches main (Nov 2026): only the dashboard E-STOP locks
+               (SAFETY_LOCKED until Reset Safety); boots unlocked
+             - front urgent obstacle stops FORWARD only (FRONT_STOPPED),
+               and W is refused while it is there (FORWARD_BLOCKED)
              - Motion Control SAFE STOP if a move gets no command for 0.8 s
              - FR-08: no heartbeat for 1.5 s -> stop (SAFE STOP if it was moving)
 
 Type in this window (then Enter) to change the fake world:
-  o  obstacle 100 mm in front (urgent -> safety lock)
+  o  obstacle 100 mm in front (urgent -> W stops and is refused)
   n  obstacle 300 mm in front (blocked only)
   c  clear the front
   f  toggle a ToF fault on the left sensor
@@ -91,7 +93,7 @@ s = {
     "moving": None,            # current move or None
     "last_cmd": 0.0,
     "last_reported": "",       # RUNNING only when the command changes
-    "interlock": True,         # collision interlock latched (boots locked)
+    "interlock": False,        # manual E-STOP latch (boots unlocked, like main)
     "safe_stop": None,         # Motion Control SAFE STOP reason, or None
     "last_hb": None,           # last heartbeat time, None until first one
     "link_lost": True,
@@ -188,14 +190,16 @@ def on_message(client, userdata, msg):
         cmd = payload.split(":")[0]
         log(f"<- {payload}")
 
+        if cmd == "ESTOP":
+            stop_motors("E-STOP")
+            s["interlock"] = True
+            status("SAFETY_LOCKED")
+            return
         if cmd == "RESET_SAFETY":
             stop_motors("reset")
-            if obstacle_block()["stop_required"]:
-                status("SAFETY_RESET_REFUSED")
-            else:
-                s["interlock"] = False
-                s["safe_stop"] = None
-                status("SAFETY_READY")
+            s["interlock"] = False
+            s["safe_stop"] = None
+            status("SAFETY_READY")
             return
         if cmd in ("STOP", "AUTO_STOP"):
             stop_motors("STOP command")
@@ -209,6 +213,9 @@ def on_message(client, userdata, msg):
             return
         if s["interlock"]:
             status("SAFETY_LOCKED")
+            return
+        if cmd == "FORWARD" and obstacle_block()["stop_required"]:
+            status("FORWARD_BLOCKED")          # front stop blocks W only
             return
         if s["safe_stop"] is not None:
             status(f"REFUSED: SAFE STOP ({s['safe_stop']}) - press Reset Safety")
@@ -258,7 +265,7 @@ client.subscribe(TOPIC_COMMAND)
 client.subscribe(TOPIC_HEARTBEAT)
 client.loop_start()
 status("READY")
-log("Fake rover READY, safety LOCKED until Reset Safety. Type h + Enter for keys, Ctrl+C to unplug.")
+log("Fake rover READY (unlocked; E-STOP locks it). Type h + Enter for keys, Ctrl+C to unplug.")
 threading.Thread(target=keyboard, daemon=True).start()
 
 last_telemetry = 0.0
@@ -302,11 +309,10 @@ try:
                 s["heading"] = PHYS.heading
             else:
                 obstacle = obstacle_block()
-            # Collision interlock: front urgent locks it
-            if obstacle["stop_required"] and not s["interlock"]:
-                s["interlock"] = True
+            # Front stop: only forward motion is stopped; nothing is latched
+            if obstacle["stop_required"] and s["moving"] == "FORWARD":
                 stop_motors("front obstacle")
-                status("SAFETY_LOCKED")
+                status("FRONT_STOPPED")
 
             send = (now - last_telemetry >= TELEMETRY_INTERVAL_S) and now >= s["pause_until"]
             if send:

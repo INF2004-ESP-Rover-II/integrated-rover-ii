@@ -62,6 +62,11 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 WATCHDOG_CHECK_MS = 250
 TOF_UART_STALE_MS = 500
 
+FRONT_CLEAR_MARGIN_MM = 50
+
+# Set to True to log the latency of STOP commands (for test evidence).
+SHOW_STOP_LATENCY = False
+
 ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
             'w':'FORWARD',
@@ -214,9 +219,60 @@ class RobotGUI:
         self.root.after(100, self.navigation_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
+    def style_tabs(self):
+        style = ttk.Style(self.root)
+        style.theme_use('clam')
+        style.configure('Dash.TNotebook', background='#34495e', borderwidth=0, tabmargins=(8, 8, 8, 0), bordercolor='#34495e', lightcolor='#2c3e50', darkcolor='#2c3e50')
+        style.configure('Dash.TNotebook.Tab', background='#2c3e50', foreground='#bdc3c7', padding=(16, 6), font=('Arial', 10, 'bold'), borderwidth=0, bordercolor='#34495e', lightcolor='#2c3e50', darkcolor='#2c3e50')
+        style.map('Dash.TNotebook.Tab', background=[('selected', '#3498db'), ('active', '#3d566e')], foreground=[('selected', 'white'), ('active', 'white')], lightcolor=[('selected', '#3498db')], bordercolor=[('selected', '#3498db')], padding=[('selected', (16, 6))], expand=[('selected', (0, 0, 0, 0))])
+        style.layout('Dash.TNotebook.Tab', [('Notebook.tab', {'sticky': 'nswe', 'children': [
+            ('Notebook.padding', {'side': 'top', 'sticky': 'nswe', 'children': [
+                ('Notebook.label', {'side': 'top', 'sticky': ''})]})]})])
+
+    def scroll(self):
+        outer = tk.Frame(self.root, bg='#2c3e50')
+        outer.pack(fill='both', expand=True)
+        canvas = tk.Canvas(outer, bg='#2c3e50', highlightthickness=0)
+        bar = tk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        page = tk.Frame(canvas, bg='#2c3e50')
+        window = canvas.create_window((0, 0), window=page, anchor='nw')
+
+        def fit(event=None):
+            width, height = canvas.winfo_width(), canvas.winfo_height()
+            canvas.itemconfig(window, width=width, height=max(height, page.winfo_reqheight()))
+            needed = page.winfo_reqheight() > height
+            if needed and not bar.winfo_ismapped():
+                bar.pack(side='right', fill='y', before=canvas)
+            elif not needed and bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0)
+
+        canvas.bind('<Configure>', fit)
+        page.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        page.bind('<Configure>', lambda e: canvas.after_idle(fit), add='+')
+
+        def wheel(event):
+            if isinstance(event.widget, (tk.Text, ttk.Treeview)):
+                return
+            if page.winfo_reqheight() <= canvas.winfo_height():
+                return
+            else:
+                step = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(step * 3, 'units')
+        self.root.bind_all('<MouseWheel>', wheel, add='+')
+        self.root.bind_all('<Button-4>', wheel, add='+')
+        self.root.bind_all('<Button-5>', wheel, add='+')
+        self.scroll_canvas = canvas
+        return page
+
     def setup_ui(self):
+        self.style_tabs()
+        page = self.scroll()
         # Header
-        header = tk.Frame(self.root, bg='#2c3e50')
+        header = tk.Frame(page, bg='#2c3e50')
         header.pack(fill='x', pady=(4, 0))
         header.grid_columnconfigure(0, weight=1)
         
@@ -238,7 +294,7 @@ class RobotGUI:
         self.dfs_feedback_label.grid(row=1, column=0, columnspan=2, sticky='w')
 
         # Connection bar
-        conn_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
+        conn_frame = tk.Frame(page, bg='#34495e', relief='raised', bd=2)
         conn_frame.pack(pady=3, padx=20, fill='x')
 
         tk.Label(conn_frame, text="Broker IP:", fg='white', bg='#34495e',
@@ -259,84 +315,61 @@ class RobotGUI:
         tk.Button(conn_frame, text="Restart", command=self.restart, bg='#7f8c8d',
                   fg='white', font=("Arial", 10, "bold"), width=12).grid(row=0, column=5, padx=10, pady=6)
 
-        # Status indicators
-        status_frame = tk.Frame(self.root, bg='#34495e', relief='raised', bd=2)
+        # Status bar
+        status_frame = tk.Frame(page, bg='#34495e', relief='raised', bd=2)
         status_frame.pack(pady=2, padx=20, fill='x')
+        safety = tk.Frame(status_frame, bg='#34495e')
+        safety.pack(side='right', anchor='n', padx=10, pady=4)
 
-        tk.Label(status_frame, text="Broker:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=0, padx=10, pady=8, sticky='w')
-        self.broker_status_label = tk.Label(status_frame, textvariable=self.broker_connected,
-                                            fg='#e74c3c', bg='#34495e', font=("Arial", 10, "bold"))
-        self.broker_status_label.grid(row=0, column=1, padx=5, pady=8, sticky='w')
-
-        tk.Label(status_frame, text="Robot:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=2, padx=10, pady=8, sticky='w')
-        self.robot_conn_label = tk.Label(status_frame, textvariable=self.robot_connected,
-                                         fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"))
-        self.robot_conn_label.grid(row=0, column=3, padx=5, pady=8, sticky='w')
-
-        tk.Label(status_frame, text="Status:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=4, padx=10, pady=8, sticky='w')
-        self.robot_status_label = tk.Label(status_frame, textvariable=self.robot_status,
-                                           fg='#95a5a6', bg='#34495e', font=("Arial", 10, "bold"),
-                                           wraplength=220, justify='left')
-        self.robot_status_label.grid(row=0, column=5, padx=5, pady=8, sticky='w')
-
-        # Heading display
-        tk.Label(status_frame, text="Heading:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=6, padx=10, pady=8, sticky='w')
-        self.heading_label = tk.Label(status_frame, text="N/A",
-                                      fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.heading_label.grid(row=0, column=7, padx=5, pady=8, sticky='w')
-
-        # Pitch display
-        tk.Label(status_frame, text="Pitch:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=8, padx=10, pady=8, sticky='w')
-        self.pitch_label = tk.Label(status_frame, text="N/A",
-                                    fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.pitch_label.grid(row=0, column=9, padx=5, pady=8, sticky='w')
-
-        tk.Label(status_frame, text="Roll:", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=10, padx=10, pady=8, sticky='w')
-        self.roll_label = tk.Label(status_frame, text="N/A",
-                                   fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.roll_label.grid(row=0, column=11, padx=5, pady=8, sticky='w')
-
-        # Add ultrasonic readings display
-        tk.Label(status_frame, text="Ultrasonic (mm):", fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).grid(row=0, column=12, padx=10, pady=8, sticky='w')
-        self.ultrasonic_label = tk.Label(status_frame, text="Front:0 Back:0",
-                                        fg='#3498db', bg='#34495e', font=("Arial", 10, "bold"))
-        self.ultrasonic_label.grid(row=0, column=13, padx=5, pady=8, sticky='w')
-        
-        # E-Stop button and status (prominent position)
-        self.estop_btn = tk.Button(status_frame, text="⚠ E-STOP", 
-                                   command=self.trigger_estop,
+            # E-Stop button
+        self.estop_btn = tk.Button(safety, text="\u26a0 E-STOP", command=self.trigger_estop,
                                    bg='#c0392b', fg='white', font=("Arial", 12, "bold"),
                                    width=10, relief='raised', bd=3)
-        self.estop_btn.grid(row=0, column=14, padx=15, pady=8)
-        
-        # E-Stop status indicator
-        self.estop_status_label = tk.Label(status_frame, text="",
-                                          fg='white', bg='#34495e', font=("Arial", 9, "bold"))
-        self.estop_status_label.grid(row=0, column=15, padx=5, pady=8, sticky='w')
+        self.estop_btn.grid(row=0, column=0, sticky='ew', pady=(0, 4))
+        self.estop_status_label = tk.Label(safety, text="", width=14, anchor='w', fg='white',
+                                           bg='#34495e', font=("Arial", 9, "bold"))
+        self.estop_status_label.grid(row=0, column=1, padx=(8, 0))
+            # Reset Safety button
+        self.reset_safety_btn = tk.Button(safety, text="Reset Safety", command=self.request_safety_reset,
+                                          bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
+        self.reset_safety_btn.grid(row=1, column=0, sticky='ew')
 
-        self.reset_safety_btn = tk.Button(
-            status_frame, text="Reset Safety", command=self.request_safety_reset,
-            bg='#f39c12', fg='white', font=("Arial", 10, "bold"))
-        self.reset_safety_btn.grid(row=1, column=14, padx=15, pady=(0, 8))
+            # Status readings
+        readings = tk.Frame(status_frame, bg='#34495e')
+        readings.pack(side='left', fill='x', expand=True, padx=4, pady=2)
+        reading_grid = tk.Frame(readings, bg='#34495e')  # own grid, so mission rows don't widen it
+        reading_grid.pack(side='top', fill='x')
 
-        # Onboard mission reports have their own row, separate from robot status.
-        mission_frame = tk.Frame(status_frame, bg='#34495e')
-        mission_frame.grid(row=1, column=0, columnspan=14, padx=10, pady=(0, 8), sticky='w')
+        def reading(row, col, title, value_colour, textvariable=None, text=None):
+            tk.Label(reading_grid, text=title, fg='white', bg='#34495e',
+                     font=("Arial", 10, "bold")).grid(row=row, column=col * 2, padx=(10, 4), pady=2, sticky='w')
+            label = tk.Label(reading_grid, textvariable=textvariable, text=text, fg=value_colour,
+                             bg='#34495e', font=("Arial", 10, "bold"), anchor='w', justify='left')
+            label.grid(row=row, column=col * 2 + 1, padx=(0, 10), pady=2, sticky='w')
+            return label
+
+        self.broker_status_label = reading(0, 0, "Broker:", '#e74c3c', textvariable=self.broker_connected)
+        self.robot_conn_label = reading(0, 1, "Robot:", '#95a5a6', textvariable=self.robot_connected)
+        self.robot_status_label = reading(0, 2, "Status:", '#95a5a6', textvariable=self.robot_status)
+        self.robot_status_label.config(wraplength=220)
+        self.heading_label = reading(1, 0, "Heading:", '#3498db', text="N/A")
+        self.pitch_label = reading(1, 1, "Pitch:", '#3498db', text="N/A")
+        self.roll_label = reading(1, 2, "Roll:", '#3498db', text="N/A")
+        self.ultrasonic_label = reading(2, 0, "Ultrasonic (cm):", '#3498db', text="Front:0 Back:0")
+        self.ultrasonic_label.grid(columnspan=3)
+
+            # Mission state and leg fields
+        mission_frame = tk.Frame(readings, bg='#34495e')
+        mission_frame.pack(side='top', anchor='w', padx=10, pady=(4, 6))
         for column, (caption, variable) in enumerate((
                 ("Mission state:", self.mission_state), ("Reason:", self.mission_reason),
                 ("Mode:", self.mission_mode), ("Mission motion:", self.mission_motion))):
+            row, col = divmod(column, 3)
             tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
-                     font=("Arial", 10, "bold")).grid(row=0, column=2 * column, padx=(0, 5), sticky='w')
+                     font=("Arial", 10, "bold")).grid(row=row, column=2 * col, padx=(0, 5), sticky='w')
             label = tk.Label(mission_frame, textvariable=variable, fg='#95a5a6', bg='#34495e',
                              font=("Arial", 10, "bold"), wraplength=180, justify='left')
-            label.grid(row=0, column=2 * column + 1, padx=(0, 20), sticky='w')
+            label.grid(row=row, column=2 * col + 1, padx=(0, 20), sticky='w')
             if column == 0:
                 self.mission_state_label = label
         leg_captions = (('Leg ID:', 'leg_id'), ('Departure:', 'departure_node'),
@@ -344,7 +377,8 @@ class RobotGUI:
                         ('Expected cell:', 'target_cell'), ('Direction:', 'direction'),
                         ('Leg phase:', 'phase'), ('Configured:', 'configured'))
         for index, (caption, key) in enumerate(leg_captions):
-            row, column = 1 + index // 4, (index % 4) * 2
+            row, column = divmod(index + 4, 3)
+            column *= 2
             tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
                      font=("Arial", 9, "bold")).grid(row=row, column=column, padx=(0, 5), sticky='w')
             tk.Label(mission_frame, textvariable=self.mission_leg_fields[key],
@@ -352,8 +386,7 @@ class RobotGUI:
                      font=("Arial", 10, "bold") if key == 'next_target_node' else ("Arial", 9),
                      wraplength=180).grid(row=row, column=column + 1, padx=(0, 20), sticky='w')
 
-        # Compact ToF strip (one row of readings + one row of status) so the map gets the screen.
-        tof_frame = tk.LabelFrame(self.root, text="ToF (mm)",
+        tof_frame = tk.LabelFrame(page, text="ToF (mm)",
                                   fg='white', bg='#34495e', font=("Arial", 8, "bold"))
         tof_frame.pack(padx=20, pady=(2, 2), fill='x')
         self.tof_labels = {}
@@ -376,9 +409,13 @@ class RobotGUI:
         self.tof_age_label = tk.Label(
             tof_frame, text="Waiting for ToF telemetry. Stop request is separate from the motor lock.",
             fg='#bdc3c7', bg='#34495e', font=("Arial", 8))
-        self.tof_age_label.grid(row=1, column=5, columnspan=4, sticky='e', padx=12, pady=(0, 2))
 
-        marker_frame = tk.Frame(self.root, bg='#34495e')
+            # ToF readings
+        self.tof_age_label.config(anchor='w', justify='left')
+        self.tof_age_label.grid(row=2, column=0, columnspan=9, sticky='ew', padx=12, pady=(0, 2))
+        self.tof_age_label.bind('<Configure>', lambda e: e.widget.config(wraplength=max(e.width - 4, 200)))
+
+        marker_frame = tk.Frame(page, bg='#34495e')
         marker_frame.pack(padx=20, pady=2, fill='x')
         for column, (title, value) in enumerate((
                 ("Selected camera marker:", self.current_marker_text),
@@ -419,7 +456,7 @@ class RobotGUI:
         self.camera_marker_table.tag_configure('unusable', foreground='#f39c12')
         self.camera_marker_table.pack(side='left', fill='x', expand=True)
 
-        dfs_frame = tk.Frame(self.root, bg='#34495e')
+        dfs_frame = tk.Frame(page, bg='#34495e')
         dfs_frame.pack(padx=20, pady=2, fill='x')
         tk.Label(dfs_frame, text="Start node ID:", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.start_node_id, width=4).pack(side='left')
@@ -428,9 +465,11 @@ class RobotGUI:
         tk.Label(dfs_frame, text="Finish: all reachable exits explored", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Label(dfs_frame, text="Open exit ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
-        tk.Label(dfs_frame, textvariable=self.start_node_status, fg='yellow', bg='#34495e', wraplength=450).pack(side='left', padx=12)
-
-        select_frame = tk.Frame(self.root, bg='#34495e')
+        start_status = tk.Label(dfs_frame, textvariable=self.start_node_status, fg='yellow', bg='#34495e',
+                                anchor='w', justify='left')
+        start_status.pack(side='left', padx=12, fill='x', expand=True)
+        start_status.bind('<Configure>', lambda e: e.widget.config(wraplength=max(e.width - 4, 100)))
+        select_frame = tk.Frame(page, bg='#34495e')
         select_frame.pack(padx=20, pady=2, fill='x')
         tk.Label(select_frame, text='RoboPico selects targets and tracks reference range. Arrival uses the configured empirical range rule.',
                  fg='#bdc3c7', bg='#34495e').grid(row=0, column=0, padx=6, sticky='w')
@@ -441,7 +480,7 @@ class RobotGUI:
         tk.Label(select_frame, textvariable=self.dfs_planner_text, fg='#2ecc71', bg='#34495e',
                  wraplength=1200, justify='left').grid(row=3, column=0, columnspan=7, padx=6, sticky='w')
 
-        turn_frame = tk.Frame(self.root, bg='#34495e')
+        turn_frame = tk.Frame(page, bg='#34495e')
         turn_frame.pack(padx=20, pady=2, fill='x')
         tk.Label(turn_frame, text="Target heading (0–359°):", fg='white', bg='#34495e').pack(side='left', padx=6)
         turn_entry = tk.Entry(turn_frame, textvariable=self.turn_heading, width=6)
@@ -453,16 +492,17 @@ class RobotGUI:
                   bg='#e67e22', fg='white').pack(side='left', padx=4)
         tk.Button(turn_frame, text="Set current heading to 0°", command=self.request_heading_zero,
                   bg='#8e44ad', fg='white').pack(side='left', padx=8)
-        tk.Label(turn_frame, text="Absolute IMU heading; clockwise from the latest zero.",
-                 fg='#bdc3c7', bg='#34495e').pack(side='left', padx=8)
+        turn_hint = tk.Label(turn_frame, text="Absolute IMU heading; clockwise from the latest zero.",
+                             fg='#bdc3c7', bg='#34495e', anchor='w', justify='left')
+        turn_hint.pack(side='left', padx=8, fill='x', expand=True)
+        turn_hint.bind('<Configure>', lambda e: e.widget.config(wraplength=max(e.width - 4, 100)))
 
-        # Main area with 3 columns
-        main = tk.Frame(self.root, bg='#2c3e50')
+        # Main content area
+        main = tk.Frame(page, bg='#2c3e50')
         main.pack(fill='both', expand=True, padx=20, pady=(4, 8))
-        # Make left column slimmer to free space for map and logs
         main.grid_columnconfigure(0, weight=0, minsize=220)
-        main.grid_columnconfigure(1, weight=10, minsize=800)   # the map is the main focus
-        main.grid_columnconfigure(2, weight=1, minsize=300)
+        main.grid_columnconfigure(1, weight=10, minsize=400)
+        main.grid_columnconfigure(2, weight=1, minsize=260)
         main.grid_rowconfigure(0, weight=1)
 
         # LEFT COLUMN - Key mappings only (no movement buttons)
@@ -493,7 +533,7 @@ class RobotGUI:
         self.map_frame.pack(fill='both', expand=True)
 
         # Subsystem 4: tabs inside the Map frame. "Live view" keeps the original ToF placeholder.
-        self.map_tabs = ttk.Notebook(self.map_frame)
+        self.map_tabs = ttk.Notebook(self.map_frame, style='Dash.TNotebook', takefocus=False)
         self.map_tabs.pack(fill='both', expand=True)
         live_tab = tk.Frame(self.map_tabs, bg='#2c3e50')
         self.map_tabs.add(live_tab, text="RoboPico map")
@@ -517,6 +557,7 @@ class RobotGUI:
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=live_tab)
         self.canvas.draw()
+        self.canvas.get_tk_widget().configure(width=400, height=100)
         self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=10)
 
         # RIGHT COLUMN - Log
@@ -528,7 +569,7 @@ class RobotGUI:
         log_frame = tk.LabelFrame(right_col, text="Command & Status Log",
                                   fg='white', bg='#34495e')
         log_frame.grid(row=0, column=0, sticky='nsew')
-        self.log_text = tk.Text(log_frame, height=30, bg='#2c3e50', fg='#ecf0f1', 
+        self.log_text = tk.Text(log_frame, height=8, bg='#2c3e50', fg='#ecf0f1', 
                                font=("Consolas", 9), wrap='word', state='disabled')
         scrollbar = tk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
@@ -607,8 +648,9 @@ class RobotGUI:
         if type(threshold) is not int or not 1 <= threshold <= 1000:
             threshold = 150
         front = distances.get('front')
-        self.front_obstacle_snapshot = (type(front) is int and 0 < front < threshold and
-                                       not (faults is not None and faults & 2))
+        front_seen = type(front) is int and 0 < front and not (faults is not None and faults & 2)
+        limit = threshold + FRONT_CLEAR_MARGIN_MM if self.front_blocked else threshold
+        self.front_obstacle_snapshot = (front_seen and front < limit) or stop is True
         stop_text = "YES" if stop is True else ("NO" if stop is False else "--")
         blocked_text = f"0x{blocked:02X}" if blocked is not None else "--"
         urgent_text = f"0x{urgent:02X}" if urgent is not None else "--"
@@ -1083,8 +1125,8 @@ class RobotGUI:
             remaining = max(0, 3.0 - time_since_estop)
             if remaining > 0:
                 self.estop_status_label.config(
-                    text=f"🔒 LOCKED ({remaining:.1f}s)",
-                    fg='#e74c3c',
+                    text=f"LOCKED ({remaining:.1f}s)",
+                    fg='white',
                     bg='#c0392b'
                 )
                 # Schedule next update
@@ -1563,12 +1605,12 @@ class RobotGUI:
             elif payload == "STOPPED":
                 if self.stop_sent_at is not None:
                     ms = (time.perf_counter() - self.stop_sent_at) * 1000
-                    if ms < 2000:
+                    if ms < 2000 and SHOW_STOP_LATENCY:
                         self.stop_latencies.append(ms)
                         s_ = sorted(self.stop_latencies)
                         self.log(f"[{ts}] STOP confirmed in {ms:.0f} ms round trip "
                                  f"(n={len(s_)}, min {s_[0]:.0f}, median {s_[len(s_)//2]:.0f}, max {s_[-1]:.0f})")
-                if self.robot_status != "SAFETY_LOCKED":
+                if self.robot_status.get() != "SAFETY_LOCKED":
                     self.robot_status_label.config(fg='#f39c12')
                     self.log(f"[{ts}] Robot stopped")
             elif payload == "RUNNING":
@@ -1686,7 +1728,7 @@ class RobotGUI:
 
                 self.last_telemetry_rx = time.time()
 
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, AttributeError):
                 pass
 
     def on_mqtt_disconnect(self, client, userdata, rc):
