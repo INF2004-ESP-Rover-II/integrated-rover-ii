@@ -7,6 +7,7 @@
 #include "lwip/apps/mqtt.h"
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
+#include "mqtt_binary.h"
 
 // MQTT limits belong in lwipopts.h so the application and SDK use the same values.
 
@@ -111,8 +112,20 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
         case IN_TOPIC_COMMAND:
             last_link_rx_ms = t;
             if (command_callback != NULL) {
-                printf("[MQTT] Received command: %s\n", message_buffer);
-                command_callback(message_buffer);
+                char text[24];
+                const char *command = message_buffer;
+                mqtt_command_t binary;
+                if (mqtt_is_binary_command(buffer_pos)) {
+                    if (mqtt_decode_command((const uint8_t *)message_buffer, buffer_pos, &binary) &&
+                        mqtt_command_text(&binary, text, sizeof text)) {
+                        command = text;
+                    } else {
+                        printf("[MQTT] Ignored unknown binary command (%u bytes)\n", (unsigned)buffer_pos);
+                        break;
+                    }
+                }
+                printf("[MQTT] Received command: %s\n", command);
+                command_callback(command);
             }
             break;
         case IN_TOPIC_HEARTBEAT:

@@ -43,6 +43,7 @@ import threading
 import time
 
 import paho.mqtt.client as mqtt
+from mqtt_binary import decode_command
 
 import argparse
 import os
@@ -177,6 +178,12 @@ def enter_safe_stop(reason):
 
 def on_message(client, userdata, msg):
     payload = msg.payload.decode(errors="replace")
+    if msg.topic == TOPIC_COMMAND and 1 <= len(msg.payload) <= 2:
+        try:
+            payload = decode_command(msg.payload)   # binary v1 command -> same text as before
+        except ValueError:
+            log(f"bad binary command {msg.payload.hex()}")
+            return
     with lock:
         if msg.topic == TOPIC_HEARTBEAT:
             s["last_hb"] = time.time()

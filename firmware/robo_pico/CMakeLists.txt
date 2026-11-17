@@ -35,6 +35,7 @@ add_executable(mecanum_robot
     src/camera_telemetry.c
     src/camera_map.c
     src/rover_map.c
+    src/mqtt_binary.c
     ${CAMERA_RECEIVER_SOURCES}
 )
 

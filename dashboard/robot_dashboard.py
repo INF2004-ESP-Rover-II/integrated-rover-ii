@@ -32,6 +32,7 @@ from mission_display import parse_mission_report, parse_target_selection, parse_
 from rover_camera import RoverCameraCache, QUALITY_NAMES
 from onboard_map import OnboardMapCache
 from vision_feed import VisionFeed
+from mqtt_binary import encode_command, encode_heartbeat
 from matplotlib.ticker import MaxNLocator
 
 
@@ -64,8 +65,11 @@ TOF_UART_STALE_MS = 500
 
 FRONT_CLEAR_MARGIN_MM = 50
 
-# Set to True to log the latency of STOP commands (for test evidence).
+#!! Set to True to log the latency of STOP commands (for test evidence).
 SHOW_STOP_LATENCY = False
+
+#!! Set to True to use the binary command format instead of JSON
+BINARY_COMMANDS = False
 
 ARM_COMMANDS = {'CLAW_OPEN', 'CLAW_CLOSE', 'ARM_UP', 'ARM_DOWN'}
 KEYMAP = {
@@ -86,7 +90,6 @@ KEYMAP = {
             'i':'ARM_UP',
             'k':'ARM_DOWN',
         }
-
 
 class RobotGUI:
     def __init__(self, root):
@@ -1197,7 +1200,8 @@ class RobotGUI:
         if not self.connected or not self.mqtt_client:
             return
         self.link_heartbeat_seq = (self.link_heartbeat_seq + 1) % 256
-        self.mqtt_client.publish(TOPIC_HEARTBEAT, str(self.link_heartbeat_seq), qos=0)
+        beat = encode_heartbeat(self.link_heartbeat_seq) if BINARY_COMMANDS else str(self.link_heartbeat_seq)
+        self.mqtt_client.publish(TOPIC_HEARTBEAT, beat, qos=0)
         self.link_heartbeat_job = self.root.after(LINK_HEARTBEAT_MS, self.link_heartbeat_tick)
 
     # Removed reset_all_buttons (no on-screen movement buttons to manage)
@@ -1781,7 +1785,13 @@ class RobotGUI:
             if command == "STOP":
                 self.stop_sent_at = time.perf_counter()
 
-            result = self.mqtt_client.publish(TOPIC_COMMAND, payload, qos=0)
+            wire = payload
+            if BINARY_COMMANDS:
+                try:
+                    wire = encode_command(payload)
+                except ValueError:
+                    pass
+            result = self.mqtt_client.publish(TOPIC_COMMAND, wire, qos=0)
             
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
                 self.log(f"Publish failed (code {result.rc})")
