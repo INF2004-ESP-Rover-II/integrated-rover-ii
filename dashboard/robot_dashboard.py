@@ -432,7 +432,7 @@ class RobotGUI:
 
         select_frame = tk.Frame(self.root, bg='#34495e')
         select_frame.pack(padx=20, pady=2, fill='x')
-        tk.Label(select_frame, text='RoboPico selects targets and tracks reference range. Arrival uses the configured empirical range rule.',
+        tk.Label(select_frame, text='RoboPico selects targets. Arrival: reference about 600 mm away, or a confirmed front obstacle stop.',
                  fg='#bdc3c7', bg='#34495e').grid(row=0, column=0, padx=6, sticky='w')
         tk.Label(select_frame, textvariable=self.target_selection_status, fg='#f1c40f', bg='#34495e',
                  wraplength=1200, justify='left').grid(row=1, column=0, columnspan=7, padx=6, sticky='w')
@@ -934,7 +934,7 @@ class RobotGUI:
             self.render_onboard_map()
         bounds = snapshot.display_bounds
         columns, rows = (bounds[1]-bounds[0]+1, bounds[3]-bounds[2]+1) if bounds else (0, 0)
-        self.onboard_map_status.set('RoboPico map: %d nodes / %d capacity | %d columns x %d rows | current node: %s | Green: arrival confirmed | Blue: unvisited (%d camera estimates)' % (
+        self.onboard_map_status.set('RoboPico map: %d nodes / %d capacity | %d columns x %d rows | current node: %s | Green: arrival confirmed | Blue: unvisited (%d camera estimates) | Red edge: blocked' % (
             len(snapshot.display_nodes), snapshot.capacity, columns, rows,
             snapshot.current_node if snapshot.current_node is not None else 'unknown', len(snapshot.observed_nodes)))
         pending = self.pending_start_request
@@ -980,6 +980,22 @@ class RobotGUI:
                     linestyle='--' if node.marker_id in estimated_ids else '-', alpha=0.65))
                 self.ax.text(node.x, node.y + 0.12, str(node.marker_id), ha='center', va='center',
                              color='white', fontsize=12, fontweight='bold')
+            # Exits are already classified/oriented by RoboPico. Draw only its
+            # blocked edges; camera estimates and unknown readings add no walls.
+            edge_offsets = ((-.5, .5, .5, .5), (.5, -.5, .5, .5),
+                            (-.5, -.5, .5, -.5), (-.5, -.5, -.5, .5)) # N/E/S/W
+            walls = set()
+            for mapped_node in snapshot.nodes:
+                for direction, exit_state in enumerate(mapped_node.exits):
+                    if exit_state != 3: # MAP_EXIT_BLOCKED
+                        continue
+                    x1, y1, x2, y2 = edge_offsets[direction]
+                    walls.add(tuple(sorted(((mapped_node.x+x1, mapped_node.y+y1),
+                                            (mapped_node.x+x2, mapped_node.y+y2)))))
+            for start, end in sorted(walls):
+                self.ax.plot((start[0], end[0]), (start[1], end[1]), color='#ff6b6b',
+                             linewidth=2, solid_capstyle='butt', zorder=6, clip_on=False,
+                             gid='onboard-wall')
             self.ax.set_title('RoboPico: %d columns x %d rows | %d nodes | dashed: camera estimate' % (
                 max_x-min_x+1, max_y-min_y+1, len(snapshot.display_nodes)), color='white')
         node = next((node for node in snapshot.nodes if node.marker_id == snapshot.current_node), None)
@@ -1265,6 +1281,8 @@ class RobotGUI:
             message={'HOLDING':'Waiting for fresh camera observations; wheels stopped.',
                 'BACKING_UP':'RoboPico is briefly reversing to recover the locked reference.',
                 'REACQUIRING':'RoboPico has stopped and is reacquiring the locked reference.',
+                'SEARCHING_REFERENCE':'RoboPico is moving slowly to find a different marker as the reference.',
+                'OBSTACLE_VERIFYING':'RoboPico stopped at the front obstacle and is confirming target arrival.',
                 'BRAKING':'RoboPico is verifying target arrival.', 'VERIFYING':'RoboPico is verifying target arrival.',
                 'SCANNING':'RoboPico is checking ToF exits and planning the next DFS leg.',
                 'TURNING':'RoboPico is turning toward the next DFS direction.',

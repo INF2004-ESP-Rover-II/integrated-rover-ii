@@ -28,7 +28,7 @@ typedef struct {
     uint32_t sample_generation, sample_received_ms;
     uint16_t sample_age_ms;
     uint8_t last_seq, marker, confirmations, reference_marker, reference_candidate, reference_confirmations;
-    bool have_seq, available, reference_available;
+    bool have_seq, available, reference_available, allow_late_reference;
     uint16_t range_mm, reference_range_mm;
     int16_t bearing_cdeg, reference_bearing_cdeg;
 } target_selector_t;

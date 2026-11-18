@@ -233,6 +233,7 @@ static onboard_drive_inputs_t drive_inputs(uint32_t now)
     camera_observation_t ob;
     if (camera_uart_latest(&ob)) {
         in.camera_present = true;
+        in.camera_generation = ob.generation;
         in.camera_status = ob.frame.status;
         in.camera_packet_age_ms = now - ob.received_ms;
         in.camera_image_age_ms = in.camera_packet_age_ms + ob.frame.age_ms;
@@ -478,7 +479,8 @@ static void service_safety_stop(void)
         autonomous_mode = false;
         autonomous_state = AUTO_STATE_IDLE;
         forward_boost_active = false;
-        if (!onboard_dfs.active || onboard_drive.active || mission.test_mode)
+        bool planned_arrival=onboard_drive_note_front_stop(&onboard_drive,&mission);
+        if (!planned_arrival && (!onboard_dfs.active || onboard_drive.active || mission.test_mode))
             mission_pause(&mission, MISSION_REASON_FRONT_STOP, to_ms_since_boot(get_absolute_time()));
         mqtt_publish_status("FRONT_STOPPED");
     }

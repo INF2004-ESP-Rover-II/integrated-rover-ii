@@ -66,6 +66,51 @@ for name in names:
 
 
 class OnboardMapTests(unittest.TestCase):
+    def test_blocked_cardinal_exits_draw_thin_cell_edges_at_signed_coordinates(self):
+        app = MapGUI()
+        mapped = node(7, -1, 2, True)
+        mapped['exits'] = [3, 3, 3, 3]
+        app.receive_onboard_map(snapshot([mapped]))
+        walls = [line for line in app.ax.lines if line.get_gid() == 'onboard-wall']
+        segments = {tuple(zip(line.get_xdata(), line.get_ydata())) for line in walls}
+        self.assertEqual(segments, {((-1.5, 2.5), (-.5, 2.5)), ((-.5, 1.5), (-.5, 2.5)),
+                                    ((-1.5, 1.5), (-.5, 1.5)), ((-1.5, 1.5), (-1.5, 2.5))})
+        self.assertTrue(all(line.get_linewidth() == 2 and line.get_color() == '#ff6b6b' for line in walls))
+        self.assertEqual(app.dfs_current_node_text.get(), '7')
+        self.assertEqual(app.sent, [])
+
+    def test_shared_wall_is_drawn_once_and_changes_only_on_returned_map(self):
+        app = MapGUI()
+        first, second = node(7, 0, 0, True), node(9, 1, 0, True)
+        first['exits'][1] = second['exits'][3] = 3
+        data = snapshot([first, second])
+        app.receive_onboard_map(copy.deepcopy(data))
+        walls = lambda: [line for line in app.ax.lines if line.get_gid() == 'onboard-wall']
+        self.assertEqual(len(walls()), 1)
+        self.assertEqual(tuple(zip(walls()[0].get_xdata(), walls()[0].get_ydata())), ((.5, -.5), (.5, .5)))
+        before = app.onboard_map.snapshot
+        app.update_marker_map({'markers': [{'id': 9}]})
+        app.handle_mqtt_message('robot/camera', json.dumps(observation()))
+        self.assertIs(app.onboard_map.snapshot, before)
+        self.assertEqual(len(walls()), 1)
+        first['exits'][1] = second['exits'][3] = 1
+        app.receive_onboard_map(snapshot([first, second], revision=2))
+        self.assertEqual(len(walls()), 0)
+        self.assertEqual(app.dfs_current_node_text.get(), '7')
+
+    def test_unknown_open_traversed_and_camera_estimates_do_not_invent_walls(self):
+        app = MapGUI()
+        mapped = node(7, 0, 0, True)
+        mapped['exits'] = [3, 1, 0, 2]
+        data = snapshot([mapped])
+        data['observed_nodes'] = [{'marker_id': 2, 'x': 0, 'y': 1}]
+        app.receive_onboard_map(data)
+        walls = [line for line in app.ax.lines if line.get_gid() == 'onboard-wall']
+        self.assertEqual(len(walls), 1)
+        self.assertEqual(tuple(zip(walls[0].get_xdata(), walls[0].get_ydata())), ((-.5, .5), (.5, .5)))
+        self.assertEqual(len(app.ax.patches), 2)
+        self.assertEqual(app.onboard_map.snapshot.observed_nodes[0].visited, False)
+
     def test_onboard_sightings_are_blue_and_only_arrival_snapshot_turns_node_green(self):
         app = MapGUI()
         data = snapshot([node(1, 0, 0, True)], current=1)

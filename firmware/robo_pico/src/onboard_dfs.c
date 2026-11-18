@@ -56,7 +56,10 @@ dfs_choice_t onboard_dfs_choose(const onboard_dfs_t *d, const rover_map_t *map,
     bool unknown=false;
     for (unsigned i=0; i<4; ++i) {
         unsigned dir=order[i];
-        if (node->exits[dir] == MAP_EXIT_UNKNOWN) unknown=true;
+        if (node->exits[dir] != MAP_EXIT_UNKNOWN) continue;
+        unknown=true;
+        // Side ToF samples already resolve side walls/openings. Facing a
+        // direction is not required merely to re-confirm that known result.
         if (!(d->scanned[d->depth-1u] & (1u<<dir)))
             return (dfs_choice_t){.kind=DFS_CHOOSE_SCAN,.direction=(map_direction_t)dir};
     }
@@ -209,7 +212,7 @@ void onboard_dfs_tick(onboard_dfs_t *d, mission_t *m, rover_map_t *map, onboard_
     if (d->stage==DFS_TURNING) {
         motor_auto_status_t status=motor_auto_status();
         if ((uint32_t)(now-d->stage_started_ms)>=DFS_TURN_TIMEOUT_MS) {
-            onboard_dfs_stop(d,m,"DFS_TURN_FAILED",now); return;
+            onboard_dfs_stop(d,m,"DFS_TURN_TIMEOUT",now); return;
         }
         if (status==MOTOR_AUTO_HEADING_REACHED) {
             if (!in->drive.stopped) return; // Motor ISR may finish after this input snapshot was taken.
@@ -217,7 +220,8 @@ void onboard_dfs_tick(onboard_dfs_t *d, mission_t *m, rover_map_t *map, onboard_
             if (d->after_turn==DFS_SAMPLING) sampling(d,m,now);
             else { mission_clear_leg(m,now); d->stage=DFS_WAIT_TARGET; d->stage_started_ms=now; d->ready_ms=now+DFS_SETTLE_MS; }
         } else if (status!=MOTOR_AUTO_RUNNING) {
-            onboard_dfs_stop(d,m,"DFS_TURN_FAILED",now);
+            onboard_dfs_stop(d,m,status==MOTOR_AUTO_STOPPED?"DFS_TURN_STOPPED":
+                status==MOTOR_AUTO_REJECTED?"DFS_TURN_REJECTED":"DFS_TURN_FAILED",now);
         } else if ((uint32_t)(now-d->last_renew_ms)>=ONBOARD_DRIVE_REFRESH_MS) {
             if (!motor_auto_renew_lease()) onboard_dfs_stop(d,m,"DFS_TURN_LEASE_EXPIRED",now);
             d->last_renew_ms=now;

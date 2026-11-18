@@ -96,21 +96,29 @@ static const camera_marker_t *find_marker(const camera_frame_t *frame, uint8_t i
 }
 
 static const camera_marker_t *nearest_reference(const camera_frame_t *frame,
-    const rover_map_t *map, uint8_t departure, uint8_t target_id, const camera_marker_t *target)
+    const rover_map_t *map, const travel_leg_t *leg, uint8_t target_id, const camera_marker_t *target, bool late)
 {
+    uint8_t departure=leg->departure_node;
     // Establish optical ordering from the SAME fresh image, or use already
     // known map coordinates. Never compare a new image to an old lens range.
-    if (!target && !rover_map_find_id(map, target_id)) return NULL;
+    if (!target && !rover_map_find_id(map, target_id) && !late) return NULL;
     const camera_marker_t *best = NULL;
     bool tied = false;
     for (uint8_t i = 0; i < frame->count; ++i) {
         const camera_marker_t *marker = &frame->markers[i];
         int delta = target ? (int)marker->bearing_cdeg - target->bearing_cdeg : 0;
         if (!marker_usable(marker) || marker->id == target_id || marker->id == departure ||
-            (!target && !rover_map_find_id(map, marker->id)) ||
+            (!target && !late && !rover_map_find_id(map, marker->id)) ||
             (target && (uint32_t)marker->range_mm < (uint32_t)target->range_mm + TARGET_REFERENCE_MIN_GAP_MM) ||
             delta < -TARGET_REFERENCE_MAX_DELTA_CDEG || delta > TARGET_REFERENCE_MAX_DELTA_CDEG ||
             !reference_compatible(map, departure, target_id, marker->id)) continue;
+        const map_node_t *known=rover_map_find_id(map,marker->id);
+        if (late && !target && known && leg->target_cell_valid && leg->direction!=LEG_DIRECTION_UNKNOWN) {
+            static const int8_t dx[]={0,1,0,-1},dy[]={1,0,-1,0};
+            int32_t rx=(int32_t)known->x-leg->target_x, ry=(int32_t)known->y-leg->target_y;
+            if (rx*dy[leg->direction]!=ry*dx[leg->direction] ||
+                rx*dx[leg->direction]+ry*dy[leg->direction]<=0) continue;
+        }
         if (!best || marker->range_mm < best->range_mm) { best = marker; tied = false; }
         else if (marker->range_mm == best->range_mm && marker->id != best->id) tied = true;
     }
@@ -158,7 +166,8 @@ void target_selector_tick(target_selector_t *s, mission_t *m, const rover_map_t 
     }
     bool approaching = !m->test_mode && m->state == MISSION_EXPLORING && m->leg.configured &&
         (m->leg.phase == LEG_APPROACHING || m->leg.phase == LEG_HOLDING || m->leg.phase == LEG_BRAKING ||
-         m->leg.phase == LEG_VERIFYING || m->leg.phase == LEG_BACKING_UP || m->leg.phase == LEG_REACQUIRING) &&
+         m->leg.phase == LEG_VERIFYING || m->leg.phase == LEG_BACKING_UP || m->leg.phase == LEG_REACQUIRING ||
+         m->leg.phase == LEG_SEARCHING_REFERENCE || m->leg.phase == LEG_OBSTACLE_VERIFYING) &&
         m->leg.leg_id == s->leg_id && s->state == TARGET_LOCKED;
     if (!approaching && !context_ok(m, map, safe)) {
         if (s->state == TARGET_WAITING || s->state == TARGET_LOCKED) {
@@ -187,7 +196,14 @@ void target_selector_tick(target_selector_t *s, mission_t *m, const rover_map_t 
     if (m->leg.leg_id != s->leg_id ||
         (m->leg.phase != LEG_SELECTING && m->leg.phase != LEG_CONFIGURED && !approaching)) return;
     if (!ob || !image_fresh(ob, now)) {
-        reset_confirmations(s);
+        // A cached packet aging out between successive frames clears visibility,
+        // not evidence from distinct good images. Explicit bad/missing detections,
+        // sequence changes and a 1500 ms source gap still reset confirmations.
+        s->available=s->reference_available=false;
+        if (!ob || ob->frame.status!=VISION_STATUS_OK ||
+            now-s->last_image_received_ms>TARGET_CAMERA_MAX_AGE_MS ||
+            (uint32_t)(now-ob->received_ms)+ob->frame.age_ms>TARGET_CAMERA_MAX_AGE_MS)
+            reset_confirmations(s);
         s->detail = "CAMERA_UNAVAILABLE_OR_STALE";
         return;
     }
@@ -247,7 +263,7 @@ void target_selector_tick(target_selector_t *s, mission_t *m, const rover_map_t 
         s->reference_available = ref != NULL;
         if (ref) { s->reference_range_mm = ref->range_mm; s->reference_bearing_cdeg = ref->bearing_cdeg; }
     } else {
-        const camera_marker_t *ref = nearest_reference(&ob->frame, map, m->leg.departure_node, s->marker, target);
+        const camera_marker_t *ref = nearest_reference(&ob->frame, map, &m->leg, s->marker, target, s->allow_late_reference);
         s->reference_available = false;
         if (!ref) { s->reference_candidate = s->reference_confirmations = 0; }
         else {

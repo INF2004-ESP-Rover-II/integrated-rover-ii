@@ -47,6 +47,10 @@ static void step(uint32_t dt)
 {
     now+=dt;inputs.drive.sensor_received_ms=now;
     camera.received_ms=now;camera.generation++;camera.frame.seq++;
+    inputs.drive.camera_generation=camera.generation;
+    inputs.drive.camera_status=camera.frame.status;
+    inputs.drive.camera_fresh=camera.frame.status==VISION_STATUS_OK;
+    inputs.drive.camera_packet_age_ms=0; inputs.drive.camera_image_age_ms=camera.frame.age_ms;
     if (dfs.stage==DFS_TURNING && motor_status==MOTOR_AUTO_RUNNING) {
         inputs.drive.heading_deg=(float)turn_target;inputs.drive.stopped=true;motor_status=MOTOR_AUTO_HEADING_REACHED;
     }
@@ -130,7 +134,8 @@ static void test_controller_reads_tof_and_completes_only_closed_resolved_map(voi
     camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;start();
     for(unsigned i=0;i<100 && dfs.active;++i) step(100);
     assert(!dfs.active && dfs.stage==DFS_FINISHED && mission.state==MISSION_COMPLETE);
-    assert(mission.reason==MISSION_REASON_DFS_COMPLETE && drive_starts==0 && turns>=3);
+    assert(mission.reason==MISSION_REASON_DFS_COMPLETE && drive_starts==0 && turns==1);
+    assert(turn_target==180); // Only the unseen rear needs a scan; side walls were already measured.
     assert(map.current_node==1 && map.count==1);
     for(unsigned dir=0;dir<4;++dir) assert(map.nodes[0].exits[dir]==MAP_EXIT_BLOCKED);
     setup();inputs.tof_mm[0]=inputs.tof_mm[1]=inputs.tof_mm[2]=0;
@@ -149,10 +154,10 @@ static void test_real_leg_arrival_returns_to_scanning_not_mission_complete(void)
     assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
     assert(map.current_node==0 && dfs.depth==1);
     camera.frame.count=1;camera.frame.markers[0]=(camera_marker_t){.id=9,.range_mm=800,.bearing_cdeg=150};step(100);
-    camera.frame.markers[0].range_mm=600;step(100);
-    camera.frame.markers[0].range_mm=450;step(100);
+    camera.frame.markers[0].range_mm=700;step(100);
+    camera.frame.markers[0].range_mm=650;step(100);
     assert(mission.leg.phase==LEG_BRAKING && drive.active);
-    camera.frame.markers[0].range_mm=400;step(400);step(100);step(100);
+    camera.frame.markers[0].range_mm=600;step(400);step(100);step(100);
     assert(!drive.active && map.current_node==2 && mission.leg.phase==LEG_COMPLETE);
     assert(mission.state==MISSION_EXPLORING && mission.dfs_active && dfs.active);
     step(100);
@@ -195,6 +200,65 @@ static void test_turn_completion_waits_for_idle_snapshot(void)
     assert(dfs.active && dfs.stage==DFS_WAIT_TARGET && selection.route.direction==LEG_EAST);
 }
 
+static void test_terminal_obstacle_arrival_returns_to_dfs_scanning(void)
+{
+    setup();camera.frame.count=1;start();
+    for(unsigned i=0;i<50 && !drive.active;++i) step(100);
+    assert(drive.active && !mission.leg.arrival_reference_node && map.current_node==0);
+    camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;step(100);
+    assert(mission.leg.phase==LEG_SEARCHING_REFERENCE && drive.search_active);
+    inputs.drive.front_mm=inputs.tof_mm[1]=100;inputs.drive.front_urgent=true;
+    motor_emergency_stop();assert(onboard_drive_note_front_stop(&drive,&mission));
+    step(100);assert(mission.leg.phase==LEG_OBSTACLE_VERIFYING && map.current_node==0);
+    step(300);step(100);
+    assert(!drive.active && map.current_node==2 && mission.state==MISSION_EXPLORING && mission.dfs_active);
+    assert(rover_map_find_id(&map,2)->visited && rover_map_find_id(&map,2)->exits[MAP_NORTH]==MAP_EXIT_BLOCKED);
+    step(100);
+    assert(dfs.active && dfs.depth==2 && dfs.stage==DFS_SAMPLING && mission.leg.phase==LEG_SCANNING);
+    assert(mission.state==MISSION_EXPLORING && map.current_node==2);
+    char json[ROVER_MAP_JSON_CAPACITY]; assert(rover_map_format(&map,"",json,sizeof(json)));
+    printf("TERMINAL_MAP_JSON:%s\n",json);
+}
+
+static void test_blocked_sides_do_not_get_redundant_scan_turns(void)
+{
+    setup();start();
+    assert(rover_map_set_exit(&map,1,MAP_EAST,MAP_EXIT_BLOCKED)==MAP_OK);
+    assert(rover_map_set_exit(&map,1,MAP_WEST,MAP_EXIT_BLOCKED)==MAP_OK);
+    dfs.scanned[0]=(uint8_t)(1u<<MAP_NORTH);
+    dfs_choice_t choice=onboard_dfs_choose(&dfs,&map,MAP_NORTH,false);
+    assert(choice.kind==DFS_CHOOSE_SCAN && choice.direction==MAP_SOUTH); // Unknown rear, never the 200 mm side walls.
+    choice=onboard_dfs_choose(&dfs,&map,MAP_NORTH,true);
+    assert(choice.kind==DFS_CHOOSE_EXPLORE && choice.direction==MAP_NORTH); // Camera-supported forward route has priority.
+    for(unsigned missing=0;missing<2;++missing) {
+        setup();inputs.tof_mm[0]=inputs.tof_mm[2]=200;inputs.tof_mm[1]=missing?0:1023;
+        inputs.drive.front_mm=inputs.tof_mm[1];start();
+        for(unsigned i=0;i<50 && !drive.active;++i) step(100);
+        assert(drive.active && turns==0 && mission.leg.direction==LEG_NORTH && mission.leg.next_target_node==2);
+        assert(rover_map_find_id(&map,1)->exits[MAP_EAST]==MAP_EXIT_BLOCKED);
+        assert(rover_map_find_id(&map,1)->exits[MAP_WEST]==MAP_EXIT_BLOCKED);
+    }
+    setup();inputs.tof_mm[0]=inputs.tof_mm[2]=200;inputs.tof_mm[1]=0;
+    inputs.drive.front_mm=0;camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;start();
+    for(unsigned i=0;i<30 && dfs.stage!=DFS_TURNING;++i) step(100);
+    assert(dfs.stage==DFS_TURNING && turn_target==180 && turns==1 && drive_starts==0);
+}
+
+static void test_turn_stop_and_heading_deadline_have_distinct_reasons(void)
+{
+    for(unsigned timeout=0;timeout<2;++timeout) {
+        setup();inputs.tof_mm[1]=50;inputs.tof_mm[2]=1023;
+        camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;start();
+        for(unsigned i=0;i<30 && dfs.stage!=DFS_TURNING;++i) step(100);
+        assert(dfs.stage==DFS_TURNING);
+        if(timeout) dfs.stage_started_ms=now-DFS_TURN_TIMEOUT_MS;
+        else motor_status=MOTOR_AUTO_STOPPED;
+        onboard_dfs_tick(&dfs,&mission,&map,&drive,&selection,&inputs,&camera,now);
+        assert(!dfs.active && mission.state==MISSION_PAUSED && map.current_node==1);
+        assert(!strcmp(dfs.detail,timeout?"DFS_TURN_TIMEOUT":"DFS_TURN_STOPPED"));
+    }
+}
+
 int main(void)
 {
     test_depth_first_branch_dead_end_backtrack_and_cycle();
@@ -203,6 +267,9 @@ int main(void)
     test_real_leg_arrival_returns_to_scanning_not_mission_complete();
     test_cancel_fault_and_no_target_cannot_fake_completion();
     test_turn_completion_waits_for_idle_snapshot();
+    test_terminal_obstacle_arrival_returns_to_dfs_scanning();
+    test_blocked_sides_do_not_get_redundant_scan_turns();
+    test_turn_stop_and_heading_deadline_have_distinct_reasons();
     puts("Onboard DFS branch/cycle/backtracking, ToF scans, arrival continuation and exhaustion tests passed");
     return 0;
 }

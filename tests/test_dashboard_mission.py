@@ -317,6 +317,42 @@ class MissionDisplayTests(unittest.TestCase):
         self.assertIn('250 mm', app.dfs_feedback.get())
         self.assertIsNone(app.onboard_map.snapshot)
 
+    def test_slow_search_and_obstacle_verification_display_do_not_commit_a_map(self):
+        app = FakeGUI()
+        leg = {'leg_id': 5, 'configured': True, 'departure_node': 1, 'next_target_node': 2,
+               'arrival_reference_node': None, 'target_cell': {'x': 0, 'y': 1}, 'direction': 'NORTH',
+               'phase': 'SEARCHING_REFERENCE'}
+        app.update_mission_display({**report('EXPLORING', 'START_DFS', motion=True), 'leg': leg})
+        self.assertTrue(app.auto_mode.get())
+        self.assertIn('moving slowly', app.dfs_feedback.get())
+        tracking = {'leg_id': 5, 'active': True, 'phase': 'SEARCHING_REFERENCE', 'source': 'NONE',
+            'remaining_mm': None, 'reference_progress_mm': 0, 'reference_model_valid': False,
+            'verification_frames': 0, 'result': 'SEARCHING_FOR_REFERENCE', 'last_target_range_mm': 496,
+            'search_driving_ms': 3500, 'reference_arrival_mm': 600, 'verification_goal': 3}
+        app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps(tracking))
+        self.assertIn('496 mm', app.dfs_tracking_text.get())
+        self.assertIn('3.5/10 s', app.dfs_tracking_text.get())
+        app.update_mission_display({**report('EXPLORING', 'START_DFS'), 'leg': {**leg, 'phase': 'OBSTACLE_VERIFYING'}})
+        app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps({**tracking,
+            'phase': 'OBSTACLE_VERIFYING', 'source': 'OBSTACLE', 'remaining_mm': 0,
+            'verification_frames': 1, 'verification_goal': 2, 'result': 'VERIFYING_OBSTACLE_ARRIVAL'}))
+        self.assertEqual(app.mission_motion.get(), 'Disabled')
+        self.assertIn('front obstacle', app.dfs_feedback.get())
+        self.assertIn('1/2', app.dfs_tracking_text.get())
+        self.assertTrue(app.auto_mode.get())
+        self.assertEqual(app.mission_leg_fields['next_target_node'].get(), '2')
+        self.assertIsNone(app.onboard_map.snapshot)
+
+    def test_reference_600_mm_goal_and_invalid_obstacle_counts(self):
+        tracking = {'leg_id': 5, 'active': True, 'phase': 'APPROACHING', 'source': 'REFERENCE',
+            'remaining_mm': 200, 'reference_progress_mm': 0, 'reference_model_valid': True,
+            'verification_frames': 0, 'result': 'LATE_REFERENCE_LOCKED', 'reference_arrival_mm': 600}
+        self.assertIn('reference arrival range: 600 mm', parse_dfs_tracking(tracking).display_text)
+        for bad in ({**tracking, 'verification_frames': 3, 'verification_goal': 2},
+                    {**tracking, 'reference_arrival_mm': 0}, {**tracking, 'search_driving_ms': -1}):
+            with self.assertRaises(ValueError):
+                parse_dfs_tracking(bad)
+
     def test_start_dfs_is_high_level_send_only_and_board_reports_missing_start_node(self):
         app = FakeGUI()
         sent = []

@@ -159,7 +159,9 @@ static void test_filtering_and_sequence(void)
     image.received_ms = now; image.generation++; image.frame.seq++; tick(true);
     assert(!selector.confirmations); // image predates automatic arm
     frame(); assert(selector.confirmations == 1);
-    now += TARGET_UART_MAX_AGE_MS + 1; tick(true); assert(!selector.confirmations);
+    now += TARGET_UART_MAX_AGE_MS + 1; tick(true);
+    assert(selector.confirmations==1 && !selector.available); // Cached expiry is not contradictory evidence.
+    now += TARGET_CAMERA_MAX_AGE_MS; tick(true); assert(!selector.confirmations);
     setup(); arm(); frame();
     // A restarted sender repeating the same seq with new packets must go stale.
     for (int i = 0; i < 10; ++i) {
@@ -229,6 +231,41 @@ static void test_dfs_route_filters_wrong_marker_and_side_cell(void)
     assert(selector.route.enabled && selector.route.expected_id==2);
 }
 
+static void test_reference_confirmation_survives_normal_cached_frame_gaps(void)
+{
+    setup(); arm(); frame();
+    for(unsigned i=0;i<2;++i) {
+        now+=301; tick(true); assert(!selector.available && !selector.reference_available);
+        assert(selector.reference_confirmations==i+1u);
+        frame();
+    }
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
+    assert(selector.reference_confirmations==3 && selector.reference_available);
+}
+
+static void test_late_reference_is_distinct_aligned_and_beyond_planned_target(void)
+{
+    setup(); image.frame.count=1; arm(); confirm();
+    mission.leg.phase=LEG_SEARCHING_REFERENCE; mission.state=MISSION_EXPLORING;
+    mission.leg.target_cell_valid=true;mission.leg.target_x=0;mission.leg.target_y=1;mission.leg.direction=LEG_NORTH;
+    selector.allow_late_reference=true;rover_map_depart(&map);
+    confirm(); assert(!mission.leg.arrival_reference_node); // Target 2 cannot become its own reference.
+    image.frame.markers[0]=marker(9,800,1001);confirm();assert(!mission.leg.arrival_reference_node);
+    image.frame.markers[0]=marker(9,800,100);image.frame.markers[0].quality=1;confirm();
+    assert(!mission.leg.arrival_reference_node);
+    image.frame.markers[0].quality=0;confirm();
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9 && selector.reference_available);
+    assert(!selector.available && !map.current_node && map.count==1);
+    image.frame.markers[0]=marker(3,700,0);confirm();assert(mission.leg.arrival_reference_node==9); // Identity stays locked.
+
+    setup();assert(rover_map_add(&map,9,1,1,false)==MAP_OK);
+    image.frame.count=1;arm();confirm();
+    mission.leg.phase=LEG_SEARCHING_REFERENCE;mission.state=MISSION_EXPLORING;
+    mission.leg.target_cell_valid=true;mission.leg.target_x=0;mission.leg.target_y=1;mission.leg.direction=LEG_NORTH;
+    selector.allow_late_reference=true;rover_map_depart(&map);
+    image.frame.markers[0]=marker(9,800,0);confirm();assert(!mission.leg.arrival_reference_node); // Known side cell rejected.
+}
+
 int main(void)
 {
     test_automatic_two_and_nine();
@@ -236,6 +273,8 @@ int main(void)
     test_filtering_and_sequence();
     test_map_geometry_and_lifecycle();
     test_dfs_route_filters_wrong_marker_and_side_cell();
+    test_reference_confirmation_survives_normal_cached_frame_gaps();
+    test_late_reference_is_distinct_aligned_and_beyond_planned_target();
     puts("Automatic target/reference, late reference, freshness, locks and no-map-write tests passed");
     return 0;
 }
