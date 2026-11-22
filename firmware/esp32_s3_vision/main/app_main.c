@@ -541,9 +541,9 @@ static void vision_task (void * arg)
     uint32_t last_seq = 0, window_start_seq = 0, errors = 0;
     int      n        = 0;
     int64_t  sum_copy = 0, sum_decode = 0, sum_detect = 0, max_decode = 0,
-             min_decode = INT64_MAX;
-    int64_t  max_detect = 0, min_detect = INT64_MAX;
-    size_t   sum_bytes     = 0;
+            min_decode = INT64_MAX;
+    int64_t max_detect = 0, min_detect = INT64_MAX;
+    size_t  sum_bytes      = 0;
     int frames_with_marker = 0, last_id = -1, last_quality = ARUCO_POSE_FAILED;
     aruco_pose_t   last_pose = {0};
     int64_t        sum_pose  = 0;
@@ -602,7 +602,7 @@ static void vision_task (void * arg)
 
         jpeg_dec_handle_t dec = NULL;
         jpeg_dec_io_t     io  = {
-            .inbuf = in, .inbuf_len = (int)in_len, .outbuf = out};
+                 .inbuf = in, .inbuf_len = (int)in_len, .outbuf = out};
         jpeg_dec_header_info_t info = {0};
         jpeg_error_t           err  = jpeg_dec_open(&config, &dec);
         if (JPEG_ERR_OK == err)
@@ -635,9 +635,9 @@ static void vision_task (void * arg)
             continue;
         }
 
-        int     found = aruco_detect(out + 1, FRAME_WIDTH, FRAME_HEIGHT,
-                                     FRAME_WIDTH * 2, 2, work, markers, 4);
-        int64_t t3    = esp_timer_get_time();
+        int             found = aruco_detect(out + 1, FRAME_WIDTH, FRAME_HEIGHT,
+                                             FRAME_WIDTH * 2, 2, work, markers, 4);
+        int64_t         t3    = esp_timer_get_time();
         vision_marker_t results[VISION_MAX_MARKERS];
         int             n_results = 0;
         for (int i = 0; i < found; i++)

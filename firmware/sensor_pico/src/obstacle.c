@@ -9,26 +9,29 @@
 #error "Obstacle thresholds exceed the supported ToF range"
 #endif
 
-void obstacle_init(obstacle_state_t *state, uint32_t now_ms)
+void obstacle_init (obstacle_state_t * state, uint32_t now_ms)
 {
     memset(state, 0, sizeof(*state));
-    for (int i = 0; i < TOF_SENSOR_COUNT; ++i) {
+    for (int i = 0; i < TOF_SENSOR_COUNT; ++i)
+    {
         // Reuse the per-sensor clocks for startup grace; no extra RAM is needed.
         state->timestamp_ms[i] = now_ms;
     }
 }
 
-void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
-                     uint8_t online_mask, uint32_t now_ms)
+void obstacle_update (obstacle_state_t * state, const tof_readings_t * readings,
+                      uint8_t online_mask, uint32_t now_ms)
 {
     for (int i = 0; i < TOF_SENSOR_COUNT; ++i)
     {
-        const uint8_t bit = (uint8_t)(1u << i);
+        const uint8_t      bit    = (uint8_t)(1u << i);
         const tof_sensor_t sensor = (tof_sensor_t)i;
-        const uint16_t incoming = tof_distance_get(readings->distance_bits, sensor);
+        const uint16_t     incoming =
+            tof_distance_get(readings->distance_bits, sensor);
         const bool online = (online_mask & bit) != 0;
-        const bool accepted = (incoming > 0 && incoming <= TOF_MAX_DISTANCE_MM) ||
-                              incoming == TOF_NO_TARGET_MM;
+        const bool accepted =
+            (incoming > 0 && incoming <= TOF_MAX_DISTANCE_MM) ||
+            incoming == TOF_NO_TARGET_MM;
 
         // A completed result proves the device is responding, even when its
         // range status rejects the distance (e.g. weak return with no target).
@@ -53,7 +56,8 @@ void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
             }
         }
 
-        if (!online || (uint32_t)(now_ms - state->timestamp_ms[i]) > OBSTACLE_STALE_MS)
+        if (!online ||
+            (uint32_t)(now_ms - state->timestamp_ms[i]) > OBSTACLE_STALE_MS)
         {
             state->valid_mask &= (uint8_t)~bit;
             state->fault_mask |= bit;
@@ -72,7 +76,8 @@ void obstacle_update(obstacle_state_t *state, const tof_readings_t *readings,
         }
 
         // const uint16_t distance = state->distance_mm[i];
-        const uint16_t distance = tof_distance_get(state->distance_bits, sensor);
+        const uint16_t distance =
+            tof_distance_get(state->distance_bits, sensor);
 
         // A successful beyond-1-m result is healthy but has no numerical distance.
         // Clear old proximity flags rather than retaining an earlier close hit.

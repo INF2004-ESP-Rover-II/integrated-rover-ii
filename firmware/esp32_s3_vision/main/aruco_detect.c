@@ -69,7 +69,7 @@ static void threshold (const uint8_t * img, int w, int h, int stride,
         }
         const int y0 = y - r < 0 ? 0 : y - r, y1 = y + r >= h ? h - 1 : y + r,
                   rows = y1 - y0 + 1;
-        uint32_t  sum  = 0;
+        uint32_t sum   = 0;
         for (int x = 0; x <= r && x < w; x++)
         {
             sum += col[x];
@@ -301,10 +301,10 @@ static int read_bits (const uint8_t * img, int w, int h, int stride,
     };
     static const float OFFSET[PER_CELL] = {0.3f, 0.5f, 0.7f};
     const float        dx1 = q[1][0] - q[2][0], dx2 = q[3][0] - q[2][0],
-                       sx  = q[0][0] - q[1][0] + q[2][0] - q[3][0];
-    const float        dy1 = q[1][1] - q[2][1], dy2 = q[3][1] - q[2][1],
-                       sy  = q[0][1] - q[1][1] + q[2][1] - q[3][1];
-    const float        den = dx1 * dy2 - dx2 * dy1;
+                sx  = q[0][0] - q[1][0] + q[2][0] - q[3][0];
+    const float dy1 = q[1][1] - q[2][1], dy2 = q[3][1] - q[2][1],
+                sy  = q[0][1] - q[1][1] + q[2][1] - q[3][1];
+    const float den = dx1 * dy2 - dx2 * dy1;
     if (0.0f == den)
     {
         return -1;

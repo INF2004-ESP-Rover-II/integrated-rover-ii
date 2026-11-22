@@ -13,29 +13,59 @@
 #include "safety_interlock.h"
 #include "../../common/obstacle_threshold.h"
 
-static uint32_t clock_ms = 100;
+static uint32_t     clock_ms = 100;
 static unsigned int applied;
-static mc_out_t output;
+static mc_out_t     output;
 static bool (*tick)(struct repeating_timer *);
 
-uint32_t get_absolute_time(void) { return clock_ms; }
-uint32_t to_ms_since_boot(uint32_t value) { return value; }
-uint32_t save_and_disable_interrupts(void) { return 0; }
-void restore_interrupts(uint32_t state) { (void)state; }
-bool add_repeating_timer_ms(int32_t delay,
-                            bool (*callback)(struct repeating_timer *),
-                            void *user_data, struct repeating_timer *timer) {
-    (void)delay; (void)user_data; (void)timer;
+uint32_t get_absolute_time (void)
+{
+    return clock_ms;
+}
+uint32_t to_ms_since_boot (uint32_t value)
+{
+    return value;
+}
+uint32_t save_and_disable_interrupts (void)
+{
+    return 0;
+}
+void restore_interrupts (uint32_t state)
+{
+    (void)state;
+}
+bool add_repeating_timer_ms (int32_t delay,
+                             bool (*callback)(struct repeating_timer *),
+                             void * user_data, struct repeating_timer * timer)
+{
+    (void)delay;
+    (void)user_data;
+    (void)timer;
     tick = callback;
     return true;
 }
-void motor_hw_safe_boot(void) {}
-void motor_hw_init(void) {}
-void motor_hw_apply(const mc_out_t *out) { output = *out; ++applied; }
-void motor_hw_arm(mh_dir_t dir) { (void)dir; }
-void motor_hw_claw(mh_dir_t dir) { (void)dir; }
+void motor_hw_safe_boot (void)
+{
+}
+void motor_hw_init (void)
+{
+}
+void motor_hw_apply (const mc_out_t * out)
+{
+    output = *out;
+    ++applied;
+}
+void motor_hw_arm (mh_dir_t dir)
+{
+    (void)dir;
+}
+void motor_hw_claw (mh_dir_t dir)
+{
+    (void)dir;
+}
 
-int main(void) {
+int main (void)
+{
     assert(motor_init() == MOTOR_OK);
     assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
     assert(!motor_heading_sample_since(clock_ms));
@@ -44,9 +74,12 @@ int main(void) {
     assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
     tick(NULL);
 
-    const uint16_t ranges[] = {0, 1, 149, 150, 151, 199, 200, 1000, 1023, 65535};
-    for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i) {
-        for (int fault = 0; fault <= 1; ++fault) {
+    const uint16_t ranges[] = {0,   1,   149,  150,  151,
+                               199, 200, 1000, 1023, 65535};
+    for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i)
+    {
+        for (int fault = 0; fault <= 1; ++fault)
+        {
             bool detected = front_obstacle_detected(ranges[i], fault != 0);
             bool expected = !fault && ranges[i] > 0 && ranges[i] < 150;
             assert(detected == expected);
@@ -55,7 +88,10 @@ int main(void) {
             assert(motor_set_direction(DIRECTION_FORWARD, 50) ==
                    (expected ? MOTOR_ERR_FRONT_BLOCKED : MOTOR_OK));
             for (int dir = DIRECTION_BACKWARD; dir < DIRECTION_STOP; ++dir)
-                assert(motor_set_direction((motor_direction_t)dir, 50) == MOTOR_OK);
+            {
+                assert(motor_set_direction((motor_direction_t)dir, 50) ==
+                       MOTOR_OK);
+            }
         }
     }
     motor_safety_receive(false, clock_ms);
@@ -63,7 +99,10 @@ int main(void) {
     tick(NULL);
     motor_safety_receive(true, clock_ms);
     assert(motor_motion_state() == MS_IDLE);
-    for (int i = 0; i < MC_WHEELS; ++i) assert(output.wheel[i] == 0);
+    for (int i = 0; i < MC_WHEELS; ++i)
+    {
+        assert(output.wheel[i] == 0);
+    }
     assert(motor_set_direction(DIRECTION_BACKWARD, 50) == MOTOR_OK);
     unsigned before = applied;
     motor_safety_receive(false, clock_ms);
@@ -115,7 +154,8 @@ int main(void) {
     motor_manual_estop();
     assert(motor_auto_rotate_to(180) == MOTOR_ERR_SAFETY);
     assert(motor_zero_heading() == MOTOR_OK);
-    assert(motor_safety_is_latched()); // Zeroing must not release manual E-STOP.
+    assert(
+        motor_safety_is_latched()); // Zeroing must not release manual E-STOP.
     assert(motor_heading_epoch() == 1);
     assert(fabsf(motor_heading_relative(89)) < 0.01f);
     assert(fabsf(motor_heading_relative(179) - 90) < 0.01f);
@@ -125,7 +165,8 @@ int main(void) {
     assert(motor_auto_rotate_to(90) == MOTOR_OK);
     tick(NULL);
     assert(motor_auto_status() == MOTOR_AUTO_HEADING_REACHED);
-    assert(motor_zero_heading() == MOTOR_OK); // A repeated zero uses the new raw heading.
+    assert(motor_zero_heading() ==
+           MOTOR_OK); // A repeated zero uses the new raw heading.
     assert(fabsf(motor_heading_offset() - 179) < 0.01f);
     assert(fabsf(motor_heading_relative(179)) < 0.01f);
     motor_heading_update(350, true);
@@ -134,7 +175,8 @@ int main(void) {
     assert(fabsf(motor_heading_relative(349) - 359) < 0.01f);
     uint32_t epoch = motor_heading_epoch();
     clock_ms += MC_HEADING_STALE_MS + 1;
-    motor_heading_update(NAN, true); // Invalid readings cannot refresh the reference.
+    motor_heading_update(
+        NAN, true); // Invalid readings cannot refresh the reference.
     assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
     assert(motor_heading_epoch() == epoch);
     puts("Front range, timeout and manual E-STOP tests passed");
