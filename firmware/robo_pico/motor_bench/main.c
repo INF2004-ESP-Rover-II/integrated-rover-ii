@@ -87,13 +87,15 @@ static void print_status (int heading_tenths)
         printf("%d.%d", heading_tenths / 10, heading_tenths % 10);
     }
     printf(" pwm=%luHz minpower=%d/%d/%d/%d%% kick=%d%%/%dms",
-           (unsigned long)motor_hw_pwm_freq(), mc_get_deadband(0),
-           mc_get_deadband(1), mc_get_deadband(2), mc_get_deadband(3),
-           mc_get_kick_pct(), mc_get_kick_ms());
-    printf(" trim fwd=%d/%d/%d/%d rev=%d/%d/%d/%d", mc_get_trim_fwd(0),
-           mc_get_trim_fwd(1), mc_get_trim_fwd(2), mc_get_trim_fwd(3),
-           mc_get_trim_rev(0), mc_get_trim_rev(1), mc_get_trim_rev(2),
-           mc_get_trim_rev(3));
+           (unsigned long)motor_hw_pwm_freq(), (int)mc_get_deadband(0),
+           (int)mc_get_deadband(1), (int)mc_get_deadband(2),
+           (int)mc_get_deadband(3), (int)mc_get_kick_pct(),
+           (int)mc_get_kick_ms());
+    printf(" trim fwd=%d/%d/%d/%d rev=%d/%d/%d/%d", (int)mc_get_trim_fwd(0),
+           (int)mc_get_trim_fwd(1), (int)mc_get_trim_fwd(2),
+           (int)mc_get_trim_fwd(3), (int)mc_get_trim_rev(0),
+           (int)mc_get_trim_rev(1), (int)mc_get_trim_rev(2),
+           (int)mc_get_trim_rev(3));
     printf(" stack_free=%lu words\n",
            (unsigned long)uxTaskGetStackHighWaterMark(motor_task_handle()));
 }
@@ -187,14 +189,15 @@ static void bench_task (void * arg)
                 else if (sscanf(line, "zz %d", &a) == 1)
                 {
                     mc_set_zigzag(a);
-                    printf("[bench] zigzag strafe = %d ms%s\n", mc_get_zigzag(),
-                           mc_get_zigzag() ? "" : " (off)");
+                    printf("[bench] zigzag strafe = %d ms%s\n",
+                           (int)mc_get_zigzag(),
+                           (int)mc_get_zigzag() ? "" : " (off)");
                 }
                 else if (sscanf(line, "kick %d %d", &a, &b) == 2)
                 {
                     mc_set_kick(a, b);
                     printf("[bench] start boost = %d%% for %d ms\n",
-                           mc_get_kick_pct(), mc_get_kick_ms());
+                           (int)mc_get_kick_pct(), (int)mc_get_kick_ms());
                 }
                 else if (sscanf(line, "r %d", &a) == 1)
                 {
@@ -259,8 +262,8 @@ static void bench_task (void * arg)
                     mc_set_trim(a, b, d);
                     printf(
                         "[bench] wheel %d trim: forward %d%%, backward %d%%\n",
-                        a, mc_get_trim_fwd(a < 0 ? 0 : a),
-                        mc_get_trim_rev(a < 0 ? 0 : a));
+                        a, (int)mc_get_trim_fwd(a < 0 ? 0 : a),
+                        (int)mc_get_trim_rev(a < 0 ? 0 : a));
                 }
                 else if (sscanf(line, "db %d %d", &a, &b) == 2)
                 {
@@ -269,7 +272,7 @@ static void bench_task (void * arg)
                     vTaskDelay(pdMS_TO_TICKS(50));
                     mc_set_deadband(a, b);
                     printf("[bench] wheel %d min power = %d%%\n", a,
-                           mc_get_deadband(a));
+                           (int)mc_get_deadband(a));
                 }
                 else if (sscanf(line, "db %d", &a) == 1)
                 {
@@ -278,7 +281,7 @@ static void bench_task (void * arg)
                     vTaskDelay(pdMS_TO_TICKS(50));
                     mc_set_deadband(-1, a);
                     printf("[bench] all wheels min power = %d%%\n",
-                           mc_get_deadband(0));
+                           (int)mc_get_deadband(0));
                 }
                 else if (sscanf(line, "pwm %d", &a) == 1)
                 {

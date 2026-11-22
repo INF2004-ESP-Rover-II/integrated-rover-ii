@@ -111,7 +111,7 @@
  *           drifts right going forward, straight going backward).
  *           Tune live on the bench with 'trim W FWD REV'.
  * INVERT:   set to 1 if that wheel spins backwards for a positive command. */
-#define MC_DEADBAND_PCT {40, 40, 40, 40}    /* all wheels start at 40 % (t 40) */
+#define MC_DEADBAND_PCT {40, 40, 40, 40} /* all wheels start at 40 % (t 40) */
 #define MC_TRIM_FWD_PCT {90, 100, 90, 100}  /* forward curved right: left 90 */
 #define MC_TRIM_REV_PCT {100, 90, 100, 90}  /* backward curved left: right 90 */
 #define MC_INVERT       {0, 0, 0, 0}

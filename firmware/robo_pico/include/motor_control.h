@@ -61,15 +61,16 @@ typedef struct
 {
     /* Final signed duty -100..100 (deadband, trim, invert applied). */
     int8_t   wheel[MC_WHEELS];
-    uint8_t  dir_byte;          /* movement direction byte for the Sensor Pico */
-    uint8_t  result_byte;       /* move result for the Exploration Task        */
-    uint8_t  fault_set;         /* bits to SET in the shared fault mask        */
-    uint8_t  fault_clear;       /* bits to CLEAR in the shared fault mask      */
-    unsigned brake : 1;         /* hold the active brake (IN1 = IN2, EN on)    */
-    unsigned dir_send : 1;      /* dir_byte must be sent now                   */
-    unsigned result_valid : 1;  /* result_byte must be delivered               */
-    unsigned outputs_valid : 1; /* wheel[] / brake must be applied             */
-    unsigned state : 3;         /* motor_state_t, for telemetry                */
+    uint8_t  dir_byte;         /* movement direction byte for the Sensor Pico */
+    uint8_t  result_byte;      /* move result for the Exploration Task        */
+    uint8_t  fault_set;        /* bits to SET in the shared fault mask        */
+    uint8_t  fault_clear;      /* bits to CLEAR in the shared fault mask      */
+    unsigned brake : 1;        /* hold the active brake (IN1 = IN2, EN on)    */
+    unsigned dir_send : 1;     /* dir_byte must be sent now                   */
+    unsigned result_valid : 1; /* result_byte must be delivered               */
+    unsigned
+        outputs_valid : 1; /* wheel[] / brake must be applied             */
+    unsigned state : 3;    /* motor_state_t, for telemetry                */
 } mc_out_t;
 
 typedef enum
@@ -82,53 +83,54 @@ typedef enum
     MC_STOP_LINK_LOST = 2
 } mc_stop_kind_t;
 
-void mc_init (mc_t * m);
+void mc_init (volatile mc_t * m);
 void mc_out_clear (mc_out_t * o);
 
 /** Mission Control state gate for FR-40 (manual only in READY). */
-void mc_set_system_ready (mc_t * m, bool ready);
+void mc_set_system_ready (volatile mc_t * m, bool ready);
 
 /** VALIDATE COMMAND: check one packed command word and start the move,
  *  refresh it, or reject it (result MR_REJECTED). */
-void mc_command (mc_t * m, uint32_t cmd_word, uint32_t now_ms,
+void mc_command (volatile mc_t * m, uint32_t cmd_word, uint32_t now_ms,
                  uint32_t heading_word, mc_out_t * out);
 
 /** Immediate stop: PWM to 0 at once, no ramp (FR-42, NFR-03). */
-void mc_immediate_stop (mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
+void mc_immediate_stop (volatile mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
                         mc_out_t * out);
 
 /** Periodic update, call every MC_PERIOD_MS. */
-void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out);
+void mc_step (volatile mc_t * m, uint32_t now_ms, uint32_t heading_word,
+              mc_out_t * out);
 
 /** Minimum starting power per wheel (wheel -1 = all). Bench tuning only:
  *  call it while the rover is stopped. */
-void mc_set_deadband (int wheel, int pct);
-int  mc_get_deadband (int wheel);
+void    mc_set_deadband (int32_t wheel, int32_t pct);
+int32_t mc_get_deadband (int32_t wheel);
 
 /** Per-wheel trim 0..100 %, separately for forward and backward spin
  *  (wheel -1 = all). Bench tuning: call while the rover is stopped. */
-void mc_set_trim (int wheel, int fwd_pct, int rev_pct);
-int  mc_get_trim_fwd (int wheel);
-int  mc_get_trim_rev (int wheel);
+void    mc_set_trim (int32_t wheel, int32_t fwd_pct, int32_t rev_pct);
+int32_t mc_get_trim_fwd (int32_t wheel);
+int32_t mc_get_trim_rev (int32_t wheel);
 
 /** Start boost: pct of power for ms when a wheel starts or reverses (0 = off).
  */
-void mc_set_kick (int pct, int ms);
-int  mc_get_kick_pct (void);
-int  mc_get_kick_ms (void);
+void    mc_set_kick (int32_t pct, int32_t ms);
+int32_t mc_get_kick_pct (void);
+int32_t mc_get_kick_ms (void);
 
 /** Zigzag strafe: switch diagonal every ms (0 = normal 4-wheel strafe). */
-void mc_set_zigzag (int ms);
-int  mc_get_zigzag (void);
+void    mc_set_zigzag (int32_t ms);
+int32_t mc_get_zigzag (void);
 
 /* ---- helpers, exposed for unit tests ---- */
 int16_t mc_heading_error (uint16_t target_tenths,
                           uint16_t current_tenths); /* -1800..1799 */
-void    mc_mix (int vx, int vy, int w,
-                int out[MC_WHEELS]); /* inverse kinematics */
-uint8_t mc_dir_mask (int vx, int vy, int w);
+void    mc_mix (int32_t vx, int32_t vy, int32_t w,
+                int32_t out[MC_WHEELS]); /* inverse kinematics */
+uint8_t mc_dir_mask (int32_t vx, int32_t vy, int32_t w);
 
-static inline motor_state_t mc_state (const mc_t * m)
+static inline motor_state_t mc_state (const volatile mc_t * m)
 {
     return (motor_state_t)m->state;
 }

@@ -3,8 +3,10 @@
  * @brief Motor Control logic for Subsystem 6 (FR-38 to FR-42).
  *
  * Pure C: no hardware, no RTOS. See motor_control.h for the statechart.
- * Calculations use normal-size local ints; values are packed only when
- * stored in mc_t or sent out (Change Requirement 1).
+ * Calculations use 32-bit fixed-width locals (int32_t); values are packed
+ * into the smaller fields only when stored in mc_t or sent out (Change
+ * Requirement 1). mc_t is accessed through volatile pointers because the
+ * timer and UART interrupts in motor_driver.c use it (BARR-C 1.8.c).
  *
  * Owner: Buddy 4 (Lim Zi Ying)
  */
@@ -15,29 +17,29 @@
 
 /* Tunables. Start from motor_config.h; the bench can change them at run time
  * through the mc_set_*() functions. */
-static int8_t k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;
-static int    k_kick_pct            = MC_KICK_PCT;
-static int    k_kick_ms             = (int)MC_KICK_MS;
-static int    k_zigzag_ms           = (int)MC_STRAFE_ZIGZAG_MS;
-static int8_t k_trim_fwd[MC_WHEELS] = MC_TRIM_FWD_PCT;
-static int8_t k_trim_rev[MC_WHEELS] = MC_TRIM_REV_PCT;
+static int8_t  k_deadband[MC_WHEELS] = MC_DEADBAND_PCT;
+static int32_t k_kick_pct            = MC_KICK_PCT;
+static int32_t k_kick_ms             = (int32_t)MC_KICK_MS;
+static int32_t k_zigzag_ms           = (int32_t)MC_STRAFE_ZIGZAG_MS;
+static int8_t  k_trim_fwd[MC_WHEELS] = MC_TRIM_FWD_PCT;
+static int8_t  k_trim_rev[MC_WHEELS] = MC_TRIM_REV_PCT;
 
 /* Fixed wiring: wheels whose motor is mounted the other way round. */
 static const int8_t k_invert[MC_WHEELS] = MC_INVERT;
 
 /* ---------------- helpers ---------------- */
 
-static inline int clampi (int v, int lo, int hi)
+static inline int32_t clampi (int32_t v, int32_t lo, int32_t hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-static inline int absi (int v)
+static inline int32_t absi (int32_t v)
 {
     return v < 0 ? -v : v;
 }
 
-static inline bool in_range_pct (int v)
+static inline bool in_range_pct (int32_t v)
 {
     return v >= -100 && v <= 100;
 }
@@ -45,7 +47,7 @@ static inline bool in_range_pct (int v)
 int16_t mc_heading_error (uint16_t target, uint16_t current)
 {
     /* shortest signed difference, so 359.0 -> 1.0 deg is +2.0, not -358 */
-    int e = ((int)target - (int)current) % 3600;
+    int32_t e = ((int32_t)target - (int32_t)current) % 3600;
     if (e >= 1800)
     {
         e -= 3600;
@@ -60,15 +62,15 @@ int16_t mc_heading_error (uint16_t target, uint16_t current)
 /* Inverse kinematics, mecanum "X" rollers, seen from above.
  * vx + = forward, vy + = right, w + = clockwise.
  * Matches the old motor_driver.c patterns (DIRECTION_RIGHT, ROTATE_RIGHT). */
-void mc_mix (int vx, int vy, int w, int out[MC_WHEELS])
+void mc_mix (int32_t vx, int32_t vy, int32_t w, int32_t out[MC_WHEELS])
 {
     out[0] = vx + vy + w; /* front-left  */
     out[1] = vx - vy - w; /* front-right */
     out[2] = vx - vy + w; /* back-left   */
     out[3] = vx + vy - w; /* back-right  */
 
-    int peak = 0;
-    for (int i = 0; i < MC_WHEELS; i++)
+    int32_t peak = 0;
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         if (absi(out[i]) > peak)
         {
@@ -77,16 +79,16 @@ void mc_mix (int vx, int vy, int w, int out[MC_WHEELS])
     }
     if (peak > 100) /* scale all wheels together, keep the ratio */
     {
-        for (int i = 0; i < MC_WHEELS; i++)
+        for (int32_t i = 0; i < MC_WHEELS; i++)
         {
             out[i] = out[i] * 100 / peak;
         }
     }
 }
 
-uint8_t mc_dir_mask (int vx, int vy, int w)
+uint8_t mc_dir_mask (int32_t vx, int32_t vy, int32_t w)
 {
-    const int th = 3; /* ignore tiny heading-hold trims */
+    const int32_t th = 3; /* ignore tiny heading-hold trims */
     if (absi(w) >= th && absi(vx) < th && absi(vy) < th)
     {
         return (uint8_t)DIR_ALL; /* rotate */
@@ -117,21 +119,22 @@ uint8_t mc_dir_mask (int vx, int vy, int w)
 
 /* Heading hold, PI controller (FR-41). The I part removes the steady
  * offset a constant pull (weaker wheel, uneven floor) would leave. */
-static int hold_trim (mc_t * m)
+static int32_t hold_trim (volatile mc_t * m)
 {
-    int err = mc_heading_error((uint16_t)m->hold_target, (uint16_t)m->heading);
+    int32_t err =
+        mc_heading_error((uint16_t)m->hold_target, (uint16_t)m->heading);
 #if !MC_HEADING_CW_POSITIVE
     err = -err;
 #endif
-    int integ =
+    int32_t integ =
         clampi(m->hold_integ + err, -MC_HOLD_INTEG_LIMIT, MC_HOLD_INTEG_LIMIT);
     m->hold_integ = (int16_t)integ;
-    int trim      = err * MC_HOLD_KP_NUM / MC_HOLD_KP_DEN +
-               integ * MC_HOLD_KI_NUM / MC_HOLD_KI_DEN;
+    int32_t trim  = err * MC_HOLD_KP_NUM / MC_HOLD_KP_DEN +
+                   integ * MC_HOLD_KI_NUM / MC_HOLD_KI_DEN;
     return clampi(trim, -MC_HOLD_MAX_PCT, MC_HOLD_MAX_PCT);
 }
 
-static void set_hold_target (mc_t * m, unsigned tenths)
+static void set_hold_target (volatile mc_t * m, uint32_t tenths)
 {
     m->hold_target = tenths & 0xFFFu;
     m->hold_integ  = 0;
@@ -139,7 +142,7 @@ static void set_hold_target (mc_t * m, unsigned tenths)
 
 /* Normal stop: ease down. The finished command is remembered so a late
  * refresh of it can't restart the move. */
-static void begin_ramp_down (mc_t * m)
+static void begin_ramp_down (volatile mc_t * m)
 {
     m->tvx = m->tvy = m->tw = 0;
     m->parking              = 0;
@@ -157,9 +160,9 @@ static bool is_moving_state (motor_state_t s)
            s == MS_RAMP_DOWN;
 }
 
-static bool duties_zero (const mc_t * m)
+static bool duties_zero (const volatile mc_t * m)
 {
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         if (m->duty[i] != 0)
         {
@@ -169,7 +172,8 @@ static bool duties_zero (const mc_t * m)
     return true;
 }
 
-static void set_result (mc_t * m, mc_out_t * out, move_result_t r, uint8_t seq)
+static void set_result (volatile mc_t * m, mc_out_t * out, move_result_t r,
+                        uint8_t seq)
 {
     out->result_valid = 1;
     out->result_byte  = result_byte_pack(r, seq);
@@ -183,7 +187,7 @@ static void set_result (mc_t * m, mc_out_t * out, move_result_t r, uint8_t seq)
     }
 }
 
-static void clear_targets (mc_t * m)
+static void clear_targets (volatile mc_t * m)
 {
     m->tvx = m->tvy = m->tw = 0;
     m->parking              = 0;
@@ -195,7 +199,7 @@ static void clear_targets (mc_t * m)
  *   10-bit wrap (every 1024 ms) can never make old data look fresh again;
  * - the latch clears only when a NEW sequence number arrives that is fresh.
  * Returns true if the latch was just set. */
-static bool update_heading (mc_t * m, uint32_t now_ms, uint32_t hw)
+static bool update_heading (volatile mc_t * m, uint32_t now_ms, uint32_t hw)
 {
     if (!heading_word_valid(hw))
     {
@@ -234,13 +238,13 @@ static bool update_heading (mc_t * m, uint32_t now_ms, uint32_t hw)
     return m->stale_latched && !was_stale;
 }
 
-static bool heading_ok (const mc_t * m)
+static bool heading_ok (const volatile mc_t * m)
 {
     return m->heading_seen && !m->stale_latched;
 }
 
 /* Enter SAFE STOP or IDLE with PWM forced to 0 immediately (no ramp). */
-static void hard_stop (mc_t * m, motor_state_t next, uint32_t now_ms,
+static void hard_stop (volatile mc_t * m, motor_state_t next, uint32_t now_ms,
                        mc_out_t * out)
 {
     bool was_moving = is_moving_state((motor_state_t)m->state);
@@ -249,14 +253,17 @@ static void hard_stop (mc_t * m, motor_state_t next, uint32_t now_ms,
         set_result(m, out, MR_STOPPED, (uint8_t)m->active_seq);
     }
     clear_targets(m);
-    memset(m->duty, 0, sizeof m->duty);
+    for (int32_t i = 0; i < MC_WHEELS; i++)
+    {
+        m->duty[i] = 0;
+    }
     if (m->last_cmd_word)
     {
         m->done_word = m->last_cmd_word;
     }
     m->last_cmd_word   = 0;
     m->brake_until_ms  = now_ms + MC_BRAKE_HOLD_MS;
-    m->state           = (unsigned)next & 0x7u;
+    m->state           = (uint32_t)next & 0x7u;
     out->outputs_valid = 1;
     out->brake         = 1;
     memset(out->wheel, 0, sizeof out->wheel);
@@ -265,9 +272,14 @@ static void hard_stop (mc_t * m, motor_state_t next, uint32_t now_ms,
 
 /* ---------------- public API ---------------- */
 
-void mc_init (mc_t * m)
+void mc_init (volatile mc_t * m)
 {
-    memset(m, 0, sizeof *m);
+    /* Zero every byte (memset cannot take a volatile pointer). */
+    volatile uint8_t * raw = (volatile uint8_t *)m;
+    for (size_t i = 0; i < sizeof *m; i++)
+    {
+        raw[i] = 0;
+    }
 #if MC_ALLOW_MANUAL_WITHOUT_HEADING
     m->state = MS_IDLE;
 #else
@@ -281,10 +293,10 @@ void mc_out_clear (mc_out_t * o)
     memset(o, 0, sizeof *o);
 }
 
-void mc_set_deadband (int wheel, int pct)
+void mc_set_deadband (int32_t wheel, int32_t pct)
 {
     pct = clampi(pct, 0, 90);
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         if (wheel < 0 || wheel == i)
         {
@@ -293,16 +305,16 @@ void mc_set_deadband (int wheel, int pct)
     }
 }
 
-int mc_get_deadband (int wheel)
+int32_t mc_get_deadband (int32_t wheel)
 {
     return k_deadband[clampi(wheel, 0, MC_WHEELS - 1)];
 }
 
-void mc_set_trim (int wheel, int fwd_pct, int rev_pct)
+void mc_set_trim (int32_t wheel, int32_t fwd_pct, int32_t rev_pct)
 {
     fwd_pct = clampi(fwd_pct, 0, 100);
     rev_pct = clampi(rev_pct, 0, 100);
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         if (wheel < 0 || wheel == i)
         {
@@ -312,49 +324,49 @@ void mc_set_trim (int wheel, int fwd_pct, int rev_pct)
     }
 }
 
-int mc_get_trim_fwd (int wheel)
+int32_t mc_get_trim_fwd (int32_t wheel)
 {
     return k_trim_fwd[clampi(wheel, 0, MC_WHEELS - 1)];
 }
 
-int mc_get_trim_rev (int wheel)
+int32_t mc_get_trim_rev (int32_t wheel)
 {
     return k_trim_rev[clampi(wheel, 0, MC_WHEELS - 1)];
 }
 
-void mc_set_kick (int pct, int ms)
+void mc_set_kick (int32_t pct, int32_t ms)
 {
     k_kick_pct = clampi(pct, 0, 100);
     k_kick_ms  = clampi(ms, 0, 1000);
 }
 
-int mc_get_kick_pct (void)
+int32_t mc_get_kick_pct (void)
 {
     return k_kick_pct;
 }
 
-int mc_get_kick_ms (void)
+int32_t mc_get_kick_ms (void)
 {
     return k_kick_ms;
 }
 
-void mc_set_zigzag (int ms)
+void mc_set_zigzag (int32_t ms)
 {
     k_zigzag_ms = clampi(ms, 0, 2000);
 }
 
-int mc_get_zigzag (void)
+int32_t mc_get_zigzag (void)
 {
     return k_zigzag_ms;
 }
 
-void mc_set_system_ready (mc_t * m, bool ready)
+void mc_set_system_ready (volatile mc_t * m, bool ready)
 {
     m->system_ready = ready ? 1u : 0u;
 }
 
-void mc_command (mc_t * m, uint32_t w, uint32_t now_ms, uint32_t heading_word,
-                 mc_out_t * out)
+void mc_command (volatile mc_t * m, uint32_t w, uint32_t now_ms,
+                 uint32_t heading_word, mc_out_t * out)
 {
     mc_type_t     type = mc_type(w);
     mc_src_t      src  = mc_src(w);
@@ -412,10 +424,10 @@ void mc_command (mc_t * m, uint32_t w, uint32_t now_ms, uint32_t heading_word,
     case MC_MANUAL_DRIVE:
     case MC_MANUAL_PARK:
     {
-        int  vx = (type == MC_MANUAL_DRIVE) ? mc_s8(w, 8) : 0;
-        int  vy = mc_s8(w, 16);
-        int  wz = (type == MC_MANUAL_DRIVE) ? mc_s8(w, 24) : 0;
-        bool heading_needed_ok =
+        int32_t vx = (type == MC_MANUAL_DRIVE) ? mc_s8(w, 8) : 0;
+        int32_t vy = mc_s8(w, 16);
+        int32_t wz = (type == MC_MANUAL_DRIVE) ? mc_s8(w, 24) : 0;
+        bool    heading_needed_ok =
             heading_ok(m) || MC_ALLOW_MANUAL_WITHOUT_HEADING;
         ok = src == MC_SRC_MANUAL /* FR-40: not from autonomous logic */
              && m->system_ready   /* FR-40: manual only in READY      */
@@ -458,7 +470,7 @@ void mc_command (mc_t * m, uint32_t w, uint32_t now_ms, uint32_t heading_word,
 
     case MC_AUTO_DRIVE:
     {
-        int      speed = mc_s8(w, 8);
+        int32_t  speed = mc_s8(w, 8);
         uint16_t hdg   = mc_hdg9(w, 16);
         ok = src == MC_SRC_AUTO && in_range_pct(speed) && hdg <= 359 &&
              heading_ok(m) &&
@@ -499,7 +511,7 @@ void mc_command (mc_t * m, uint32_t w, uint32_t now_ms, uint32_t heading_word,
     out->state = m->state;
 }
 
-void mc_immediate_stop (mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
+void mc_immediate_stop (volatile mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
                         mc_out_t * out)
 {
     motor_state_t s      = (motor_state_t)m->state;
@@ -527,7 +539,8 @@ void mc_immediate_stop (mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
     }
 }
 
-void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
+void mc_step (volatile mc_t * m, uint32_t now_ms, uint32_t heading_word,
+              mc_out_t * out)
 {
     if (update_heading(m, now_ms, heading_word))
     {
@@ -569,8 +582,8 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
     }
 
     /* ---------------- requested body motion for this tick ---------------- */
-    int  vx = 0, vy = 0, wz = 0;
-    bool zigzag = false;
+    int32_t vx = 0, vy = 0, wz = 0;
+    bool    zigzag = false;
     switch (s)
     {
     case MS_MANUAL:
@@ -591,11 +604,11 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
          * cancel, so the rover still ends up moving sideways. */
         if (k_zigzag_ms > 0 && vx == 0 && vy != 0 && m->tw == 0)
         {
-            int  half  = absi(vy) / 2;
-            bool front = ((now_ms / (uint32_t)k_zigzag_ms) & 1u) != 0u;
-            vx         = front ? half : -half;
-            vy         = vy > 0 ? half : -half;
-            zigzag     = true;
+            int32_t half  = absi(vy) / 2;
+            bool    front = ((now_ms / (uint32_t)k_zigzag_ms) & 1u) != 0u;
+            vx            = front ? half : -half;
+            vy            = vy > 0 ? half : -half;
+            zigzag        = true;
         }
         if (m->parking && (int32_t)(now_ms - m->park_end_ms) >= 0)
         {
@@ -613,7 +626,7 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
 
     case MS_AUTO_ROTATE:
     {
-        int err =
+        int32_t err =
             mc_heading_error((uint16_t)m->rot_target, (uint16_t)m->heading);
 #if !MC_HEADING_CW_POSITIVE
         err = -err;
@@ -628,9 +641,9 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
         }
         else
         {
-            int mag = absi(err) > MC_ROT_SLOW_ZONE_TENTHS ? MC_ROT_FAST_PCT
-                                                          : MC_ROT_SLOW_PCT;
-            wz      = err > 0 ? mag : -mag;
+            int32_t mag = absi(err) > MC_ROT_SLOW_ZONE_TENTHS ? MC_ROT_FAST_PCT
+                                                              : MC_ROT_SLOW_PCT;
+            wz          = err > 0 ? mag : -mag;
         }
         break;
     }
@@ -640,12 +653,12 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
     }
 
     /* ---- inverse kinematics + ramp (FR-38, FR-42) ---- */
-    int target[MC_WHEELS];
+    int32_t target[MC_WHEELS];
     mc_mix(vx, vy, wz, target);
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        int d      = m->duty[i];
-        int before = d;
+        int32_t d      = m->duty[i];
+        int32_t before = d;
         if (zigzag)
         {
             d = target[i]; /* no ramp: each half is short */
@@ -688,9 +701,9 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
      * so a switch from forward to strafe keeps FRONT set until it has ramped.
      * While braking after a hard stop, keep the last mask: the rover may still
      * roll. */
-    int     evx = (m->duty[0] + m->duty[1] + m->duty[2] + m->duty[3]) / 4;
-    int     evy = (m->duty[0] - m->duty[1] - m->duty[2] + m->duty[3]) / 4;
-    int     ewz = (m->duty[0] - m->duty[1] + m->duty[2] - m->duty[3]) / 4;
+    int32_t evx = (m->duty[0] + m->duty[1] + m->duty[2] + m->duty[3]) / 4;
+    int32_t evy = (m->duty[0] - m->duty[1] - m->duty[2] + m->duty[3]) / 4;
+    int32_t ewz = (m->duty[0] - m->duty[1] + m->duty[2] - m->duty[3]) / 4;
     uint8_t mask =
         (uint8_t)(mc_dir_mask(vx, vy, wz) | mc_dir_mask(evx, evy, ewz));
     bool braking = (int32_t)(m->brake_until_ms - now_ms) > 0;
@@ -709,9 +722,9 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
     }
 
     /* ---- final duty per wheel: trim, invert, deadband ---- */
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        int d =
+        int32_t d =
             m->duty[i] * (m->duty[i] > 0 ? k_trim_fwd[i] : k_trim_rev[i]) / 100;
         if (k_invert[i])
         {
@@ -719,7 +732,7 @@ void mc_step (mc_t * m, uint32_t now_ms, uint32_t heading_word, mc_out_t * out)
         }
         if (d != 0)
         {
-            int mag = k_deadband[i] + (100 - k_deadband[i]) * absi(d) / 100;
+            int32_t mag = k_deadband[i] + (100 - k_deadband[i]) * absi(d) / 100;
             if ((int32_t)(m->kick_until_ms[i] - now_ms) > 0 && mag < k_kick_pct)
             {
                 mag = k_kick_pct;

@@ -53,7 +53,7 @@ static const wheel_pins_t k_wheel[MC_WHEELS] = {
     {B_ENB_PIN, B_IN3_PIN, B_IN4_PIN}, /* back-right  */
 };
 
-static uint16_t s_wrap = 0;
+static volatile uint16_t s_wrap = 0;
 
 static void out_low (uint pin)
 {
@@ -70,7 +70,7 @@ void motor_hw_safe_boot (void)
     out_low(CLAW_M1B_PIN);
     out_low(ARM_M1A_PIN);
     out_low(ARM_M1B_PIN);
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         out_low(k_wheel[i].en); /* coast until PWM is set up */
         out_low(k_wheel[i].in_a);
@@ -78,7 +78,7 @@ void motor_hw_safe_boot (void)
     }
 }
 
-static uint32_t s_freq_hz = PWM_FREQ_HZ;
+static volatile uint32_t s_freq_hz = PWM_FREQ_HZ;
 
 static void pwm_setup (void)
 {
@@ -91,7 +91,7 @@ static void pwm_setup (void)
     }
     s_wrap = (uint16_t)(sys_hz / (div * s_freq_hz) - 1u);
 
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         uint       slice = pwm_gpio_to_slice_num(k_wheel[i].en);
         pwm_config cfg   = pwm_get_default_config();
@@ -128,7 +128,7 @@ uint32_t motor_hw_pwm_freq (void)
     return s_freq_hz;
 }
 
-static void wheel_set (int i, int duty, bool brake)
+static void wheel_set (int32_t i, int32_t duty, bool brake)
 {
     const wheel_pins_t * p = &k_wheel[i];
     if (brake)
@@ -160,7 +160,7 @@ void motor_hw_apply (const mc_out_t * out)
     {
         return;
     }
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         wheel_set(i, out->wheel[i], out->brake && out->wheel[i] == 0);
     }
@@ -168,7 +168,7 @@ void motor_hw_apply (const mc_out_t * out)
 
 void motor_hw_all_off (void)
 {
-    for (int i = 0; i < MC_WHEELS; i++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
         pwm_set_gpio_level(k_wheel[i].en, 0);
     }

@@ -10,24 +10,24 @@
  *
  * Data representation table (Week 13 evidence):
  *
- *  Field                    Range                       Bits  Where
- *  -----------------------  --------------------------  ----  ------------------------
- *  command type             7 types (1..7)              3     motor command word
- *  command source           auto / manual               1     motor command word
- *  command sequence         0..15                       4     motor command word
- *  vx, vy, w (manual)       -100..+100 %                8 ea  motor command word
- *  drive speed (auto)       -100..+100 %                8     motor command word
- *  target heading           0..359 deg (1 deg)          9     motor command word
- *  measured heading         0..359.9 deg (0.1 deg)      12    heading word
- *  heading sequence         0..15                       4     heading word
- *  heading receive time     0..1023 ms (rolling)        10    heading word
- *  heading valid            yes / no                    1     heading word
- *  motor state              8 states                    3     telemetry / private
- *  movement direction       front/back/left/right mask  4     direction byte (UART)
- *  direction sequence       0..15                       4     direction byte (UART)
- *  move result              4 results                   2     result byte
- *  result sequence          0..15                       4     result byte
- *  fault flags              1 bit each                  1 ea  shared fault mask
+ *  Field                 Range                   Bits  Where
+ *  --------------------  ----------------------  ----  ---------------------
+ *  command type          7 types (1..7)          3     motor command word
+ *  command source        auto / manual           1     motor command word
+ *  command sequence      0..15                   4     motor command word
+ *  vx, vy, w (manual)    -100..+100 %            8 ea  motor command word
+ *  drive speed (auto)    -100..+100 %            8     motor command word
+ *  target heading        0..359 deg (1 deg)      9     motor command word
+ *  measured heading      0..359.9 deg (0.1 deg)  12    heading word
+ *  heading sequence      0..15                   4     heading word
+ *  heading receive time  0..1023 ms (rolling)    10    heading word
+ *  heading valid         yes / no                1     heading word
+ *  motor state           8 states                3     telemetry / private
+ *  movement direction    F/B/L/R side mask       4     direction byte (UART)
+ *  direction sequence    0..15                   4     direction byte (UART)
+ *  move result           4 results               2     result byte
+ *  result sequence       0..15                   4     result byte
+ *  fault flags           1 bit each              1 ea  shared fault mask
  *
  * Owner: Buddy 4 (Lim Zi Ying)
  */
@@ -147,11 +147,11 @@ static inline uint8_t mc_seq (uint32_t w)
 {
     return (uint8_t)((w >> MC_SEQ_SHIFT) & MC_SEQ_MASK);
 }
-static inline int8_t mc_s8 (uint32_t w, unsigned shift)
+static inline int8_t mc_s8 (uint32_t w, uint32_t shift)
 {
     return (int8_t)(uint8_t)(w >> shift);
 }
-static inline uint16_t mc_hdg9 (uint32_t w, unsigned shift)
+static inline uint16_t mc_hdg9 (uint32_t w, uint32_t shift)
 {
     return (uint16_t)((w >> shift) & MC_HDG9_MASK);
 }
@@ -201,12 +201,13 @@ static inline bool heading_word_valid (uint32_t w)
     return (w & HW_VALID_BIT) != 0u;
 }
 
-/* ============== Movement direction byte (Robo Pico -> Sensor Pico) ==============
+/* ---------------- Movement direction byte (Robo Pico -> Sensor Pico) --
  * Sent on the return UART line (Robo GP12 TX -> Sensor GP17 RX) so Collision
  * Detection knows which sensors to watch. One bit per side the rover is
  * moving TOWARD. Rotating sets all four. Stopped = 0.
  *  bits 0..3 mask, bits 4..7 sequence.
- * If no byte arrives for ~300 ms, Collision Detection should watch ALL sensors. */
+ * If no byte arrives for ~300 ms, Collision Detection should watch ALL
+ * sensors. */
 #define DIR_FRONT 0x1u
 #define DIR_BACK 0x2u
 #define DIR_LEFT 0x4u
@@ -228,7 +229,8 @@ typedef enum
     MR_REJECTED = 3  /* command refused (FR-40 rules, range, state)      */
 } move_result_t;
 
-/* result byte: bits 0..1 result, bits 2..5 sequence of the command it answers */
+/* result byte: bits 0..1 result, bits 2..5 sequence of the command it
+ * answers */
 static inline uint8_t result_byte_pack (move_result_t r, uint8_t seq)
 {
     return (uint8_t)(((uint8_t)r & 0x3u) | ((seq & 0xFu) << 2));
@@ -239,14 +241,14 @@ static inline uint8_t result_byte_pack (move_result_t r, uint8_t seq)
  * Only TASKS write it. The STOP interrupt never writes it directly: it only
  * notifies the Motor Control task, which stops the motors and then sets
  * FAULT_ESTOP. Bit numbers must be agreed team-wide (Buddy 5 owns the list). */
-#define FAULT_ESTOP         (1u << 0) /* set by Motor Control after a UART STOP */
-#define FAULT_CMD_TIMEOUT   (1u << 1) /* set by Motor Control (FR-42) */
+#define FAULT_ESTOP (1u << 0)       /* set by Motor Control after a UART STOP */
+#define FAULT_CMD_TIMEOUT (1u << 1) /* set by Motor Control (FR-42) */
 #define FAULT_HEADING_STALE (1u << 2) /* set by Motor Control */
-#define FAULT_IMU           (1u << 3) /* set by IMU side (Sensor Pico report) */
-#define FAULT_LINK_LOST     (1u << 4) /* set by Robo Comms (FR-08) */
-#define FAULT_MOTOR_STALL   (1u << 5) /* RESERVED: no current sensing to detect */
-#define FAULT_ENCODER       (1u << 6) /* RESERVED: rover has no wheel encoders */
-#define FAULT_MOTOR_OWNED \
+#define FAULT_IMU (1u << 3)           /* set by IMU side (Sensor Pico report) */
+#define FAULT_LINK_LOST (1u << 4)     /* set by Robo Comms (FR-08) */
+#define FAULT_MOTOR_STALL (1u << 5) /* RESERVED: no current sensing to detect */
+#define FAULT_ENCODER (1u << 6)     /* RESERVED: rover has no wheel encoders */
+#define FAULT_MOTOR_OWNED                                                      \
     (FAULT_ESTOP | FAULT_CMD_TIMEOUT | FAULT_HEADING_STALE)
 
 #endif /* MOTOR_TYPES_H */

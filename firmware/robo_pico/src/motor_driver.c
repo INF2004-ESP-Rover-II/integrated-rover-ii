@@ -49,26 +49,30 @@
  * team's TIMEOUT_MS (800 ms, config.h), the same as the old driver. */
 #define REFRESH_WINDOW_MS (TIMEOUT_MS - MC_CMD_TIMEOUT_MS)
 
+/* Everything below, except the timer handle, is also used from interrupts
+ * (the 20 ms timer and the UART receive handler), so it is volatile
+ * (BARR-C 1.8.c). Multi-step updates also run with interrupts disabled. */
+
 /* Motion Control instance, safety flags and the 20 ms timer. */
-static mc_t                   s_mc;
-static bool                   s_manual_estop;    /* dashboard E-STOP latch */
-static uint32_t               s_last_sensor_ms;  /* last Sensor Pico packet */
-static bool                   s_forward_driving; /* front obstacle stops it */
-static bool                   s_front_blocked;
-static bool                   s_front_stop_pending;
+static volatile mc_t          s_mc;
+static volatile bool          s_manual_estop;    /* dashboard E-STOP latch */
+static volatile uint32_t      s_last_sensor_ms;  /* last Sensor Pico packet */
+static volatile bool          s_forward_driving; /* front obstacle stops it */
+static volatile bool          s_front_blocked;
+static volatile bool          s_front_stop_pending;
 static struct repeating_timer s_timer;
 
 /* Manual move being held, and the heading shared with the timer. */
 static volatile uint32_t s_heading_word; /* one 32-bit store / load */
-static uint8_t           s_hdg_seq;
-static uint32_t          s_word; /* move being held (0 = none) */
-static uint32_t          s_last_call_ms;
-static uint8_t           s_seq;
-static float             s_raw_heading;
-static float             s_heading_offset;
-static uint32_t          s_raw_heading_ms;
-static uint32_t          s_heading_epoch;
-static bool              s_have_raw_heading;
+static volatile uint8_t  s_hdg_seq;
+static volatile uint32_t s_word; /* move being held (0 = none) */
+static volatile uint32_t s_last_call_ms;
+static volatile uint8_t  s_seq;
+static volatile float    s_raw_heading;
+static volatile float    s_heading_offset;
+static volatile uint32_t s_raw_heading_ms;
+static volatile uint32_t s_heading_epoch;
+static volatile bool     s_have_raw_heading;
 
 /* Why Motion Control last entered SAFE STOP (state 7), for the dashboard. */
 static volatile uint8_t s_safe_reason = MOTOR_SAFE_NONE;
@@ -76,10 +80,10 @@ static volatile uint8_t s_safe_reason = MOTOR_SAFE_NONE;
 /* Autonomous move (mapping / Exploration). The driver refreshes it itself,
  * so it keeps going until motor_auto_stop(), an operator STOP or a safety
  * stop. A rotation also ends by itself when the heading is reached. */
-static uint32_t         s_auto_word; /* auto move being held (0 = none) */
-static uint8_t          s_auto_seq;
-static volatile uint8_t s_auto_status = MOTOR_AUTO_IDLE;
-static motor_lease_t    s_auto_lease;
+static volatile uint32_t      s_auto_word; /* auto move being held (0 = none) */
+static volatile uint8_t       s_auto_seq;
+static volatile uint8_t       s_auto_status = MOTOR_AUTO_IDLE;
+static volatile motor_lease_t s_auto_lease;
 
 static void hard_stop (mc_stop_kind_t kind);
 
@@ -223,7 +227,7 @@ static void hard_stop (mc_stop_kind_t kind)
     }
 }
 
-static int clamp100 (int v)
+static int32_t clamp100 (int32_t v)
 {
     return v < 0 ? 0 : (v > 100 ? 100 : v);
 }
@@ -231,10 +235,10 @@ static int clamp100 (int v)
 /* Direction -> body motion (vx forward, vy right, w clockwise).
  * Diagonals use half on each axis, so the two pushing wheels get 's'
  * and the other two stop. */
-static bool dir_to_motion (motor_direction_t d, int s, int * vx, int * vy,
-                           int * w)
+static bool dir_to_motion (motor_direction_t d, int32_t s, int32_t * vx,
+                           int32_t * vy, int32_t * w)
 {
-    int h = s / 2;
+    int32_t h = s / 2;
     *vx = *vy = *w = 0;
     switch (d)
     {
@@ -305,8 +309,8 @@ motor_error_t motor_init (void)
     {
         return MOTOR_ERR_INIT;
     }
-    printf("[MOTOR] Motion Control ready (%u ms update, active brake)\n",
-           (unsigned)MC_PERIOD_MS);
+    printf("[MOTOR] Motion Control ready (%lu ms update, active brake)\n",
+           (unsigned long)MC_PERIOD_MS);
     return MOTOR_OK;
 }
 
@@ -398,7 +402,7 @@ motor_error_t motor_zero_heading (void)
     return MOTOR_OK;
 }
 
-int motor_move_speed (motor_direction_t direction)
+int32_t motor_move_speed (motor_direction_t direction)
 {
     switch (direction)
     {
@@ -417,7 +421,7 @@ int motor_move_speed (motor_direction_t direction)
 }
 
 motor_error_t motor_set_direction (motor_direction_t direction,
-                                   int               speed_percent)
+                                   int32_t           speed_percent)
 {
     if (direction == DIRECTION_STOP)
     {
@@ -428,7 +432,7 @@ motor_error_t motor_set_direction (motor_direction_t direction,
         return MOTOR_ERR_PIN;
     }
 
-    int vx, vy, w;
+    int32_t vx, vy, w;
     if (!dir_to_motion(direction, speed_percent, &vx, &vy, &w))
     {
         return MOTOR_ERR_PIN;
@@ -477,9 +481,9 @@ static bool heading_ready (void)
     return s_mc.heading_seen && !s_mc.stale_latched;
 }
 
-static int heading_deg_now (void)
+static int32_t heading_deg_now (void)
 {
-    return (int)((s_mc.heading + 5u) / 10u) % 360;
+    return (int32_t)((s_mc.heading + 5u) / 10u) % 360;
 }
 
 static motor_error_t start_auto (uint32_t word)
@@ -513,7 +517,7 @@ static motor_error_t auto_checks (void)
     return MOTOR_OK;
 }
 
-motor_error_t motor_auto_drive (int speed_percent)
+motor_error_t motor_auto_drive (int32_t speed_percent)
 {
     if (speed_percent == 0)
     {
@@ -539,9 +543,9 @@ motor_error_t motor_auto_drive (int speed_percent)
     {
         /* Hold the heading the rover has now; if it is already driving
          * straight, keep the same target so a speed change doesn't re-aim. */
-        int hold = (mc_state(&s_mc) == MS_AUTO_DRIVE && s_auto_word)
-                       ? (int)mc_hdg9(s_auto_word, 16)
-                       : heading_deg_now();
+        int32_t hold = (mc_state(&s_mc) == MS_AUTO_DRIVE && s_auto_word)
+                           ? (int32_t)mc_hdg9(s_auto_word, 16)
+                           : heading_deg_now();
         r = start_auto(mc_pack_auto_drive(next_seq(), (int8_t)speed_percent,
                                           (uint16_t)hold));
         if (r == MOTOR_OK)
@@ -554,7 +558,7 @@ motor_error_t motor_auto_drive (int speed_percent)
     return r;
 }
 
-motor_error_t motor_auto_drive_leased (int speed_percent, uint16_t lease_ms)
+motor_error_t motor_auto_drive_leased (int32_t speed_percent, uint16_t lease_ms)
 {
     if (speed_percent == 0 || speed_percent < -100 || speed_percent > 100 ||
         !lease_ms || lease_ms > 500u)
@@ -590,7 +594,7 @@ bool motor_auto_renew_lease (void)
     return ok;
 }
 
-motor_error_t motor_auto_rotate_to (int heading_deg)
+motor_error_t motor_auto_rotate_to (int32_t heading_deg)
 {
     heading_deg %= 360;
     if (heading_deg < 0)
@@ -612,7 +616,7 @@ motor_error_t motor_auto_rotate_to (int heading_deg)
     return r;
 }
 
-motor_error_t motor_auto_rotate_leased (int heading_deg, uint16_t lease_ms)
+motor_error_t motor_auto_rotate_leased (int32_t heading_deg, uint16_t lease_ms)
 {
     if (!lease_ms || lease_ms > 500u)
     {
@@ -629,11 +633,11 @@ motor_error_t motor_auto_rotate_leased (int heading_deg, uint16_t lease_ms)
     return result;
 }
 
-motor_error_t motor_auto_rotate_by (int delta_deg)
+motor_error_t motor_auto_rotate_by (int32_t delta_deg)
 {
     uint32_t      irq    = save_and_disable_interrupts();
     motor_error_t r      = auto_checks();
-    int           target = heading_deg_now() + delta_deg;
+    int32_t       target = heading_deg_now() + delta_deg;
     restore_interrupts(irq);
     return r == MOTOR_OK ? motor_auto_rotate_to(target) : r;
 }
@@ -682,9 +686,9 @@ const char * motor_auto_status_name (motor_auto_status_t s)
 
 /* Parallel park (strafe for MC_PARK_DURATION_MS, then stops by itself).
  * direction: -1 = left, +1 = right. power 10..100, 0 = default. */
-motor_error_t motor_parallel_park (int direction, int power_percent)
+motor_error_t motor_parallel_park (int32_t direction, int32_t power_percent)
 {
-    int           p = power_percent > 0 ? clamp100(power_percent) : MC_PARK_PCT;
+    int32_t       p = power_percent > 0 ? clamp100(power_percent) : MC_PARK_PCT;
     uint32_t      irq = save_and_disable_interrupts();
     motor_error_t r   = MOTOR_ERR_SAFETY;
     if (!s_manual_estop)
@@ -848,7 +852,7 @@ bool motor_safety_reset (void)
 
 /* ---------------- status ---------------- */
 
-int motor_motion_state (void)
+int32_t motor_motion_state (void)
 {
-    return (int)mc_state(&s_mc);
+    return (int32_t)mc_state(&s_mc);
 }
