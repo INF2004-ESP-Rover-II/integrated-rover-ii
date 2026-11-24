@@ -68,7 +68,7 @@ static const char * TAG = "web_cam";
 
 // Test without the Pico: jumper GPIO17 to GPIO18, and a second UART reads back
 // and logs what really left the pin. Comment out for the rover.
-#define VISION_LOOPBACK_TEST
+// #define VISION_LOOPBACK_TEST
 #define LOOPBACK_UART UART_NUM_2
 #define LOOPBACK_RX_PIN 18
 
