@@ -1,14 +1,21 @@
 # GOTO on the RoboPico (Subsystem 4, on top of Buddy 1's map)
 
 My earlier mapping port (own graph + FSM) is **not** used here. The map is Buddy 1's `rover_map_t`
-(read only). Two new modules:
+(read only). Three modules (all in BARR-C:2018 style, see the end of this file):
 
 | File | What it does |
 |---|---|
-| `src/route_planner.c`, `include/route_planner.h` | A* over the verified graph. Edge usable only if both ends are `MAP_EXPLORED` and the neighbour exists. Cost = 1000 per hop + 1 per 90 degree turn; ties go to the smallest marker-ID path. No malloc, works on node slots (IDs up to 255). |
+| `src/route_planner.c`, `include/route_planner.h` | Shortest route over the verified graph (cost-to-go relaxation over node and heading states, exact, no heuristic). Edge usable only if both ends are `MAP_EXPLORED` and the neighbour exists. Cost = 1000 per hop + 1 per 90 degree turn; ties go to the smallest marker-ID path. No malloc, works on node slots (IDs up to 255). `route_planner_plan()` gives the whole route, `route_planner_next_hop()` gives just the first hop (for the DFS). |
 | `src/goto_ctrl.c`, `include/goto_ctrl.h` | `GOTO:<id>`: plan, send ONE hop with `onboard_dfs_begin_hop`, wait for `onboard_dfs_take_result`, re-plan from the confirmed current node, repeat. Never drives motors, never edits the map. |
 
-`src/main.c` only gets a small hook (adapter functions, 4 commands, one `goto_tick` after `onboard_dfs_tick`).
+| `src/goto_dry.c`, `include/goto_dry.h` | `DEMO_MAP` and `GOTO_DRY:<id>`: plan-only test helpers, no motors, real map never changed. |
+
+`src/main.c` only gets a small hook (adapter functions, the GOTO commands, one `goto_ctrl_tick` after `onboard_dfs_tick`).
+
+Renamed in the BARR-C conversion (module prefix rule): `route_plan` -> `route_planner_plan`, `route_t` ->
+`route_planner_route_t`, `goto_start/cancel/tick/status/take_event/init` -> `goto_ctrl_...`, `goto_io_t` ->
+`goto_ctrl_io_t`, `goto_hop_result_t` -> `goto_ctrl_hop_result_t`, `GOTO_IDLE` -> `GOTO_CTRL_IDLE`,
+`demo_map_build` -> `goto_dry_build_demo_map`. The commands on `robot/command` did not change.
 
 ## Commands (send on `robot/command`; replies on `robot/status`, also printed as `[GOTO] ...`)
 
@@ -53,7 +60,8 @@ without them. The fake map only exists for planning/visual tests: do `RESET_MAP`
 
 ```sh
 cd firmware/robo_pico/test
-make route goto        # or: make check
+make route goto dry dfs   # or: make check (also runs the other tests)
+make barrc                # mechanical BARR-C checks on the Subsystem 4 files
 ```
 * `test_route_planner`: B1's fixture cases (7->36, wall changes, 40 open, 255 disconnected, 99 unknown, 7->7) plus
   about 125,000 checks against a brute force reference on random maps (hops, then turns, then smallest ID path), and a
@@ -61,14 +69,21 @@ make route goto        # or: make check
 * `test_goto_ctrl`: mock executor with B1's contract: refused start, failure queued with a refused start, stale
   sequence, cancel with a late result, wall appearing mid-route, arrival at the wrong node, second route after the first.
 
+* `test_goto_dry`: DEMO_MAP and GOTO_DRY text, real map untouched, blocked edge detour, no route.
+* `test_dfs_backtrack`: see the next section.
+
+Ten deliberately broken versions of the planner and controller (open edges routable, one-sided edge accepted, no turn
+cost, wrong tie-break, wrong first-hop direction, arrival not checked, second GOTO accepted, failed hop ignored, late
+results kept, no admission timeout) were each caught by at least one test.
+
 NOT checked: the Pico build (no SDK here), and anything on the real rover.
 
 ## Test on the rover, in this order
 
 1. Build and flash the RoboPico as usual. Nothing changes until you send a `GOTO` command.
 2. Do your normal mapping (set geometry, set start, `DFS_START`) until `phase=COMPLETE`.
-3. `mosquitto_sub -h localhost -t robot/status -v` in one terminal.
-4. `mosquitto_pub -h localhost -t robot/command -m "GOTO_STATUS"` -> `GOTO IDLE last=NONE target=0`.
+3. `mosquitto_sub -h <broker-ip> -t robot/status -v` in one terminal.
+4. `mosquitto_pub -h <broker-ip> -t robot/command -m "GOTO_STATUS"` -> `GOTO IDLE last=NONE target=0`.
 5. `GOTO:99` (an ID not on the map) -> `last=UNKNOWN_TARGET`. Nothing moves.
 6. `GOTO:<id of the node you are on>` -> `last=REACHED`. Nothing moves.
 7. **One hop first:** `GOTO:<id of a direct neighbour with a driven (explored) edge>`. Expect `RUNNING ... hop=0/1`,
@@ -77,3 +92,61 @@ NOT checked: the Pico build (no SDK here), and anything on the real rover.
 9. During a route send `STOP` -> `last=CANCELLED` and the rover stops.
 
 If a hop fails, send me the `GOTO IDLE last=HOP_FAILED ... reason=...` line and the `[RUN]` lines around it.
+
+## For the DFS: backtracking with the planner (Buddy 1)
+
+`route_planner_next_hop()` is a pure read of `rover_map_t`: it never moves the rover and never writes the map. Today
+`onboard_dfs.c` goes back one node with `stack[depth - 2]` and `direction_to()`. To go back to ANY earlier node
+(for example the most recent stack node that still has an open exit) over the shortest verified path:
+
+```c
+route_planner_step_t step;
+route_planner_status_t status;
+
+status = route_planner_next_hop(&n->map, n->map.current, target_id,
+                                (int32_t)n->direction, &step);
+if (ROUTE_PLANNER_OK == status)
+{
+    /* Drive step.direction to marker step.next_id with the DFS's own leg
+     * function. Call again after each CONFIRMED arrival, because the map may
+     * have changed. */
+}
+```
+
+Rules to keep in mind:
+* Only EXPLORED edges (driven, both ends) are used. A node seen but never driven to gives `ROUTE_PLANNER_NO_ROUTE`:
+  fall back to your own handling (`BACKTRACK_BLOCKED` etc.).
+* `ROUTE_PLANNER_ALREADY_THERE` means no move. Unknown start or target gives a status, never a move.
+* The start must be the confirmed current node (`map.current`). Do not plan from a guessed position.
+* If the DFS takes a shortcut (not the stack path), cut its own stack back to the target node afterwards, as the test
+  model does. Going back ONE node is always the same single hop as the stack gives.
+* This is separate from `GOTO`: `onboard_dfs_begin_hop` only accepts a hop when the phase is COMPLETE, so GOTO cannot
+  be used while exploring. The DFS calls the planner directly.
+
+`test/test_dfs_backtrack.c` is the worked example. It reads the three 6 x 6 DFS test maps from the drawing (20, 10 and
+15 inside wall segments, 36 reachable, dead ends B2/C6/D5, none, E4/E5; all checked from the wall lists), explores each with a host model
+of the DFS (FR-19 exit order), and at every return compares the stack path with the planner path. Result:
+
+| Map | Returns | Shorter by planner | Back-hops stack / planner | Total hops stack run / planner run |
+|---|---|---|---|---|
+| current layout | 4 | 1 | 8 / 6 | 53 / 51 |
+| S layout | 11 | 1 | 20 / 16 | 85 / 81 |
+| loop and dead ends | 9 | 0 | 20 / 20 | 75 / 75 |
+
+The planner path was never longer than the stack path, and every cell was explored in both runs. The totals are what
+this model produced, not a guarantee for another exit order. The model is NOT `onboard_dfs.c`: it scans all four exits on
+arrival and counts a loop-closing exit as driven there and back.
+
+## Coding standard (BARR-C:2018)
+
+The three modules and their tests follow BARR-C:2018: C99, Allman braces always, 80 columns, no tabs, 4-space indent,
+module-prefixed public names, `uint32_t` etc. instead of `int`/`unsigned`, `p_` for pointers, `g_` for file-scope
+variables, names of 3 or more characters, no `continue` or `goto`, constants on the left of `==`, `default` in every
+`switch`, `else` after every `else if`, a comment on every cast, Doxygen-style comments on every function, an
+end-of-file comment. Built with `-std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wcast-qual
+-Wstrict-prototypes` (gcc and clang, no warnings). `make barrc` runs `tools/barrc_check.py`, a partial mechanical
+check (it can find rule breaks, it cannot certify compliance).
+
+Known deviations: plain `int` where an API forces it (`rover_map_at/place` take `int`, `snprintf` returns `int`,
+`main` returns `int`); the other team's files (`main.c` outside the GOTO glue, `rover_map.c`, `onboard_dfs.c`, motor and camera code,
+`fixtures/`) are NOT converted.

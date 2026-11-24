@@ -12,7 +12,7 @@
 #include "uart_protocol.h"
 #include "camera_uart.h"
 #include "onboard_dfs.h"
-#include "goto_ctrl.h"      // Subsystem 4: GOTO:<marker> over the verified map (A*)
+#include "goto_ctrl.h"      // Subsystem 4: GOTO:<marker> over the verified map
 #include "goto_dry.h"       // Subsystem 4: DEMO_MAP and GOTO_DRY (plan-only tests, no motors)
 #include "lwip/timeouts.h"
 #include "lwip/apps/mqtt.h"
@@ -523,18 +523,76 @@ static bool onboard_turn(void *ctx,int heading) {(void)ctx;return motor_auto_rot
 static bool onboard_turn_done(void *ctx) {(void)ctx;return motor_auto_status()==MOTOR_AUTO_HEADING_REACHED;}
 static void onboard_stop_motor(void *ctx) {(void)ctx;motor_emergency_stop();}
 static const onboard_motor_io_t onboard_io={NULL,onboard_drive,onboard_turn,onboard_turn_done,onboard_stop_motor};
-/* Subsystem 4: GOTO controller. It reads the map and submits one verified hop at a time; it never drives. */
-static goto_ctrl_t goto_ctl;
-static const rover_map_t *goto_map(void *c){(void)c;return onboard_dfs_map(&onboard);}
-static bool goto_ready(void *c){(void)c;return onboard.phase==DFS_COMPLETE&&onboard.current_confirmed&&!onboard.result_pending;}
-static bool goto_begin(void *c,uint8_t t,unsigned d,uint32_t s,uint32_t now){(void)c;return onboard_dfs_begin_hop(&onboard,t,d,s,now);}
-static bool goto_take(void *c,goto_hop_result_t *o) {
-    (void)c;onboard_hop_result_t r;
-    if(!onboard_dfs_take_result(&onboard,&r))return false;
-    o->sequence=r.sequence;o->target=r.target;o->arrived=r.arrived;snprintf(o->reason,sizeof(o->reason),"%s",r.reason?r.reason:"?");
-    return true;
+/* ---- Subsystem 4: GOTO controller glue (BARR-C:2018 style) ---------------
+ * The controller reads the map and submits one verified hop at a time to the
+ * onboard executor. It never drives the motors. */
+
+/** The GOTO controller. */
+static goto_ctrl_t g_goto_ctrl;
+
+/** Controller callback: the map the executor is using. */
+static const rover_map_t * goto_glue_map(void * p_context)
+{
+    (void)p_context;
+
+    return onboard_dfs_map(&onboard);
 }
-static const goto_io_t goto_io={NULL,goto_map,goto_ready,goto_begin,goto_take};
+
+/** Controller callback: may the executor take a hop right now? */
+static bool goto_glue_ready(void * p_context)
+{
+    (void)p_context;
+
+    return (DFS_COMPLETE == onboard.phase) && (onboard.current_confirmed)
+           && (!onboard.result_pending);
+}
+
+/** Controller callback: start one hop. */
+static bool goto_glue_begin(void * p_context,
+                            uint8_t target,
+                            uint32_t direction,
+                            uint32_t sequence,
+                            uint32_t now_ms)
+{
+    (void)p_context;
+
+    return onboard_dfs_begin_hop(&onboard, target, direction, sequence,
+                                 now_ms);
+}
+
+/** Controller callback: fetch the terminal result of a hop, once. */
+static bool goto_glue_take(void * p_context,
+                           goto_ctrl_hop_result_t * p_result)
+{
+    onboard_hop_result_t hop;
+    const char * p_reason = "?";
+    bool taken = false;
+
+    (void)p_context;
+    taken = onboard_dfs_take_result(&onboard, &hop);
+
+    if (taken)
+    {
+        if (NULL != hop.reason)
+        {
+            p_reason = hop.reason;
+        }
+
+        p_result->sequence = hop.sequence;
+        p_result->target = hop.target;
+        p_result->arrived = hop.arrived;
+        (void)snprintf(p_result->reason, sizeof(p_result->reason), "%s",
+                       p_reason);
+    }
+
+    return taken;
+}
+
+/** Connections handed to goto_ctrl_init(). */
+static const goto_ctrl_io_t g_goto_io =
+{
+    NULL, goto_glue_map, goto_glue_ready, goto_glue_begin, goto_glue_take
+};
 
 static void queue_command(const char *command) {
     if(!strcmp(command,"STOP")||!strcmp(command,"DFS_STOP")||!strcmp(command,"AUTO_STOP")){command_stop=true;return;}
@@ -587,40 +645,40 @@ static bool handle_onboard_command(const char *command,uint32_t now) {
     if(!strncmp(command,"GOTO:",5)) {
         unsigned id;
         bool ok=uint_argument(command+5,&id)&&id>=1&&id<=ROVER_MAX_MARKER_ID&&!mapping_reference_invalid&&
-                !motor_safety_is_latched()&&goto_start(&goto_ctl,(uint8_t)id,now);
+                !motor_safety_is_latched()&&goto_ctrl_start(&g_goto_ctrl,(uint8_t)id,now);
         if(!ok)mqtt_publish_status("GOTO_REFUSED_BAD_TARGET_BUSY_OR_SAFETY_LATCHED");
         map_requested=true;return true;
     }
     if(!strcmp(command,"GOTO_CANCEL")) {
-        goto_cancel(&goto_ctl);
+        goto_ctrl_cancel(&g_goto_ctrl);
         if(onboard_dfs_busy(&onboard)){motor_emergency_stop();onboard_dfs_stop(&onboard,"GOTO_CANCELLED",now);}
         map_requested=true;return true;
     }
     if(!strcmp(command,"DEMO_MAP")) {   /* load a fake 6-marker map so planning can be tested without the camera */
-        bool ok=!onboard_dfs_busy(&onboard)&&goto_ctl.state==GOTO_IDLE&&!onboard.map.start&&demo_map_build(&onboard.map);
+        bool ok=!onboard_dfs_busy(&onboard)&&g_goto_ctrl.state==GOTO_CTRL_IDLE&&!onboard.map.start&&goto_dry_build_demo_map(&onboard.map);
         mqtt_publish_status(ok?"DEMO_MAP_LOADED_PLANNING_ONLY_SEND_RESET_MAP_TO_CLEAR":"DEMO_MAP_REFUSED_RESET_MAP_FIRST");
         map_requested=true;return true;
     }
     if(!strncmp(command,"GOTO_DRY:",9)) {   /* plan + walk the route on a COPY of the map; nothing moves */
         unsigned id;char text[200];
-        if(uint_argument(command+9,&id)&&id>=1&&id<=ROVER_MAX_MARKER_ID&&goto_ctl.state==GOTO_IDLE){
+        if(uint_argument(command+9,&id)&&id>=1&&id<=ROVER_MAX_MARKER_ID&&g_goto_ctrl.state==GOTO_CTRL_IDLE){
             goto_dry_run(onboard_dfs_map(&onboard),(uint8_t)id,text,sizeof(text),time_us_32);
             printf("[GOTO] %s\n",text);mqtt_publish_status(text);
         } else mqtt_publish_status("GOTO_DRY_REFUSED");
         return true;
     }
     if(!strcmp(command,"GOTO_STATUS")) {
-        char text[96];goto_status(&goto_ctl,text,sizeof(text));mqtt_publish_status(text);return true;
+        char text[96];goto_ctrl_status(&g_goto_ctrl,text,sizeof(text));mqtt_publish_status(text);return true;
     }
     if(!strncmp(command,"GOTO_BLOCK:",11)) {   /* operator override: mark the edge leaving <id> in <dir> (0=N 1=E 2=S 3=W) blocked */
         char args[32];snprintf(args,sizeof(args),"%s",command+11);char *colon=strchr(args,':');unsigned id=0,dir=0;
         bool ok=colon&&(*colon++=0,uint_argument(args,&id)&&uint_argument(colon,&dir))&&id>=1&&id<=ROVER_MAX_MARKER_ID&&dir<=3&&
-                goto_ctl.state==GOTO_IDLE&&!onboard_dfs_busy(&onboard)&&rover_map_exit(&onboard.map,(uint8_t)id,dir,MAP_BLOCKED);
+                g_goto_ctrl.state==GOTO_CTRL_IDLE&&!onboard_dfs_busy(&onboard)&&rover_map_exit(&onboard.map,(uint8_t)id,dir,MAP_BLOCKED);
         mqtt_publish_status(ok?"EDGE_MARKED_BLOCKED":"GOTO_BLOCK_REFUSED");map_requested=true;return true;
     }
     if(!strcmp(command,"RESET_MAP")) {
         if(onboard_dfs_busy(&onboard)){mqtt_publish_status("RESET_MAP_REFUSED_STOP_FIRST");return true;}
-        goto_cancel(&goto_ctl);
+        goto_ctrl_cancel(&g_goto_ctrl);
         motor_emergency_stop();onboard_config_t config=onboard.config;
         onboard_dfs_init(&onboard,&onboard_io);onboard.config=config;
         mapping_reference_invalid=false;map_requested=true;mqtt_publish_status("MAP_RESET");return true;
@@ -630,7 +688,7 @@ static bool handle_onboard_command(const char *command,uint32_t now) {
 static void dispatch_commands(uint32_t now) {
     if(command_stop||command_estop) {
         bool emergency=command_estop;command_stop=command_estop=false;command_head=command_count=0;
-        goto_cancel(&goto_ctl);
+        goto_ctrl_cancel(&g_goto_ctrl);
         heading_zero_pending=false;
         if(emergency){motor_manual_estop();onboard_dfs_fault(&onboard,"OPERATOR_ESTOP",now);}
         else {motor_emergency_stop();onboard_dfs_stop(&onboard,"OPERATOR_STOP",now);}
@@ -673,7 +731,7 @@ int main(void) {
     puts("\nMecanum Robot Controller - ONBOARD DFS / CAMERA UART1 GP21 [NETFIX-1]");
     if(motor_init()!=MOTOR_OK)return -1;
     onboard_dfs_init(&onboard,&onboard_io);
-    goto_init(&goto_ctl,&goto_io);
+    goto_ctrl_init(&g_goto_ctrl,&g_goto_io);
     struct repeating_timer safety_timer;
     if(!add_repeating_timer_ms(-10,safety_watchdog_tick,NULL,&safety_timer)){motor_manual_estop();return -1;}
     uart_set_packet_callback(on_sensor_packet);
@@ -733,10 +791,10 @@ int main(void) {
         if(was_busy&&((executor_was_required&&motor_executor_expired())||motor_safety_is_latched()||motor_motion_state()==MOTOR_STATE_SAFE_STOP))
             onboard_dfs_fault(&onboard,"MOTOR_SAFETY_OR_EXECUTOR_STOP",now);
         onboard_dfs_tick(&onboard,now);
-        goto_tick(&goto_ctl,now);
+        goto_ctrl_tick(&g_goto_ctrl,now);
         {
             char goto_text[96];
-            if(goto_take_event(&goto_ctl,goto_text,sizeof(goto_text))){
+            if(goto_ctrl_take_event(&g_goto_ctrl,goto_text,sizeof(goto_text))){
                 printf("[GOTO] %s\n",goto_text);
                 if(mqtt_is_connected())mqtt_publish_status(goto_text);
             }

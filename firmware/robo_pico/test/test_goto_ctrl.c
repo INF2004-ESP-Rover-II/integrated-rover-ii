@@ -1,177 +1,468 @@
-/* Host test for src/goto_ctrl.c with a mock executor that follows the onboard_dfs hop contract:
- * begin_hop refusal returns false with no result; a start failure returns false WITH a queued result;
- * sequence numbers must increase; one terminal result per hop, consumed once. */
+/**
+ * @file test_goto_ctrl.c
+ * @brief Host test for src/goto_ctrl.c with a mock executor that follows the
+ *        onboard_dfs hop contract: a refused begin_hop returns false with no
+ *        result, a start failure returns false WITH a queued result,
+ *        sequence numbers must increase, and there is one terminal result
+ *        per hop, consumed once.
+ */
+
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include "planner_fixture.h"
 #include "goto_ctrl.h"
+#include "planner_fixture.h"
+#include "test_support.h"
 
-static int checks;
-#define CHECK(c) do { ++checks; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
+/* ---- Constants ---------------------------------------------------------- */
 
-typedef struct {
+/** Time between loop iterations in the test. */
+#define TEST_TICK_MS (10u)
+
+/** Start time of every scenario. */
+#define TEST_START_MS (1000u)
+
+/** Refusals that never end. */
+#define TEST_REFUSE_FOREVER (1000000)
+
+/* ---- Types -------------------------------------------------------------- */
+
+/** Mock executor. */
+typedef struct
+{
     rover_map_t map;
     bool ready;
     uint32_t last_seq;
     bool busy;
-    unsigned ticks_left;        /* hop takes this many calls to finish */
-    uint8_t target; unsigned dir; uint32_t seq;
-    bool fail_next;             /* the hop fails when it finishes */
-    bool fail_at_start;         /* begin_hop returns false but queues a failure */
-    int refuse_count;           /* refuse this many begin_hop calls first (no result) */
-    bool pending; goto_hop_result_t result;
-    unsigned begins;
-    unsigned delay;
-    int teleport;               /* after an 'arrived' result the map says the rover is elsewhere */
-} mock_t;
+    uint32_t ticks_left;     /**< Calls a hop takes to finish. */
+    uint8_t target;
+    uint32_t direction;
+    uint32_t seq;
+    bool fail_next;          /**< The hop fails when it finishes. */
+    bool fail_at_start;      /**< begin_hop is false but queues a failure. */
+    int32_t refuse_count;    /**< Refuse this many begin_hop calls first. */
+    bool pending;
+    goto_ctrl_hop_result_t result;
+    uint32_t begins;
+    uint32_t delay;
+    uint8_t teleport;        /**< After ARRIVED the map says rover is here. */
+} test_mock_t;
 
-static const rover_map_t *m_map(void *c) { return &((mock_t *)c)->map; }
-static bool m_ready(void *c) { return ((mock_t *)c)->ready && !((mock_t *)c)->busy; }
-static bool m_begin(void *c, uint8_t t, unsigned d, uint32_t seq, uint32_t now)
-{
-    (void)now;
-    mock_t *k = c; ++k->begins;
-    if (k->refuse_count > 0) { --k->refuse_count; return false; }
-    if (k->busy || k->pending || seq <= k->last_seq) return false;
-    const rover_node_t *cur = rover_map_find(&k->map, k->map.current, NULL, NULL);
-    if (!cur || cur->exits[d] != MAP_EXPLORED) return false;
-    k->last_seq = seq;
-    if (k->fail_at_start) {
-        k->fail_at_start = false;
-        k->pending = true; k->result = (goto_hop_result_t){seq, t, false, "MOTOR_TURN_REFUSED"};
-        return false;
-    }
-    k->busy = true; k->ticks_left = k->delay; k->target = t; k->dir = d; k->seq = seq;
-    return true;
-}
-static bool m_take(void *c, goto_hop_result_t *out)
-{
-    mock_t *k = c;
-    if (!k->pending) return false;
-    *out = k->result; k->pending = false; return true;
-}
-static void mock_step(mock_t *k)       /* called once per loop iteration, like onboard_dfs_tick */
-{
-    if (!k->busy) return;
-    if (k->ticks_left && --k->ticks_left) return;
-    k->busy = false;
-    if (k->fail_next) {
-        k->fail_next = false;
-        k->pending = true; k->result = (goto_hop_result_t){k->seq, k->target, false, "OBSTACLE_DURING_SEGMENT"};
-        return;
-    }
-    CHECK(planner_fixture_arrive(&k->map, k->target, k->dir));
-    if (k->teleport) k->map.current = (uint8_t)k->teleport;
-    k->pending = true; k->result = (goto_hop_result_t){k->seq, k->target, true, "ARRIVED"};
-}
+/* ---- Private prototypes ------------------------------------------------- */
 
-static goto_ctrl_t G; static mock_t K; static uint32_t NOW;
-static void setup(void)
-{
-    memset(&K, 0, sizeof K);
-    CHECK(planner_fixture_build(&K.map));
-    K.ready = true; K.delay = 2;
-    goto_io_t io = {&K, m_map, m_ready, m_begin, m_take};
-    goto_init(&G, &io);
-    NOW = 1000;
-}
-static void run(unsigned loops)
-{
-    for (unsigned i = 0; i < loops && G.state == GOTO_RUNNING; ++i) { NOW += 10; mock_step(&K); goto_tick(&G, NOW); }
-}
-static const char *status(void) { static char b[120]; goto_status(&G, b, sizeof b); return b; }
+static const rover_map_t * test_mock_map(void * p_context);
+static bool test_mock_ready(void * p_context);
+static bool test_mock_begin(void * p_context,
+                            uint8_t target,
+                            uint32_t direction,
+                            uint32_t sequence,
+                            uint32_t now_ms);
+static bool test_mock_take(void * p_context,
+                           goto_ctrl_hop_result_t * p_result);
+static void test_queue_result(test_mock_t * p_mock,
+                              uint32_t sequence,
+                              uint8_t target,
+                              bool arrived,
+                              const char * p_reason);
+static void test_mock_step(test_mock_t * p_mock);
+static void test_setup(void);
+static void test_run(uint32_t loops);
+static bool test_status_has(const char * p_text);
+static void test_normal_route(void);
+static void test_no_motion_cases(void);
+static void test_hop_failures(void);
+static void test_admission(void);
+static void test_cancel_and_stale(void);
+static void test_replan_and_repeat(void);
+
+/* ---- Static data -------------------------------------------------------- */
+
+static goto_ctrl_t g_ctrl;
+static test_mock_t g_mock;
+static uint32_t g_now_ms;
+
+/* ---- Public functions --------------------------------------------------- */
 
 int main(void)
 {
-    char buf[120];
+    test_normal_route();
+    test_no_motion_cases();
+    test_hop_failures();
+    test_admission();
+    test_cancel_and_stale();
+    test_replan_and_repeat();
 
-    /* 1. normal route 7 -> 36, three hops, ends REACHED at 36 */
-    setup();
-    CHECK(goto_start(&G, 36, NOW));
-    CHECK(G.state == GOTO_RUNNING);
-    CHECK(!goto_start(&G, 9, NOW));                 /* second GOTO while running is refused */
-    run(100);
-    CHECK(G.state == GOTO_IDLE && G.last_result == GOTO_RES_REACHED);
-    CHECK(K.map.current == 36 && K.begins == 3 && G.hops_done == 3);
-    CHECK(strstr(status(), "last=REACHED") != NULL);
-    CHECK(goto_take_event(&G, buf, sizeof buf));
-    CHECK(!goto_take_event(&G, buf, sizeof buf));   /* only once per change */
-
-    /* 2. already there, unknown, no route: nothing moves */
-    setup();
-    CHECK(goto_start(&G, 7, NOW)); CHECK(G.last_result == GOTO_RES_REACHED && K.begins == 0);
-    setup(); CHECK(goto_start(&G, 99, NOW)); CHECK(G.last_result == GOTO_RES_UNKNOWN_TARGET && K.begins == 0);
-    setup(); CHECK(goto_start(&G, 255, NOW)); CHECK(G.last_result == GOTO_RES_NO_ROUTE && K.begins == 0);
-    setup(); CHECK(goto_start(&G, 40, NOW)); CHECK(G.last_result == GOTO_RES_NO_ROUTE && K.begins == 0);
-
-    /* 3. blocked edge is routed around (wall added before the request) */
-    setup();
-    CHECK(rover_map_exit(&K.map, 7, MAP_NORTH, MAP_BLOCKED));
-    CHECK(goto_start(&G, 36, NOW)); run(100);
-    CHECK(G.last_result == GOTO_RES_REACHED && K.map.current == 36);
-
-    /* 4. a hop fails midway: route stops, no replan from a guess, reason reported */
-    setup();
-    CHECK(goto_start(&G, 36, NOW)); run(3);
-    K.fail_next = true; run(100);
-    CHECK(G.state == GOTO_IDLE && G.last_result == GOTO_RES_HOP_FAILED);
-    CHECK(strstr(status(), "OBSTACLE_DURING_SEGMENT") != NULL);
-    unsigned begins = K.begins; run(50); CHECK(K.begins == begins);
-
-    /* 5. refused start with a queued failure is read, not waited on forever */
-    setup(); K.fail_at_start = true;
-    CHECK(goto_start(&G, 36, NOW));
-    CHECK(G.state == GOTO_IDLE && G.last_result == GOTO_RES_HOP_FAILED && strstr(status(), "MOTOR_TURN_REFUSED"));
-
-    /* 6. admission refused (stale camera) for a while, then accepted: it just waits */
-    setup(); K.refuse_count = 20;
-    CHECK(goto_start(&G, 36, NOW)); run(300);
-    CHECK(G.last_result == GOTO_RES_REACHED);
-    /* ... but a permanent refusal gives up with NOT_READY */
-    setup(); K.ready = false;
-    CHECK(goto_start(&G, 36, NOW)); run(1000);
-    CHECK(G.state == GOTO_IDLE && G.last_result == GOTO_RES_NOT_READY && K.begins == 0);
-    setup(); K.refuse_count = 1000000;
-    CHECK(goto_start(&G, 36, NOW)); run(1000);
-    CHECK(G.last_result == GOTO_RES_NOT_READY);
-
-    /* 7. cancel mid-hop; the late result is dropped and never starts anything */
-    setup();
-    CHECK(goto_start(&G, 36, NOW)); run(1);
-    goto_cancel(&G);
-    CHECK(G.state == GOTO_IDLE && G.last_result == GOTO_RES_CANCELLED);
-    begins = K.begins;
-    for (int i = 0; i < 20; ++i) { NOW += 10; mock_step(&K); goto_tick(&G, NOW); }
-    CHECK(K.begins == begins && !K.pending && G.last_result == GOTO_RES_CANCELLED);
-
-    /* 8. stale result with the wrong sequence is ignored */
-    setup();
-    CHECK(goto_start(&G, 36, NOW));
-    K.pending = true; K.result = (goto_hop_result_t){999, 3, false, "OLD"};
-    NOW += 10; goto_tick(&G, NOW);
-    CHECK(G.state == GOTO_RUNNING);                 /* stale failure did not abort the route */
-    run(100); CHECK(G.last_result == GOTO_RES_REACHED);
-
-    /* 9. the map changes while a hop is in flight (a later edge becomes blocked): the next hop re-plans */
-    setup();
-    CHECK(goto_start(&G, 36, NOW)); run(3);        /* hop 1 (7 -> 3) done, hop 2 (3 -> 9) driving */
-    CHECK(K.map.current == 3 && G.hop_in_flight);
-    CHECK(rover_map_exit(&K.map, 9, MAP_EAST, MAP_BLOCKED));   /* 9-36 closes before hop 3 starts */
-    run(300);
-    CHECK(G.last_result == GOTO_RES_REACHED && K.map.current == 36 && K.begins > 3);
-
-    /* 10. a second route works after a finished one (sequence keeps increasing) */
-    setup();
-    CHECK(goto_start(&G, 36, NOW)); run(100); CHECK(K.map.current == 36);
-    CHECK(goto_start(&G, 7, NOW)); run(100);
-    CHECK(G.last_result == GOTO_RES_REACHED && K.map.current == 7);
-
-    /* 11. executor says ARRIVED but the authoritative current node is not the hop target: stop, do not trust it */
-    setup(); K.teleport = 7;
-    CHECK(goto_start(&G, 36, NOW)); run(100);
-    CHECK(G.last_result == GOTO_RES_HOP_FAILED && strstr(status(), "UNEXPECTED_NODE"));
-
-    printf("test_goto_ctrl: %d checks OK\n", checks);
-    return 0;
+    return test_finish("test_goto_ctrl");
 }
+
+/* ---- Mock executor ------------------------------------------------------ */
+
+/** Mock: the map the controller plans on. */
+static const rover_map_t * test_mock_map(void * p_context)
+{
+    const test_mock_t * p_mock = p_context;
+
+    return &p_mock->map;
+}
+
+/** Mock: ready when configured so and not busy. */
+static bool test_mock_ready(void * p_context)
+{
+    const test_mock_t * p_mock = p_context;
+
+    return p_mock->ready && (!p_mock->busy);
+}
+
+/** Mock: queue a terminal result. */
+static void test_queue_result(test_mock_t * p_mock,
+                              uint32_t sequence,
+                              uint8_t target,
+                              bool arrived,
+                              const char * p_reason)
+{
+    p_mock->pending = true;
+    p_mock->result.sequence = sequence;
+    p_mock->result.target = target;
+    p_mock->result.arrived = arrived;
+    (void)snprintf(p_mock->result.reason, sizeof(p_mock->result.reason),
+                   "%s", p_reason);
+}
+
+/** Mock: begin_hop with the same refusal rules as the real executor. */
+static bool test_mock_begin(void * p_context,
+                            uint8_t target,
+                            uint32_t direction,
+                            uint32_t sequence,
+                            uint32_t now_ms)
+{
+    test_mock_t * p_mock = p_context;
+    const rover_node_t * p_current = NULL;
+    bool accepted = false;
+
+    (void)now_ms;
+    p_mock->begins++;
+    p_current = rover_map_find(&p_mock->map, p_mock->map.current, NULL, NULL);
+
+    if (p_mock->refuse_count > 0)
+    {
+        p_mock->refuse_count--;
+    }
+    else if (p_mock->busy || p_mock->pending
+             || (sequence <= p_mock->last_seq) || (NULL == p_current))
+    {
+        /* Refused, no result queued. */
+    }
+    else if (MAP_EXPLORED != p_current->exits[direction])
+    {
+        /* Refused, no result queued. */
+    }
+    else if (p_mock->fail_at_start)
+    {
+        p_mock->last_seq = sequence;
+        p_mock->fail_at_start = false;
+        test_queue_result(p_mock, sequence, target, false,
+                          "MOTOR_TURN_REFUSED");
+    }
+    else
+    {
+        p_mock->last_seq = sequence;
+        p_mock->busy = true;
+        p_mock->ticks_left = p_mock->delay;
+        p_mock->target = target;
+        p_mock->direction = direction;
+        p_mock->seq = sequence;
+        accepted = true;
+    }
+
+    return accepted;
+}
+
+/** Mock: hand over the queued result once. */
+static bool test_mock_take(void * p_context,
+                           goto_ctrl_hop_result_t * p_result)
+{
+    test_mock_t * p_mock = p_context;
+    bool taken = false;
+
+    if (p_mock->pending)
+    {
+        *p_result = p_mock->result;
+        p_mock->pending = false;
+        taken = true;
+    }
+
+    return taken;
+}
+
+/** Mock: advance the hop in progress, like onboard_dfs_tick. */
+static void test_mock_step(test_mock_t * p_mock)
+{
+    bool finished = false;
+
+    if (p_mock->busy)
+    {
+        if (p_mock->ticks_left > 0u)
+        {
+            p_mock->ticks_left--;
+        }
+
+        finished = (0u == p_mock->ticks_left);
+    }
+
+    if (finished)
+    {
+        p_mock->busy = false;
+
+        if (p_mock->fail_next)
+        {
+            p_mock->fail_next = false;
+            test_queue_result(p_mock, p_mock->seq, p_mock->target, false,
+                              "OBSTACLE_DURING_SEGMENT");
+        }
+        else
+        {
+            test_check(planner_fixture_arrive(&p_mock->map, p_mock->target,
+                                              p_mock->direction), __LINE__);
+
+            if (0u != p_mock->teleport)
+            {
+                p_mock->map.current = p_mock->teleport;
+            }
+
+            test_queue_result(p_mock, p_mock->seq, p_mock->target, true,
+                              "ARRIVED");
+        }
+    }
+}
+
+/* ---- Scenario helpers --------------------------------------------------- */
+
+/** Fresh mock, fresh controller. */
+static void test_setup(void)
+{
+    goto_ctrl_io_t io;
+
+    (void)memset(&g_mock, 0, sizeof(g_mock));
+    test_check(planner_fixture_build(&g_mock.map), __LINE__);
+    g_mock.ready = true;
+    g_mock.delay = 2u;
+
+    io.p_context = &g_mock;
+    io.map = test_mock_map;
+    io.ready = test_mock_ready;
+    io.begin_hop = test_mock_begin;
+    io.take_result = test_mock_take;
+    goto_ctrl_init(&g_ctrl, &io);
+    g_now_ms = TEST_START_MS;
+}
+
+/** Run the main loop until the route ends or the loops run out. */
+static void test_run(uint32_t loops)
+{
+    uint32_t count = 0u;
+
+    for (count = 0u; (count < loops)
+                     && (GOTO_CTRL_RUNNING == g_ctrl.state); count++)
+    {
+        g_now_ms += TEST_TICK_MS;
+        test_mock_step(&g_mock);
+        goto_ctrl_tick(&g_ctrl, g_now_ms);
+    }
+}
+
+/** Does the controller status text contain the given text? */
+static bool test_status_has(const char * p_text)
+{
+    char text[120];
+
+    (void)goto_ctrl_status(&g_ctrl, text, sizeof(text));
+
+    return NULL != strstr(text, p_text);
+}
+
+/* ---- Scenarios ---------------------------------------------------------- */
+
+/** 1. Normal route 7 to 36: three hops, ends REACHED at 36. */
+static void test_normal_route(void)
+{
+    char text[120];
+
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_check(GOTO_CTRL_RUNNING == g_ctrl.state, __LINE__);
+
+    /* A second GOTO while running is refused. */
+    test_check(!goto_ctrl_start(&g_ctrl, 9u, g_now_ms), __LINE__);
+    test_run(100u);
+    test_check((GOTO_CTRL_IDLE == g_ctrl.state)
+               && (GOTO_CTRL_RES_REACHED == g_ctrl.last_result), __LINE__);
+    test_check((36u == g_mock.map.current) && (3u == g_mock.begins)
+               && (3u == g_ctrl.hops_done), __LINE__);
+    test_check(test_status_has("last=REACHED"), __LINE__);
+
+    /* The event is reported once per change. */
+    test_check(goto_ctrl_take_event(&g_ctrl, text, sizeof(text)), __LINE__);
+    test_check(!goto_ctrl_take_event(&g_ctrl, text, sizeof(text)),
+               __LINE__);
+}
+
+/** 2. Already there, unknown, no route: nothing moves. */
+static void test_no_motion_cases(void)
+{
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 7u, g_now_ms), __LINE__);
+    test_check((GOTO_CTRL_RES_REACHED == g_ctrl.last_result)
+               && (0u == g_mock.begins), __LINE__);
+
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 99u, g_now_ms), __LINE__);
+    test_check((GOTO_CTRL_RES_UNKNOWN_TARGET == g_ctrl.last_result)
+               && (0u == g_mock.begins), __LINE__);
+
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 255u, g_now_ms), __LINE__);
+    test_check((GOTO_CTRL_RES_NO_ROUTE == g_ctrl.last_result)
+               && (0u == g_mock.begins), __LINE__);
+
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 40u, g_now_ms), __LINE__);
+    test_check((GOTO_CTRL_RES_NO_ROUTE == g_ctrl.last_result)
+               && (0u == g_mock.begins), __LINE__);
+}
+
+/** 3, 4, 5, 11. Blocked edge, failed hops, queued failure, bad arrival. */
+static void test_hop_failures(void)
+{
+    uint32_t begins = 0u;
+
+    /* 3. A blocked edge is routed around (wall added before the request). */
+    test_setup();
+    test_check(rover_map_exit(&g_mock.map, 7u, MAP_NORTH, MAP_BLOCKED),
+               __LINE__);
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(100u);
+    test_check((GOTO_CTRL_RES_REACHED == g_ctrl.last_result)
+               && (36u == g_mock.map.current), __LINE__);
+
+    /* 4. A hop fails midway: route stops, reason reported, no replan. */
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(3u);
+    g_mock.fail_next = true;
+    test_run(100u);
+    test_check((GOTO_CTRL_IDLE == g_ctrl.state)
+               && (GOTO_CTRL_RES_HOP_FAILED == g_ctrl.last_result),
+               __LINE__);
+    test_check(test_status_has("OBSTACLE_DURING_SEGMENT"), __LINE__);
+    begins = g_mock.begins;
+    test_run(50u);
+    test_check(begins == g_mock.begins, __LINE__);
+
+    /* 5. A refused start with a queued failure is read, not waited on. */
+    test_setup();
+    g_mock.fail_at_start = true;
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_check((GOTO_CTRL_IDLE == g_ctrl.state)
+               && (GOTO_CTRL_RES_HOP_FAILED == g_ctrl.last_result)
+               && test_status_has("MOTOR_TURN_REFUSED"), __LINE__);
+
+    /* 11. ARRIVED but the current node is not the hop target: stop. */
+    test_setup();
+    g_mock.teleport = 7u;
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(100u);
+    test_check((GOTO_CTRL_RES_HOP_FAILED == g_ctrl.last_result)
+               && test_status_has("UNEXPECTED_NODE"), __LINE__);
+}
+
+/** 6. Admission refused (stale camera) for a while, or for good. */
+static void test_admission(void)
+{
+    test_setup();
+    g_mock.refuse_count = 20;
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(300u);
+    test_check(GOTO_CTRL_RES_REACHED == g_ctrl.last_result, __LINE__);
+
+    /* A permanent refusal gives up with NOT_READY. */
+    test_setup();
+    g_mock.ready = false;
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(1000u);
+    test_check((GOTO_CTRL_IDLE == g_ctrl.state)
+               && (GOTO_CTRL_RES_NOT_READY == g_ctrl.last_result)
+               && (0u == g_mock.begins), __LINE__);
+
+    test_setup();
+    g_mock.refuse_count = TEST_REFUSE_FOREVER;
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(1000u);
+    test_check(GOTO_CTRL_RES_NOT_READY == g_ctrl.last_result, __LINE__);
+}
+
+/** 7, 8. Cancel mid-hop, and a stale result with the wrong sequence. */
+static void test_cancel_and_stale(void)
+{
+    uint32_t begins = 0u;
+    uint32_t count = 0u;
+
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(1u);
+    goto_ctrl_cancel(&g_ctrl);
+    test_check((GOTO_CTRL_IDLE == g_ctrl.state)
+               && (GOTO_CTRL_RES_CANCELLED == g_ctrl.last_result),
+               __LINE__);
+    begins = g_mock.begins;
+
+    for (count = 0u; count < 20u; count++)
+    {
+        g_now_ms += TEST_TICK_MS;
+        test_mock_step(&g_mock);
+        goto_ctrl_tick(&g_ctrl, g_now_ms);
+    }
+
+    test_check((begins == g_mock.begins) && (!g_mock.pending)
+               && (GOTO_CTRL_RES_CANCELLED == g_ctrl.last_result),
+               __LINE__);
+
+    /* A stale failure with another sequence number is ignored. */
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_queue_result(&g_mock, 999u, 3u, false, "OLD");
+    g_now_ms += TEST_TICK_MS;
+    goto_ctrl_tick(&g_ctrl, g_now_ms);
+    test_check(GOTO_CTRL_RUNNING == g_ctrl.state, __LINE__);
+    test_run(100u);
+    test_check(GOTO_CTRL_RES_REACHED == g_ctrl.last_result, __LINE__);
+}
+
+/** 9, 10. Map changes in flight, and a second route after the first. */
+static void test_replan_and_repeat(void)
+{
+    /* The map changes while a hop is in flight: the next hop re-plans. */
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(3u);
+    test_check((3u == g_mock.map.current) && g_ctrl.hop_in_flight,
+               __LINE__);
+
+    /* The 9 to 36 edge closes before hop 3 starts. */
+    test_check(rover_map_exit(&g_mock.map, 9u, MAP_EAST, MAP_BLOCKED),
+               __LINE__);
+    test_run(300u);
+    test_check((GOTO_CTRL_RES_REACHED == g_ctrl.last_result)
+               && (36u == g_mock.map.current) && (g_mock.begins > 3u),
+               __LINE__);
+
+    /* A second route works after a finished one. */
+    test_setup();
+    test_check(goto_ctrl_start(&g_ctrl, 36u, g_now_ms), __LINE__);
+    test_run(100u);
+    test_check(36u == g_mock.map.current, __LINE__);
+    test_check(goto_ctrl_start(&g_ctrl, 7u, g_now_ms), __LINE__);
+    test_run(100u);
+    test_check((GOTO_CTRL_RES_REACHED == g_ctrl.last_result)
+               && (7u == g_mock.map.current), __LINE__);
+}
+
+/* end of file test_goto_ctrl.c */

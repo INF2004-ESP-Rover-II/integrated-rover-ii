@@ -23,10 +23,16 @@ add_executable(mecanum_robot
     src/camera_uart.c
     src/onboard_dfs.c
     src/rover_map.c
-    src/route_planner.c          # Subsystem 4: A* over the verified map
+    src/route_planner.c          # Subsystem 4: shortest route over the verified map
     src/goto_ctrl.c              # Subsystem 4: GOTO:<marker> hop-by-hop controller
     src/goto_dry.c               # Subsystem 4: DEMO_MAP / GOTO_DRY plan-only tests
     ../common/vision_protocol.c
+    test/test_dfs_backtrack.c
+    test/test_goto_ctrl.c
+    test/test_goto_dry.c
+    test/test_route_planner.c
+    test/test_support.c
+    test/test_support.h
 )
 
 target_include_directories(mecanum_robot PRIVATE
