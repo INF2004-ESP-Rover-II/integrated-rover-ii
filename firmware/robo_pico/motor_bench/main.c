@@ -10,7 +10,7 @@
  *                      m 40 0 0 forward | m 0 -40 0 strafe left
  *                      m 30 30 0 diagonal | m 40 0 20 arc | m 0 0 40 rotate
  *   park -1|1 [pwr]  parallel park left / right, optional power 10..100
- *                    (default 60; ends by itself after 1.5 s)
+ *                    (default 60; ends by itself after 20 s)
  *   r deg            AUTO rotate to heading 0..359
  *   d speed deg      AUTO drive (speed -100..100) holding heading deg
  *   s                normal stop (ramp down)

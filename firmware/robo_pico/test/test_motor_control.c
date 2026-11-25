@@ -555,24 +555,27 @@ static void test_start_boost(void) {
   mc_set_kick(MC_KICK_PCT, (int)MC_KICK_MS);
 }
 
-static void test_park(void) {
-  puts("FR-39 parallel park ends by itself");
-  sim_t s;
-  sim_init(&s, 0);
-  sim_tick(&s);
-  mc_set_system_ready(&s.mc, true);
-  uint32_t w = mc_pack_manual_park(1, -MC_PARK_PCT);
-  sim_cmd(&s, w);
-  int ticks = 0;
-  while (mc_state(&s.mc) != MS_IDLE && ticks < 200) {
+static void test_park (void)
+{
+    puts("FR-39 parallel park ends by itself");
+    sim_t s;
+    sim_init(&s, 0);
     sim_tick(&s);
-    if (ticks % 5 == 0) {
-      sim_cmd(&s, w);
+    mc_set_system_ready(&s.mc, true);
+    uint32_t w = mc_pack_manual_park(1, -MC_PARK_PCT);
+    sim_cmd(&s, w);
+    int ticks = 0;
+    while (mc_state(&s.mc) != MS_IDLE && ticks < 1500) /* 30 s */
+    {
+        sim_tick(&s);
+        if (ticks % 5 == 0)
+        {
+            sim_cmd(&s, w);
+        }
+        ticks++;
     }
-    ticks++;
-  }
-  CHECK(mc_state(&s.mc) == MS_IDLE && s.results[MR_DONE] == 1,
-        "park -> RAMP DOWN -> IDLE + DONE");
+    CHECK(mc_state(&s.mc) == MS_IDLE && s.results[MR_DONE] == 1,
+          "park -> RAMP DOWN -> IDLE + DONE");
 }
 
 static void test_zigzag_strafe(void) {
