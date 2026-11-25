@@ -22,6 +22,11 @@ set(CAMERA_RECEIVER_SOURCES
 add_executable(mecanum_robot
     src/main.c
     src/motor_driver.c
+    src/motor_manual.c
+    src/motor_auto.c
+    src/motor_heading.c
+    src/motor_safety.c
+    src/motor_arm_claw.c
     src/motor_control.c          # Subsystem 6 Motion Control logic
     src/motor_hw.c               # Subsystem 6 L298N / arm / claw pins
     src/wifi_mqtt.c
