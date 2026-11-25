@@ -132,6 +132,22 @@ int main(void) {
     assert(motor_zero_heading() == MOTOR_OK);
     assert(fabsf(motor_heading_relative(10) - 20) < 0.01f);
     assert(fabsf(motor_heading_relative(349) - 359) < 0.01f);
+    // Lost leases stop the actual driver and never restart a cached move.
+    motor_safety_receive(false,clock_ms);
+    motor_heading_update(350,true);tick(NULL);
+    assert(motor_auto_drive_leased(15,250)==MOTOR_OK);
+    clock_ms+=251;tick(NULL);
+    assert(motor_auto_status()==MOTOR_AUTO_STOPPED && motor_motion_state()==MS_IDLE);
+    for(int i=0;i<MC_WHEELS;++i) assert(output.wheel[i]==0);
+    motor_heading_update(350,true);tick(NULL);
+    assert(motor_motion_state()==MS_IDLE && !motor_safety_is_latched());
+    assert(motor_auto_drive_leased(15,250)==MOTOR_OK); // New explicit lease after recovery.
+    motor_emergency_stop();
+    motor_manual_estop();
+    motor_heading_update(350,true);tick(NULL);
+    assert(motor_auto_drive_leased(15,250)==MOTOR_ERR_SAFETY);
+    assert(motor_safety_is_latched());
+    assert(motor_safety_reset());
     uint32_t epoch = motor_heading_epoch();
     clock_ms += MC_HEADING_STALE_MS + 1;
     motor_heading_update(NAN, true); // Invalid readings cannot refresh the reference.

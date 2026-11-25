@@ -1,9 +1,13 @@
+/**
+ * @file mjpeg_dht.c
+ * @brief Mjpeg dht firmware module.
+ */
 #include "mjpeg_dht.h"
 
 #include <string.h>
 
 // The standard Huffman tables from the JPEG spec (ITU T.81 Annex K.3).
-static const uint8_t STD_DHT[MJPEG_STD_DHT_LEN] = {
+static const uint8_t g_std_dht[MJPEG_STD_DHT_LEN] = {
     0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
     0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00,
@@ -42,24 +46,25 @@ static const uint8_t STD_DHT[MJPEG_STD_DHT_LEN] = {
     0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA,
 };
 
-size_t mjpeg_with_dht (const uint8_t * src, size_t len, uint8_t * dst,
-                       size_t dst_cap, bool * had_dht)
+size_t
+mjpeg_with_dht (const uint8_t * p_src, size_t len, uint8_t * p_dst,
+                size_t dst_cap, bool * p_had_dht)
 {
-    if (len < 4 || src[0] != 0xFF || src[1] != 0xD8)
+    if (len < 4 || p_src[0] != 0xFF || p_src[1] != 0xD8)
     {
         return 0;
     }
-    size_t i = 2;
-    while (i + 4 <= len)
+    size_t index = 2;
+    while (index + 4 <= len)
     {
-        if (src[i] != 0xFF)
+        if (p_src[index] != 0xFF)
         {
             return 0;
         }
-        uint8_t marker = src[i + 1];
+        uint8_t marker = p_src[index + 1];
         if (0xFF == marker)
         { // fill byte before a marker
-            i++;
+            index++;
             continue;
         }
         if (0xC4 == marker)
@@ -68,8 +73,8 @@ size_t mjpeg_with_dht (const uint8_t * src, size_t len, uint8_t * dst,
             {
                 return 0;
             }
-            memcpy(dst, src, len);
-            *had_dht = true;
+            memcpy(p_dst, p_src, len);
+            *p_had_dht = true;
             return len;
         }
         if (0xDA == marker)
@@ -78,18 +83,24 @@ size_t mjpeg_with_dht (const uint8_t * src, size_t len, uint8_t * dst,
             {
                 return 0;
             }
-            memcpy(dst, src, i);
-            memcpy(dst + i, STD_DHT, MJPEG_STD_DHT_LEN);
-            memcpy(dst + i + MJPEG_STD_DHT_LEN, src + i, len - i);
-            *had_dht = false;
+            memcpy(p_dst, p_src, index);
+            memcpy(p_dst + index, g_std_dht, MJPEG_STD_DHT_LEN);
+            memcpy(p_dst + index + MJPEG_STD_DHT_LEN, p_src + index,
+                   len - index);
+            *p_had_dht = false;
             return len + MJPEG_STD_DHT_LEN;
         }
-        size_t seg_len = ((size_t)src[i + 2] << 8) | src[i + 3];
+
+        size_t seg_len =
+            ((size_t) p_src[index + 2] << (uint32_t) (8)) | p_src[index + 3];
+
         if (seg_len < 2)
         {
             return 0;
         }
-        i += 2 + seg_len;
+        index += 2 + seg_len;
     }
     return 0;
 }
+
+/* End of file. */

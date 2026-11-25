@@ -71,6 +71,20 @@ int main(void)
     output(&map);
     assert(rover_map_start(&map, 255) == MAP_OK && map.count == 1 && map.current_node == 255);
     assert(map.min_x == 0 && map.min_y == 0 && rover_map_columns(&map) == 1);
+    assert(rover_map_observe(&map, 2, 0, 1) == MAP_OK);
+    assert(rover_map_set_exit(&map, 255, MAP_EAST, MAP_EXIT_BLOCKED) == MAP_OK);
+    revision = map.revision;
+    uint64_t boot_id = map.boot_id;
+    rover_map_clear(&map);
+    assert(map.boot_id == boot_id && map.revision == revision + 1u);
+    assert(!map.count && !map.observed_count && !map.current_node);
+    assert(!rover_map_columns(&map) && !rover_map_rows(&map));
+    assert(!rover_map_find_id(&map, 255) && !map.min_x && !map.max_y);
+    char cleared[ROVER_MAP_JSON_CAPACITY];
+    assert(rover_map_format(&map, "0123456789abcdef0123456789abcdef", cleared, sizeof(cleared)));
+    assert(strstr(cleared, "\"current_node\":null") && strstr(cleared, "\"nodes\":[]"));
+    assert(rover_map_start(&map, 2) == MAP_OK && map.count == 1u && map.current_node == 2);
+    assert(map.boot_id == boot_id && map.revision == revision + 2u);
     printf("Map tests passed; map storage=%u bytes, JSON budget=%u bytes\n",
            (unsigned)sizeof(map), (unsigned)ROVER_MAP_JSON_CAPACITY);
     return 0;

@@ -31,6 +31,29 @@ static void assert_cleared(const travel_leg_t *leg)
 
 int main(void)
 {
+    mission_t alignment_mission;
+    mission_init(&alignment_mission, 0);
+    alignment_mission.leg = fixture();
+    assert(!mission_alignment_phase(&alignment_mission, true, 1)); // Cannot align in IDLE.
+    assert(mission_begin_drive(&alignment_mission, 2));
+    assert(mission_alignment_phase(&alignment_mission, true, 3));
+    assert(mission_motion_enabled(&alignment_mission));
+    assert(alignment_mission.state == MISSION_EXPLORING && alignment_mission.leg.next_target_node == 12);
+    assert(!strcmp(travel_leg_phase_name(alignment_mission.leg.phase), "ALIGNING"));
+    output(&alignment_mission.leg);
+    assert(!mission_complete_target(&alignment_mission, 4));
+    alignment_mission.test_mode = true;
+    assert(!mission_motion_enabled(&alignment_mission) && !mission_alignment_phase(&alignment_mission, false, 5));
+    alignment_mission.test_mode = false;
+    assert(mission_alignment_phase(&alignment_mission, false, 6));
+    assert(alignment_mission.leg.phase == LEG_APPROACHING && alignment_mission.leg.leg_id == 42);
+    assert(mission_camera_wait_phase(&alignment_mission, LEG_WAITING_CAMERA, 7));
+    assert(!mission_motion_enabled(&alignment_mission) && alignment_mission.state==MISSION_EXPLORING);
+    assert(alignment_mission.leg.next_target_node==12 && alignment_mission.leg.leg_id==42);
+    assert(!mission_complete_target(&alignment_mission,8));
+    assert(!mission_camera_wait_phase(&alignment_mission,LEG_COMPLETE,8));
+    assert(mission_camera_wait_phase(&alignment_mission,LEG_APPROACHING,9));
+    assert(mission_motion_enabled(&alignment_mission));
     mission_t mission;
     rover_map_t map;
     mission_init(&mission, 10);

@@ -19,7 +19,8 @@ class ToFHealthTests(unittest.TestCase):
         # Compile the production wire helpers; no hardware/I2C calls are needed.
         helpers = ['#include "tof.h"']
         for name in ('tof_result_code', 'tof_distance_get', 'tof_distance_set'):
-            match = re.search(r'(?:uint16_t|void) ' + name + r'\([^)]*\)\s*\{.*?\n\}', source, re.S)
+            match = re.search(r'(?:uint16_t|void)\s+' + name +
+                              r'\s*\([^)]*\)\s*\{.*?\n\}', source, re.S)
             self.assertIsNotNone(match, name)
             helpers.append(match.group())
         build_dir = ROOT / 'build'

@@ -1,3 +1,7 @@
+/**
+ * @file aruco_pose.h
+ * @brief Aruco pose firmware module.
+ */
 #ifndef ARUCO_POSE_H
 #define ARUCO_POSE_H
 
@@ -29,6 +33,8 @@ aruco_pose_t aruco_pose (const float corners[4][2], float marker_mm);
 
 // Same limits as the laptop's validity check, except shape_err replaces its
 // reprojection error, since this method fits no full pose to reproject.
-aruco_quality_t aruco_pose_quality (const aruco_pose_t * pose);
+aruco_quality_t aruco_pose_quality (const aruco_pose_t * p_pose);
 
 #endif /* ARUCO_POSE_H */
+
+/* End of file. */

@@ -1,310 +1,769 @@
+/**
+ * @file target_selector.c
+ * @brief Target selector firmware module.
+ */
+#include <inttypes.h>
 #include "target_selector.h"
 
 #include <stdio.h>
 
-void target_selector_init(target_selector_t *s)
+void
+target_selector_init (target_selector_t * p_selection)
 {
-    *s = (target_selector_t){.state = TARGET_NONE, .detail = "NEED_STOPPED_CONFIRMED_NODE"};
+
+    *p_selection =
+        (target_selector_t) { .state  = TARGET_NONE,
+                              .detail = "NEED_STOPPED_CONFIRMED_NODE" };
 }
 
-void target_selector_set_route(target_selector_t *s, target_route_t route)
+void
+target_selector_set_route (target_selector_t * p_selection,
+                           target_route_t      route)
 {
-    target_selector_init(s);
-    s->route = route;
+    target_selector_init(p_selection);
+    p_selection->route = route;
 }
 
-static bool context_ok(const mission_t *m, const rover_map_t *map, bool safe)
+static bool
+context_ok (const mission_t * p_mission, const rover_map_t * p_map, bool b_safe)
 {
-    const map_node_t *node = rover_map_find_id(map, map->current_node);
-    return safe && !m->test_mode && (m->state == MISSION_IDLE || m->state == MISSION_READY ||
-        (m->dfs_active && m->state == MISSION_EXPLORING)) &&
-        node && node->visited;
+    const map_node_t * p_node = rover_map_find_id(p_map, p_map->current_node);
+    return b_safe && !p_mission->test_mode &&
+           (p_mission->state == MISSION_IDLE ||
+            p_mission->state == MISSION_READY ||
+            (p_mission->dfs_active && p_mission->state == MISSION_EXPLORING)) &&
+           p_node && p_node->visited;
 }
 
-static bool image_fresh(const camera_observation_t *ob, uint32_t now)
+static bool
+image_fresh (const camera_observation_t * p_observation, uint32_t now)
 {
-    uint32_t local_age = now - ob->received_ms;
-    return ob->frame.status == VISION_STATUS_OK && ob->frame.count <= VISION_MAX_MARKERS &&
-        local_age <= TARGET_UART_MAX_AGE_MS &&
-        local_age + ob->frame.age_ms <= TARGET_CAMERA_MAX_AGE_MS;
+    uint32_t local_age = now - p_observation->received_ms;
+    return p_observation->frame.status == VISION_STATUS_OK &&
+           p_observation->frame.count <= VISION_MAX_MARKERS &&
+           local_age <= TARGET_UART_MAX_AGE_MS &&
+           local_age + p_observation->frame.age_ms <= TARGET_CAMERA_MAX_AGE_MS;
 }
 
-static bool marker_usable(const camera_marker_t *marker)
+static bool
+marker_usable (const camera_marker_t * p_marker)
 {
-    return marker->id && marker->quality == 0 && marker->range_mm &&
-        marker->range_mm != UINT16_MAX && marker->bearing_cdeg >= -TARGET_MAX_BEARING_CDEG &&
-        marker->bearing_cdeg <= TARGET_MAX_BEARING_CDEG;
+    return p_marker->id && p_marker->quality == 0 && p_marker->range_mm &&
+           p_marker->range_mm != UINT16_MAX &&
+           p_marker->bearing_cdeg >= -TARGET_MAX_BEARING_CDEG &&
+           p_marker->bearing_cdeg <= TARGET_MAX_BEARING_CDEG;
 }
 
-static leg_direction_t adjacent_direction(const map_node_t *from, const map_node_t *to)
+static leg_direction_t
+adjacent_direction (const map_node_t * p_from, const map_node_t * p_node)
 {
-    int32_t x = (int32_t)to->x - from->x, y = (int32_t)to->y - from->y;
-    if (x == 0 && y == 1) return LEG_NORTH;
-    if (x == 1 && y == 0) return LEG_EAST;
-    if (x == 0 && y == -1) return LEG_SOUTH;
-    if (x == -1 && y == 0) return LEG_WEST;
+    int32_t x_coordinate = (int32_t) p_node->x - p_from->x;
+    int32_t y_coordinate = (int32_t) p_node->y - p_from->y;
+    if (x_coordinate == 0 && y_coordinate == 1)
+    {
+        return LEG_NORTH;
+    }
+    if (x_coordinate == 1 && y_coordinate == 0)
+    {
+        return LEG_EAST;
+    }
+    if (x_coordinate == 0 && y_coordinate == -1)
+    {
+        return LEG_SOUTH;
+    }
+    if (x_coordinate == -1 && y_coordinate == 0)
+    {
+        return LEG_WEST;
+    }
     return LEG_DIRECTION_UNKNOWN;
 }
 
-static bool target_compatible(const rover_map_t *map, const target_route_t *route, uint8_t id)
+static bool
+target_compatible (const rover_map_t * p_map, const target_route_t * p_route,
+                   uint8_t identifier)
 {
-    if (id == map->current_node) return false;
-    const map_node_t *target = rover_map_find_id(map, id);
-    if (route->enabled) {
-        if (route->expected_id && id != route->expected_id) return false;
-        const map_node_t *occupant = rover_map_find_cell(map, route->x, route->y);
-        if ((occupant && occupant->marker_id != id) ||
-            (target && (target->x != route->x || target->y != route->y))) return false;
+    if (identifier == p_map->current_node)
+    {
+        return false;
     }
-    if (!target) return true; // Provisional identity, never an inferred map cell.
-    const map_node_t *from = rover_map_find_id(map, map->current_node);
-    leg_direction_t d = adjacent_direction(from, target);
-    return d != LEG_DIRECTION_UNKNOWN && from->exits[d] != MAP_EXIT_BLOCKED &&
-        target->exits[((unsigned)d + 2u) % 4u] != MAP_EXIT_BLOCKED;
-}
+    const map_node_t * p_target = rover_map_find_id(p_map, identifier);
+    if (p_route->enabled)
+    {
+        if (p_route->expected_id && identifier != p_route->expected_id)
+        {
+            return false;
+        }
 
-static bool reference_compatible(const rover_map_t *map, uint8_t departure, uint8_t target_id, uint8_t ref_id)
-{
-    const map_node_t *target = rover_map_find_id(map, target_id);
-    const map_node_t *ref = rover_map_find_id(map, ref_id);
-    if (!target || !ref) return true; // Optical candidate only; not validated layout geometry.
-    const map_node_t *from = rover_map_find_id(map, departure);
-    if (!from) return false;
-    int32_t dx = (int32_t)target->x - from->x, dy = (int32_t)target->y - from->y;
-    int32_t rx = (int32_t)ref->x - target->x, ry = (int32_t)ref->y - target->y;
-    return rx * dy == ry * dx && rx * dx + ry * dy > 0;
-}
+        const map_node_t * p_occupant =
+            rover_map_find_cell(p_map, p_route->x, p_route->y);
 
-static const camera_marker_t *nearest_target(const camera_frame_t *frame, const rover_map_t *map, const target_route_t *route)
-{
-    const camera_marker_t *best = NULL;
-    bool tied = false;
-    for (uint8_t i = 0; i < frame->count; ++i) {
-        const camera_marker_t *marker = &frame->markers[i];
-        if (!marker_usable(marker) || !target_compatible(map, route, marker->id)) continue;
-        if (!best || marker->range_mm < best->range_mm) { best = marker; tied = false; }
-        else if (marker->range_mm == best->range_mm && marker->id != best->id) tied = true;
+        if ((p_occupant && p_occupant->marker_id != identifier) ||
+            (p_target &&
+             (p_target->x != p_route->x || p_target->y != p_route->y)))
+        {
+            return false;
+        }
     }
-    return tied ? NULL : best;
+    if (!p_target)
+    {
+        return true; // Provisional identity, never an inferred map cell.
+    }
+    const map_node_t * p_from = rover_map_find_id(p_map, p_map->current_node);
+    leg_direction_t    data   = adjacent_direction(p_from, p_target);
+    return data != LEG_DIRECTION_UNKNOWN &&
+           p_from->exits[data] != MAP_EXIT_BLOCKED &&
+           p_target->exits[((unsigned) data + 2u) % 4u] != MAP_EXIT_BLOCKED;
 }
 
-static const camera_marker_t *find_marker(const camera_frame_t *frame, uint8_t id)
+static bool
+reference_compatible (const rover_map_t * p_map, uint8_t departure,
+                      uint8_t target_id, uint8_t ref_id)
 {
-    for (uint8_t i = 0; i < frame->count; ++i)
-        if (frame->markers[i].id == id && marker_usable(&frame->markers[i])) return &frame->markers[i];
+    const map_node_t * p_target = rover_map_find_id(p_map, target_id);
+    const map_node_t * p_ref    = rover_map_find_id(p_map, ref_id);
+    if (!p_target || !p_ref)
+    {
+        return true; // Optical candidate only; not validated layout geometry.
+    }
+    const map_node_t * p_from = rover_map_find_id(p_map, departure);
+    if (!p_from)
+    {
+        return false;
+    }
+    int32_t delta_x    = (int32_t) p_target->x - p_from->x;
+    int32_t delta_y    = (int32_t) p_target->y - p_from->y;
+    int32_t relative_x = (int32_t) p_ref->x - p_target->x;
+    int32_t relative_y = (int32_t) p_ref->y - p_target->y;
+    return relative_x * delta_y == relative_y * delta_x &&
+           relative_x * delta_x + relative_y * delta_y > 0;
+}
+
+static const camera_marker_t *
+nearest_target (const camera_frame_t * p_frame, const rover_map_t * p_map,
+                const target_route_t * p_route)
+{
+    const camera_marker_t * p_best = NULL;
+    bool                    b_tied = false;
+    for (uint8_t index = 0; index < p_frame->count; ++index)
+    {
+        const camera_marker_t * p_marker = &p_frame->markers[index];
+        if (!marker_usable(p_marker) ||
+            !target_compatible(p_map, p_route, p_marker->id))
+        {
+            continue;
+        }
+        if (!p_best || p_marker->range_mm < p_best->range_mm)
+        {
+            p_best = p_marker;
+            b_tied = false;
+        }
+        else if (p_marker->range_mm == p_best->range_mm &&
+                 p_marker->id != p_best->id)
+        {
+            b_tied = true;
+        }
+    }
+    return b_tied ? NULL : p_best;
+}
+
+static const camera_marker_t *
+find_tracking_marker (const camera_frame_t * p_frame, uint8_t identifier,
+                      int max_bearing)
+{
+    for (uint8_t index = 0; index < p_frame->count; ++index)
+    {
+        const camera_marker_t * p_marker = &p_frame->markers[index];
+        if (p_marker->id == identifier && p_marker->quality == 0 &&
+            p_marker->range_mm && p_marker->range_mm != UINT16_MAX &&
+            p_marker->bearing_cdeg >= -max_bearing &&
+            p_marker->bearing_cdeg <= max_bearing)
+        {
+            return p_marker;
+        }
+    }
     return NULL;
 }
 
-static const camera_marker_t *nearest_reference(const camera_frame_t *frame,
-    const rover_map_t *map, const travel_leg_t *leg, uint8_t target_id, const camera_marker_t *target, bool late)
+static const camera_marker_t *
+nearest_reference (const camera_frame_t * p_frame, const rover_map_t * p_map,
+                   const travel_leg_t * p_leg, uint8_t target_id,
+                   const camera_marker_t * p_target, bool b_late)
 {
-    uint8_t departure=leg->departure_node;
+    uint8_t departure = p_leg->departure_node;
     // Establish optical ordering from the SAME fresh image, or use already
     // known map coordinates. Never compare a new image to an old lens range.
-    if (!target && !rover_map_find_id(map, target_id) && !late) return NULL;
-    const camera_marker_t *best = NULL;
-    bool tied = false;
-    for (uint8_t i = 0; i < frame->count; ++i) {
-        const camera_marker_t *marker = &frame->markers[i];
-        int delta = target ? (int)marker->bearing_cdeg - target->bearing_cdeg : 0;
-        if (!marker_usable(marker) || marker->id == target_id || marker->id == departure ||
-            (!target && !late && !rover_map_find_id(map, marker->id)) ||
-            (target && (uint32_t)marker->range_mm < (uint32_t)target->range_mm + TARGET_REFERENCE_MIN_GAP_MM) ||
-            delta < -TARGET_REFERENCE_MAX_DELTA_CDEG || delta > TARGET_REFERENCE_MAX_DELTA_CDEG ||
-            !reference_compatible(map, departure, target_id, marker->id)) continue;
-        const map_node_t *known=rover_map_find_id(map,marker->id);
-        if (late && !target && known && leg->target_cell_valid && leg->direction!=LEG_DIRECTION_UNKNOWN) {
-            static const int8_t dx[]={0,1,0,-1},dy[]={1,0,-1,0};
-            int32_t rx=(int32_t)known->x-leg->target_x, ry=(int32_t)known->y-leg->target_y;
-            if (rx*dy[leg->direction]!=ry*dx[leg->direction] ||
-                rx*dx[leg->direction]+ry*dy[leg->direction]<=0) continue;
+    if (!p_target && !rover_map_find_id(p_map, target_id) && !b_late)
+    {
+        return NULL;
+    }
+    const camera_marker_t * p_best = NULL;
+    bool                    b_tied = false;
+    for (uint8_t index = 0; index < p_frame->count; ++index)
+    {
+        const camera_marker_t * p_marker = &p_frame->markers[index];
+
+        int delta = p_target
+                        ? (int) p_marker->bearing_cdeg - p_target->bearing_cdeg
+                        : 0;
+
+        if (!marker_usable(p_marker) || p_marker->id == target_id ||
+            p_marker->id == departure ||
+            (!p_target && !b_late && !rover_map_find_id(p_map, p_marker->id)) ||
+            (p_target &&
+             (uint32_t) p_marker->range_mm <
+                 (uint32_t) p_target->range_mm + TARGET_REFERENCE_MIN_GAP_MM) ||
+            delta < -TARGET_REFERENCE_MAX_DELTA_CDEG ||
+            delta > TARGET_REFERENCE_MAX_DELTA_CDEG ||
+            !reference_compatible(p_map, departure, target_id, p_marker->id))
+        {
+            continue;
         }
-        if (!best || marker->range_mm < best->range_mm) { best = marker; tied = false; }
-        else if (marker->range_mm == best->range_mm && marker->id != best->id) tied = true;
-    }
-    return tied ? NULL : best;
-}
-
-static void reset_confirmations(target_selector_t *s)
-{
-    if (s->state != TARGET_LOCKED) { s->marker = s->confirmations = 0; }
-    if (s->state != TARGET_LOCKED) s->reference_marker = 0;
-    if (!s->reference_marker) s->reference_candidate = s->reference_confirmations = 0;
-    s->available = s->reference_available = false;
-}
-
-static void arm(target_selector_t *s, mission_t *m, const rover_map_t *map,
-                const camera_observation_t *ob, uint32_t now)
-{
-    uint32_t leg_id = m->leg.leg_id + 1u;
-    target_route_t route = s->route;
-    *s = (target_selector_t){.state = TARGET_WAITING, .detail = "AUTOMATIC_WAITING_FOR_IMAGES",
-        .route = route,
-        .leg_id = leg_id, .started_ms = now, .map_revision = map->revision,
-        .last_generation = ob ? ob->generation : 0, .last_seq = ob ? ob->frame.seq : 0,
-        .have_seq = ob != NULL, .last_image_received_ms = now};
-    m->leg = (travel_leg_t){.leg_id = leg_id, .departure_node = map->current_node,
-        .direction = route.enabled ? route.direction : LEG_DIRECTION_UNKNOWN, .phase = LEG_SELECTING,
-        .target_cell_valid = route.enabled, .target_x = route.x, .target_y = route.y};
-    m->revision++;
-    m->changed_ms = now;
-}
-
-static void note_change(mission_t *m, uint32_t now)
-{
-    m->revision++;
-    m->changed_ms = now;
-}
-
-void target_selector_tick(target_selector_t *s, mission_t *m, const rover_map_t *map,
-    const camera_observation_t *ob, bool safe, uint32_t now)
-{
-    if (!m->test_mode && !m->dfs_active && m->leg.phase == LEG_COMPLETE) {
-        s->available = s->reference_available = false;
-        s->detail = "TARGET_ARRIVAL_CONFIRMED";
-        return;
-    }
-    bool approaching = !m->test_mode && m->state == MISSION_EXPLORING && m->leg.configured &&
-        (m->leg.phase == LEG_APPROACHING || m->leg.phase == LEG_HOLDING || m->leg.phase == LEG_BRAKING ||
-         m->leg.phase == LEG_VERIFYING || m->leg.phase == LEG_BACKING_UP || m->leg.phase == LEG_REACQUIRING ||
-         m->leg.phase == LEG_SEARCHING_REFERENCE || m->leg.phase == LEG_OBSTACLE_VERIFYING) &&
-        m->leg.leg_id == s->leg_id && s->state == TARGET_LOCKED;
-    if (!approaching && !context_ok(m, map, safe)) {
-        if (s->state == TARGET_WAITING || s->state == TARGET_LOCKED) {
-            if (m->leg.leg_id == s->leg_id) mission_clear_leg(m, now);
-            s->state = TARGET_CANCELLED;
-        }
-        reset_confirmations(s);
-        s->detail = "NEED_STOPPED_CONFIRMED_NODE";
-        return;
-    }
-    if (!approaching && (s->state == TARGET_WAITING || s->state == TARGET_LOCKED) &&
-        (s->map_revision != map->revision || m->leg.departure_node != map->current_node)) {
-        mission_clear_leg(m, now);
-        s->state = TARGET_CANCELLED;
-    }
-    if (m->leg.phase == LEG_NONE) {
-        if (m->leg.leg_id == UINT32_MAX) {
-            s->state = TARGET_CANCELLED;
-            reset_confirmations(s);
-            s->detail = "LEG_ID_EXHAUSTED";
-            return;
-        }
-        arm(s, m, map, ob, now);
-        return;
-    }
-    if (m->leg.leg_id != s->leg_id ||
-        (m->leg.phase != LEG_SELECTING && m->leg.phase != LEG_CONFIGURED && !approaching)) return;
-    if (!ob || !image_fresh(ob, now)) {
-        // A cached packet aging out between successive frames clears visibility,
-        // not evidence from distinct good images. Explicit bad/missing detections,
-        // sequence changes and a 1500 ms source gap still reset confirmations.
-        s->available=s->reference_available=false;
-        if (!ob || ob->frame.status!=VISION_STATUS_OK ||
-            now-s->last_image_received_ms>TARGET_CAMERA_MAX_AGE_MS ||
-            (uint32_t)(now-ob->received_ms)+ob->frame.age_ms>TARGET_CAMERA_MAX_AGE_MS)
-            reset_confirmations(s);
-        s->detail = "CAMERA_UNAVAILABLE_OR_STALE";
-        return;
-    }
-    if (now - s->last_image_received_ms > TARGET_CAMERA_MAX_AGE_MS) reset_confirmations(s);
-    if (ob->generation == s->last_generation) return;
-    s->last_generation = ob->generation;
-    uint8_t delta = (uint8_t)(ob->frame.seq - s->last_seq);
-    bool discontinuity = s->have_seq &&
-        (delta >= 128u || now - s->last_image_received_ms > TARGET_CAMERA_MAX_AGE_MS);
-    if (s->have_seq && !delta) return;
-    s->last_seq = ob->frame.seq;
-    s->have_seq = true;
-    s->last_image_received_ms = now;
-    uint32_t image_age = (uint32_t)ob->frame.age_ms + (now - ob->received_ms);
-    if (discontinuity || now - s->started_ms < image_age) {
-        reset_confirmations(s);
-        s->detail = "WAITING_FOR_NEW_IMAGES";
-        return;
-    }
-    s->sample_generation = ob->generation;
-    s->sample_received_ms = ob->received_ms;
-    s->sample_age_ms = ob->frame.age_ms;
-
-    const camera_marker_t *target = s->state == TARGET_LOCKED ?
-        find_marker(&ob->frame, m->leg.next_target_node) : nearest_target(&ob->frame, map, &s->route);
-    if (s->state != TARGET_LOCKED) {
-        if (!target) {
-            reset_confirmations(s);
-            s->detail = "NO_UNAMBIGUOUS_ELIGIBLE_TARGET";
-            return;
-        }
-        if (s->marker != target->id) { s->reference_candidate = s->reference_confirmations = 0; }
-        s->confirmations = s->marker == target->id ? (uint8_t)(s->confirmations + 1u) : 1u;
-        s->marker = target->id;
-        s->detail = "AUTOMATIC_CONFIRMING_TARGET";
-        if (s->confirmations >= TARGET_CONFIRM_FRAMES) {
-            m->leg.next_target_node = target->id;
-            m->leg.configured = true;
-            m->leg.phase = LEG_CONFIGURED;
-            const map_node_t *known = rover_map_find_id(map, target->id);
-            if (known) {
-                m->leg.target_x = known->x;
-                m->leg.target_y = known->y;
-                m->leg.target_cell_valid = true;
-                m->leg.direction = adjacent_direction(rover_map_find_id(map, map->current_node), known);
-            }
-            s->state = TARGET_LOCKED;
-            note_change(m, now);
-        }
-    }
-    s->available = target != NULL;
-    if (target) { s->range_mm = target->range_mm; s->bearing_cdeg = target->bearing_cdeg; }
-
-    if (m->leg.arrival_reference_node) {
-        // Reference lock is independent of visibility and never follows a new nearest marker.
-        const camera_marker_t *ref = find_marker(&ob->frame, m->leg.arrival_reference_node);
-        s->reference_available = ref != NULL;
-        if (ref) { s->reference_range_mm = ref->range_mm; s->reference_bearing_cdeg = ref->bearing_cdeg; }
-    } else {
-        const camera_marker_t *ref = nearest_reference(&ob->frame, map, &m->leg, s->marker, target, s->allow_late_reference);
-        s->reference_available = false;
-        if (!ref) { s->reference_candidate = s->reference_confirmations = 0; }
-        else {
-            s->reference_confirmations = s->reference_candidate == ref->id ?
-                (uint8_t)(s->reference_confirmations + 1u) : 1u;
-            s->reference_candidate = ref->id;
-            s->reference_range_mm = ref->range_mm;
-            s->reference_bearing_cdeg = ref->bearing_cdeg;
-            if (s->state == TARGET_LOCKED && s->reference_confirmations >= TARGET_CONFIRM_FRAMES) {
-                m->leg.arrival_reference_node = ref->id;
-                s->reference_marker = ref->id;
-                s->reference_available = true;
-                note_change(m, now);
+        const map_node_t * p_known = rover_map_find_id(p_map, p_marker->id);
+        if (b_late && !p_target && p_known && p_leg->target_cell_valid &&
+            p_leg->direction != LEG_DIRECTION_UNKNOWN)
+        {
+            static const int8_t delta_x[] = { 0, 1, 0, -1 };
+            static const int8_t delta_y[] = { 1, 0, -1, 0 };
+            int32_t relative_x = (int32_t) p_known->x - p_leg->target_x;
+            int32_t relative_y = (int32_t) p_known->y - p_leg->target_y;
+            if (relative_x * delta_y[p_leg->direction] !=
+                    relative_y * delta_x[p_leg->direction] ||
+                relative_x * delta_x[p_leg->direction] +
+                        relative_y * delta_y[p_leg->direction] <=
+                    0)
+            {
+                continue;
             }
         }
+        if (!p_best || p_marker->range_mm < p_best->range_mm)
+        {
+            p_best = p_marker;
+            b_tied = false;
+        }
+        else if (p_marker->range_mm == p_best->range_mm &&
+                 p_marker->id != p_best->id)
+        {
+            b_tied = true;
+        }
     }
-    if (s->state == TARGET_LOCKED)
-        s->detail = !s->available ? "TARGET_OBSERVATION_UNAVAILABLE" :
-            !m->leg.arrival_reference_node ? "TARGET_LOCKED_WAITING_FOR_REFERENCE" :
-            !s->reference_available ? "REFERENCE_OBSERVATION_UNAVAILABLE" : "TARGET_AND_REFERENCE_LOCKED";
+    return b_tied ? NULL : p_best;
 }
 
-size_t target_selector_format(const target_selector_t *s, char *out, size_t capacity)
+static void
+reset_confirmations (target_selector_t * p_selection)
 {
-    if (!out || !capacity) return 0;
-    static const char *states[] = {"NONE", "WAITING", "LOCKED", "CANCELLED"};
-    char marker[8], ref[8];
-    if (s->marker) snprintf(marker, sizeof(marker), "%u", (unsigned)s->marker);
-    else snprintf(marker, sizeof(marker), "null");
-    uint8_t reference = s->reference_marker ? s->reference_marker : s->reference_candidate;
-    if (reference) snprintf(ref, sizeof(ref), "%u", (unsigned)reference);
-    else snprintf(ref, sizeof(ref), "null");
-    int length = snprintf(out, capacity,
-        "{\"state\":\"%s\",\"request\":\"\",\"leg_id\":%lu,\"role\":\"AUTOMATIC\",\"direction\":null,"
-        "\"marker\":%s,\"confirmations\":%u,\"available\":%s,\"range_mm\":%u,\"bearing_cdeg\":%d,"
-        "\"reference_marker\":%s,\"reference_confirmations\":%u,\"reference_available\":%s,"
-        "\"reference_range_mm\":%u,\"reference_bearing_cdeg\":%d,\"detail\":\"%s\"}",
-        states[s->state], (unsigned long)s->leg_id, marker, (unsigned)s->confirmations,
-        s->available ? "true" : "false", (unsigned)s->range_mm, (int)s->bearing_cdeg,
-        ref, (unsigned)s->reference_confirmations, s->reference_available ? "true" : "false",
-        (unsigned)s->reference_range_mm, (int)s->reference_bearing_cdeg, s->detail);
-    if (length < 0 || (size_t)length >= capacity) { out[0] = '\0'; return 0; }
-    return (size_t)length;
+    if (p_selection->state != TARGET_LOCKED)
+    {
+        p_selection->marker = p_selection->confirmations = 0;
+    }
+    if (p_selection->state != TARGET_LOCKED)
+    {
+        p_selection->reference_marker = 0;
+    }
+    if (!p_selection->reference_marker)
+    {
+
+        p_selection->reference_candidate =
+            p_selection->reference_confirmations = 0;
+    }
+    p_selection->available = p_selection->reference_available = false;
 }
+
+static void
+arm (target_selector_t * p_selection, mission_t * p_mission,
+     const rover_map_t * p_map, const camera_observation_t * p_observation,
+     uint32_t now)
+{
+    uint32_t       leg_id = p_mission->leg.leg_id + 1u;
+    target_route_t route  = p_selection->route;
+
+    *p_selection = (target_selector_t) {
+        .state                  = TARGET_WAITING,
+        .detail                 = "AUTOMATIC_WAITING_FOR_IMAGES",
+        .route                  = route,
+        .leg_id                 = leg_id,
+        .started_ms             = now,
+        .map_revision           = p_map->revision,
+        .last_generation        = p_observation ? p_observation->generation : 0,
+        .last_seq               = p_observation ? p_observation->frame.seq : 0,
+        .have_seq               = p_observation != NULL,
+        .last_image_received_ms = now
+    };
+
+
+    leg_direction_t direction =
+        route.enabled ? route.direction : LEG_DIRECTION_UNKNOWN;
+
+    p_mission->leg = (travel_leg_t) { .leg_id            = leg_id,
+                                      .departure_node    = p_map->current_node,
+                                      .direction         = direction,
+                                      .phase             = LEG_SELECTING,
+                                      .target_cell_valid = route.enabled,
+                                      .target_x          = route.x,
+                                      .target_y          = route.y };
+
+    p_mission->revision++;
+    p_mission->changed_ms = now;
+}
+
+static void
+note_change (mission_t * p_mission, uint32_t now)
+{
+    p_mission->revision++;
+    p_mission->changed_ms = now;
+}
+
+typedef struct
+{
+    _Bool                   b_approaching;
+    uint8_t                 delta;
+    _Bool                   b_discontinuity;
+    uint32_t                image_age;
+    const camera_marker_t * p_target;
+} target_selector_tick_context_t;
+
+/** @brief Execute the prepare stage of target_selector_tick. */
+static bool
+target_selector_tick_prepare (target_selector_t * p_selection,
+                              mission_t * p_mission, const rover_map_t * p_map,
+                              bool b_safe, uint32_t now,
+                              target_selector_tick_context_t * p_context)
+{
+
+    if (!p_mission->test_mode && !p_mission->dfs_active &&
+        p_mission->leg.phase == LEG_COMPLETE)
+    {
+        p_selection->available = p_selection->reference_available = false;
+        p_selection->detail = "TARGET_ARRIVAL_CONFIRMED";
+        return true;
+    }
+
+
+    p_context->b_approaching =
+        !p_mission->test_mode && p_mission->state == MISSION_EXPLORING &&
+        p_mission->leg.configured &&
+        (p_mission->leg.phase == LEG_APPROACHING ||
+         p_mission->leg.phase == LEG_HOLDING ||
+         p_mission->leg.phase == LEG_BRAKING ||
+         p_mission->leg.phase == LEG_VERIFYING ||
+         p_mission->leg.phase == LEG_BACKING_UP ||
+         p_mission->leg.phase == LEG_REACQUIRING ||
+         p_mission->leg.phase == LEG_SEARCHING_REFERENCE ||
+         p_mission->leg.phase == LEG_OBSTACLE_VERIFYING ||
+         p_mission->leg.phase == LEG_ALIGNING ||
+         p_mission->leg.phase == LEG_WAITING_CAMERA ||
+         p_mission->leg.phase == LEG_WAITING_INPUT ||
+         p_mission->leg.phase == LEG_CORRECTING) &&
+        p_mission->leg.leg_id == p_selection->leg_id &&
+        p_selection->state == TARGET_LOCKED;
+
+    if (!p_context->b_approaching && !context_ok(p_mission, p_map, b_safe))
+    {
+        if (p_selection->state == TARGET_WAITING ||
+            p_selection->state == TARGET_LOCKED)
+        {
+            if (p_mission->leg.leg_id == p_selection->leg_id)
+            {
+                mission_clear_leg(p_mission, now);
+            }
+            p_selection->state = TARGET_CANCELLED;
+        }
+        reset_confirmations(p_selection);
+        p_selection->detail = "NEED_STOPPED_CONFIRMED_NODE";
+        return true;
+    }
+    return false;
+}
+
+/** @brief Execute the inputs stage of target_selector_tick. */
+static bool
+target_selector_tick_inputs (target_selector_t * p_selection,
+                             mission_t * p_mission, const rover_map_t * p_map,
+                             const camera_observation_t *     p_observation,
+                             uint32_t                         now,
+                             target_selector_tick_context_t * p_context)
+{
+
+    if (!p_context->b_approaching &&
+        (p_selection->state == TARGET_WAITING ||
+         p_selection->state == TARGET_LOCKED) &&
+        (p_selection->map_revision != p_map->revision ||
+         p_mission->leg.departure_node != p_map->current_node))
+    {
+        mission_clear_leg(p_mission, now);
+        p_selection->state = TARGET_CANCELLED;
+    }
+    if (p_mission->leg.phase == LEG_NONE)
+    {
+        if (p_mission->leg.leg_id == UINT32_MAX)
+        {
+            p_selection->state = TARGET_CANCELLED;
+            reset_confirmations(p_selection);
+            p_selection->detail = "LEG_ID_EXHAUSTED";
+            return true;
+        }
+        arm(p_selection, p_mission, p_map, p_observation, now);
+        return true;
+    }
+    if (p_mission->leg.leg_id != p_selection->leg_id ||
+        (p_mission->leg.phase != LEG_SELECTING &&
+         p_mission->leg.phase != LEG_CONFIGURED && !p_context->b_approaching))
+    {
+        return true;
+    }
+    return false;
+}
+
+/** @brief Execute the motion stage of target_selector_tick. */
+static bool
+target_selector_tick_motion (target_selector_t *              p_selection,
+                             const camera_observation_t *     p_observation,
+                             uint32_t                         now,
+                             target_selector_tick_context_t * p_context)
+{
+
+    if (!p_observation || !image_fresh(p_observation, now))
+    {
+        // A cached packet aging out between successive frames clears
+        // visibility, not evidence from distinct good images. Explicit
+        // bad/missing detections, sequence changes and a 1500 ms source gap
+        // still reset confirmations.
+        p_selection->available = p_selection->reference_available = false;
+        if (!p_observation || p_observation->frame.status != VISION_STATUS_OK ||
+            now - p_selection->last_image_received_ms >
+                TARGET_CAMERA_MAX_AGE_MS ||
+            (uint32_t) (now - p_observation->received_ms) +
+                    p_observation->frame.age_ms >
+                TARGET_CAMERA_MAX_AGE_MS)
+        {
+            reset_confirmations(p_selection);
+        }
+        p_selection->detail = "CAMERA_UNAVAILABLE_OR_STALE";
+        return true;
+    }
+    if (now - p_selection->last_image_received_ms > TARGET_CAMERA_MAX_AGE_MS)
+    {
+        reset_confirmations(p_selection);
+    }
+    if (p_observation->generation == p_selection->last_generation)
+    {
+        return true;
+    }
+    p_selection->last_generation = p_observation->generation;
+
+
+    p_context->delta =
+        (uint8_t) (p_observation->frame.seq - p_selection->last_seq);
+
+
+    p_context->b_discontinuity =
+        p_selection->have_seq &&
+        (p_context->delta >= 128u ||
+         now - p_selection->last_image_received_ms > TARGET_CAMERA_MAX_AGE_MS);
+
+    if (p_selection->have_seq && !p_context->delta)
+    {
+        return true;
+    }
+    p_selection->last_seq               = p_observation->frame.seq;
+    p_selection->have_seq               = true;
+    p_selection->last_image_received_ms = now;
+
+
+    p_context->image_age = (uint32_t) p_observation->frame.age_ms +
+                           (now - p_observation->received_ms);
+
+    return false;
+}
+
+/** @brief Execute the camera stage of target_selector_tick. */
+static bool
+target_selector_tick_camera (target_selector_t * p_selection,
+                             mission_t * p_mission, const rover_map_t * p_map,
+                             const camera_observation_t *     p_observation,
+                             uint32_t                         now,
+                             target_selector_tick_context_t * p_context)
+{
+
+    if (p_context->b_discontinuity ||
+        now - p_selection->started_ms < p_context->image_age)
+    {
+        reset_confirmations(p_selection);
+        p_selection->detail = "WAITING_FOR_NEW_IMAGES";
+        return true;
+    }
+    p_selection->sample_generation  = p_observation->generation;
+    p_selection->sample_received_ms = p_observation->received_ms;
+    p_selection->sample_age_ms      = p_observation->frame.age_ms;
+
+
+    int tracking_bearing = p_mission->leg.phase == LEG_ALIGNING ||
+                                   p_mission->leg.phase == LEG_REACQUIRING
+                               ? TARGET_RECOVERY_MAX_BEARING_CDEG
+                               : TARGET_TRACKING_MAX_BEARING_CDEG;
+    p_context->p_target =
+        p_selection->state == TARGET_LOCKED
+            ? find_tracking_marker(&p_observation->frame,
+                                   p_mission->leg.next_target_node,
+                                   tracking_bearing)
+            : nearest_target(&p_observation->frame, p_map, &p_selection->route);
+
+    return false;
+}
+
+/** @brief Execute the tracking stage of target_selector_tick. */
+static bool
+target_selector_tick_tracking (target_selector_t * p_selection,
+                               mission_t * p_mission, const rover_map_t * p_map,
+                               uint32_t                         now,
+                               target_selector_tick_context_t * p_context)
+{
+
+    if (p_selection->state != TARGET_LOCKED)
+    {
+        if (!p_context->p_target)
+        {
+            reset_confirmations(p_selection);
+            p_selection->detail = "NO_UNAMBIGUOUS_ELIGIBLE_TARGET";
+            return true;
+        }
+        if (p_selection->marker != p_context->p_target->id)
+        {
+
+            p_selection->reference_candidate =
+                p_selection->reference_confirmations = 0;
+        }
+
+        p_selection->confirmations =
+            p_selection->marker == p_context->p_target->id
+                ? (uint8_t) (p_selection->confirmations + 1u)
+                : 1u;
+
+        p_selection->marker = p_context->p_target->id;
+        p_selection->detail = "AUTOMATIC_CONFIRMING_TARGET";
+        if (p_selection->confirmations >= TARGET_CONFIRM_FRAMES)
+        {
+            p_mission->leg.next_target_node = p_context->p_target->id;
+            p_mission->leg.configured       = true;
+            p_mission->leg.phase            = LEG_CONFIGURED;
+
+            const map_node_t * p_known =
+                rover_map_find_id(p_map, p_context->p_target->id);
+
+            if (p_known)
+            {
+                p_mission->leg.target_x          = p_known->x;
+                p_mission->leg.target_y          = p_known->y;
+                p_mission->leg.target_cell_valid = true;
+
+                p_mission->leg.direction = adjacent_direction(
+                    rover_map_find_id(p_map, p_map->current_node), p_known);
+            }
+            p_selection->state = TARGET_LOCKED;
+            note_change(p_mission, now);
+        }
+    }
+    p_selection->available = p_context->p_target != NULL;
+    if (p_context->p_target)
+    {
+        p_selection->range_mm     = p_context->p_target->range_mm;
+        p_selection->bearing_cdeg = p_context->p_target->bearing_cdeg;
+    }
+    return false;
+}
+
+/** @brief Execute the reference stage of target_selector_tick. */
+static bool
+target_selector_tick_reference (target_selector_t *              p_selection,
+                                mission_t *                      p_mission,
+                                const rover_map_t *              p_map,
+                                const camera_observation_t *     p_observation,
+                                uint32_t                         now,
+                                target_selector_tick_context_t * p_context)
+{
+
+
+    if (p_mission->leg.arrival_reference_node)
+    {
+        // Reference lock is independent of visibility and never follows a new
+        // nearest marker.
+
+        const camera_marker_t * p_ref = find_tracking_marker(
+            &p_observation->frame, p_mission->leg.arrival_reference_node,
+            TARGET_RECOVERY_MAX_BEARING_CDEG);
+
+        p_selection->reference_available = p_ref != NULL;
+        if (p_ref)
+        {
+            p_selection->reference_range_mm     = p_ref->range_mm;
+            p_selection->reference_bearing_cdeg = p_ref->bearing_cdeg;
+        }
+    }
+    else
+    {
+        // Do not establish a new reference association while rotating the
+        // camera.
+
+        const camera_marker_t * p_ref =
+            p_mission->leg.phase == LEG_ALIGNING
+                ? NULL
+                : nearest_reference(&p_observation->frame, p_map,
+                                    &p_mission->leg, p_selection->marker,
+                                    p_context->p_target,
+                                    p_selection->allow_late_reference);
+
+        p_selection->reference_available = false;
+        if (!p_ref)
+        {
+
+            p_selection->reference_candidate =
+                p_selection->reference_confirmations = 0;
+        }
+        else
+        {
+
+            p_selection->reference_confirmations =
+                p_selection->reference_candidate == p_ref->id
+                    ? (uint8_t) (p_selection->reference_confirmations + 1u)
+                    : 1u;
+
+            p_selection->reference_candidate    = p_ref->id;
+            p_selection->reference_range_mm     = p_ref->range_mm;
+            p_selection->reference_bearing_cdeg = p_ref->bearing_cdeg;
+            if (p_selection->state == TARGET_LOCKED &&
+                p_selection->reference_confirmations >= TARGET_CONFIRM_FRAMES)
+            {
+                p_mission->leg.arrival_reference_node = p_ref->id;
+                p_selection->reference_marker         = p_ref->id;
+                p_selection->reference_available      = true;
+                note_change(p_mission, now);
+            }
+        }
+    }
+    return false;
+}
+
+/** @brief Execute the arrival stage of target_selector_tick. */
+static bool
+target_selector_tick_arrival (target_selector_t * p_selection,
+                              mission_t *         p_mission)
+{
+
+    if (p_selection->state == TARGET_LOCKED)
+    {
+
+        p_selection->detail = !p_selection->available
+                                  ? "TARGET_OBSERVATION_UNAVAILABLE"
+                              : !p_mission->leg.arrival_reference_node
+                                  ? "TARGET_LOCKED_WAITING_FOR_REFERENCE"
+                              : !p_selection->reference_available
+                                  ? "REFERENCE_OBSERVATION_UNAVAILABLE"
+                                  : "TARGET_AND_REFERENCE_LOCKED";
+    }
+    return false;
+}
+
+void
+target_selector_tick (target_selector_t * p_selection, mission_t * p_mission,
+                      const rover_map_t *          p_map,
+                      const camera_observation_t * p_observation, bool b_safe,
+                      uint32_t now)
+{
+    target_selector_tick_context_t context = { 0 };
+    if (target_selector_tick_prepare(p_selection, p_mission, p_map, b_safe, now,
+                                     &context))
+    {
+        return;
+    }
+    if (target_selector_tick_inputs(p_selection, p_mission, p_map,
+                                    p_observation, now, &context))
+    {
+        return;
+    }
+    if (target_selector_tick_motion(p_selection, p_observation, now, &context))
+    {
+        return;
+    }
+    if (target_selector_tick_camera(p_selection, p_mission, p_map,
+                                    p_observation, now, &context))
+    {
+        return;
+    }
+    if (target_selector_tick_tracking(p_selection, p_mission, p_map, now,
+                                      &context))
+    {
+        return;
+    }
+    if (target_selector_tick_reference(p_selection, p_mission, p_map,
+                                       p_observation, now, &context))
+    {
+        return;
+    }
+    if (target_selector_tick_arrival(p_selection, p_mission))
+    {
+        return;
+    }
+}
+
+
+size_t
+target_selector_format (const target_selector_t * p_selection, char * p_out,
+                        size_t capacity)
+{
+    if (!p_out || !capacity)
+    {
+        return 0;
+    }
+    static const char * states[] = { "NONE", "WAITING", "LOCKED", "CANCELLED" };
+    char                marker[8];
+    char                ref[8];
+    if (p_selection->marker)
+    {
+        snprintf(marker, sizeof(marker), "%u", (unsigned) p_selection->marker);
+    }
+    else
+    {
+        snprintf(marker, sizeof(marker), "null");
+    }
+
+    uint8_t reference = p_selection->reference_marker
+                            ? p_selection->reference_marker
+                            : p_selection->reference_candidate;
+
+    if (reference)
+    {
+        snprintf(ref, sizeof(ref), "%u", (unsigned) reference);
+    }
+    else
+    {
+        snprintf(ref, sizeof(ref), "null");
+    }
+
+    int length = snprintf(
+        p_out, capacity,
+        "{\"state\":\"%s\",\"request\":\"\",\"leg_id\":%" PRIu32
+        ",\"role\":\"AUTOMATIC\",\"direction\":null,"
+        "\"marker\":%s,\"confirmations\":%u,\"available\":%s,\"range_mm\":%u,"
+        "\"bearing_cdeg\":%d,"
+        "\"reference_marker\":%s,\"reference_confirmations\":%u,\"reference_"
+        "available\":%s,"
+        "\"reference_range_mm\":%u,\"reference_bearing_cdeg\":%d,\"detail\":\"%"
+        "s\"}",
+        states[p_selection->state], (uint32_t) p_selection->leg_id, marker,
+        (unsigned) p_selection->confirmations,
+        p_selection->available ? "true" : "false",
+        (unsigned) p_selection->range_mm, (int) p_selection->bearing_cdeg, ref,
+        (unsigned) p_selection->reference_confirmations,
+        p_selection->reference_available ? "true" : "false",
+        (unsigned) p_selection->reference_range_mm,
+        (int) p_selection->reference_bearing_cdeg, p_selection->detail);
+
+    if (length < 0 || (size_t) length >= capacity)
+    {
+        p_out[0] = '\0';
+        return 0;
+    }
+    return (size_t) length;
+}
+
+/* End of file. */

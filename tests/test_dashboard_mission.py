@@ -92,7 +92,6 @@ class FakeGUI:
         self.last_mission_reply = None
         self.onboard_map = OnboardMapCache()
         self.onboard_map_status = Variable()
-        self.mission_state_label = Label()
         self.robot_status_label = Label()
         self.last_msg_time = Variable()
         self.msg_count = 0
@@ -107,11 +106,9 @@ class FakeGUI:
         self.connect_time = time.time()
         self.robot_link = "live"
         self.root = SimpleNamespace(after=lambda *args: None)
-        self.heading_label, self.pitch_label, self.roll_label = Label(), Label(), Label()
         self.broker_connected, self.broker_status_label = Variable(), Label()
         self.odometry_lock = threading.Lock()
         self.ultrasonic = dict.fromkeys(("left", "front", "right", "back"), 0)
-        self.ultrasonic_label = Label()
 
     def log(self, value):
         self.logs.append(value)
@@ -137,6 +134,117 @@ for name in names:
 
 
 class MissionDisplayTests(unittest.TestCase):
+    def test_mapped_reverse_recovery_display_and_dynamic_reference_range(self):
+        app=FakeGUI()
+        tracking={'leg_id':7,'active':True,'phase':'BACKING_UP','source':'NONE','remaining_mm':None,
+                  'reference_progress_mm':0,'reference_model_valid':True,'verification_frames':0,
+                  'result':'REVERSING_FOR_MAPPED_MARKER'}
+        app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(tracking))
+        self.assertIn('Reversing slowly',app.dfs_tracking_text.get())
+        recovered={**tracking,'phase':'APPROACHING','source':'REFERENCE','remaining_mm':200,
+                   'reference_arrival_mm':1200,'recovery_marker_id':14,'recovery_marker_mapped':True,
+                   'result':'RESUMED_AFTER_REFERENCE_RECOVERY'}
+        app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(recovered))
+        self.assertIn('recovery marker: 14 (mapped)',app.dfs_tracking_text.get())
+        self.assertIn('reference arrival range: 1200 mm',app.dfs_tracking_text.get())
+        before=app.dfs_tracking_text.get()
+        for bad in ({**recovered,'recovery_marker_id':256},{**recovered,'recovery_marker_mapped':1}):
+            app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(bad))
+            self.assertEqual(app.dfs_tracking_text.get(),before)
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events,[])
+
+    def test_input_wait_and_arrival_correction_keep_dfs_and_map_unchanged(self):
+        app=FakeGUI()
+        for phase in ('WAITING_INPUT','CORRECTING'):
+            leg={'leg_id':7,'configured':True,'departure_node':1,'next_target_node':2,
+                 'arrival_reference_node':9,'target_cell':{'x':0,'y':1},'direction':'NORTH','phase':phase}
+            app.update_mission_display({**report('EXPLORING','START_DFS',motion=phase=='CORRECTING'),'leg':leg})
+            tracking={'leg_id':7,'active':True,'phase':phase,'source':'NONE','remaining_mm':None,
+                      'reference_progress_mm':0,'reference_model_valid':True,'verification_frames':0,
+                      'result':'WAITING_FOR_INPUT' if phase=='WAITING_INPUT' else 'CORRECTING_OVERSHOOT',
+                      'input_reason':'SENSOR_STALE' if phase=='WAITING_INPUT' else 'NONE'}
+            app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(tracking))
+            self.assertEqual(app.mission_state.get(),'EXPLORING')
+            self.assertEqual(app.mission_leg_fields['next_target_node'].get(),'2')
+            self.assertTrue(app.auto_mode.get())
+            self.assertIsNone(app.onboard_map.snapshot)
+        self.assertIn('Correcting arrival position',app.dfs_tracking_text.get())
+        dfs={'active':True,'stage':'WAITING_INPUT','current_node':1,'depth':1,
+             'direction':'NORTH','expected_node':0,'detail':'HEADING_UNAVAILABLE'}
+        app.handle_mqtt_message('robot/status','DFS_STATE:'+json.dumps(dfs))
+        self.assertIn('WAITING_INPUT',app.dfs_planner_text.get())
+        self.assertEqual(app.status_events,[])
+
+    def test_camera_stall_wait_keeps_dfs_selected_and_resumes_same_target(self):
+        app=FakeGUI()
+        leg={'leg_id':9,'configured':True,'departure_node':31,'next_target_node':11,
+             'arrival_reference_node':13,'target_cell':{'x':0,'y':1},'direction':'NORTH','phase':'WAITING_CAMERA'}
+        app.update_mission_display({**report('EXPLORING','START_DFS',motion=False),'leg':leg})
+        tracking={'leg_id':9,'active':True,'phase':'WAITING_CAMERA','source':'NONE','remaining_mm':None,
+                  'reference_progress_mm':560,'reference_model_valid':True,'verification_frames':0,
+                  'result':'WAITING_FOR_FRESH_CAMERA','input_reason':'CAMERA_PROCESSING_STALLED',
+                  'camera_present':True,'camera_status':2,'camera_packet_age_ms':6,'camera_image_age_ms':891}
+        app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(tracking))
+        self.assertTrue(app.auto_mode.get())
+        self.assertEqual(app.mission_state.get(),'EXPLORING')
+        self.assertIn('stopped',app.dfs_feedback.get())
+        self.assertIn('CAMERA_PROCESSING_STALLED',app.dfs_tracking_text.get())
+        self.assertEqual(app.mission_leg_fields['next_target_node'].get(),'11')
+        app.update_mission_display({**report('EXPLORING','START_DFS',motion=True,revision=2),
+                                    'leg':{**leg,'phase':'APPROACHING'}})
+        self.assertTrue(app.auto_mode.get())
+        self.assertEqual(app.mission_motion.get(),'Enabled')
+        self.assertEqual(app.mission_leg_fields['arrival_reference_node'].get(),'13')
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events,[])
+
+    def test_camera_age_wait_is_exploring_with_motion_disabled(self):
+        app=FakeGUI()
+        leg={'leg_id':7,'configured':True,'departure_node':1,'next_target_node':2,
+             'arrival_reference_node':9,'target_cell':{'x':0,'y':1},'direction':'NORTH','phase':'WAITING_CAMERA'}
+        app.update_mission_display({**report('EXPLORING','START_DFS',motion=False),'leg':leg})
+        self.assertEqual(app.mission_state.get(),'EXPLORING')
+        self.assertEqual(app.mission_motion.get(),'Disabled')
+        self.assertEqual(app.mission_leg_fields['phase'].get(),'WAITING_CAMERA')
+        self.assertTrue(app.auto_mode.get())
+        tracking={'leg_id':7,'active':True,'phase':'WAITING_CAMERA','source':'NONE','remaining_mm':None,
+                  'reference_progress_mm':0,'reference_model_valid':True,'verification_frames':0,
+                  'result':'WAITING_FOR_FRESH_CAMERA','input_reason':'CAMERA_PACKET_STALE'}
+        app.handle_mqtt_message('robot/status','DFS_TRACKING:'+json.dumps(tracking))
+        self.assertIn('rover stopped; DFS retained',app.dfs_tracking_text.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events,[])
+
+    def test_target_alignment_displays_as_exploring_and_does_not_change_map(self):
+        app = FakeGUI()
+        leg = {'leg_id': 7, 'configured': True, 'departure_node': 1, 'next_target_node': 2,
+               'arrival_reference_node': 9, 'target_cell': {'x': 0, 'y': 1},
+               'direction': 'NORTH', 'phase': 'ALIGNING'}
+        app.update_mission_display({**report('EXPLORING', 'START_DFS', motion=True), 'leg': leg})
+        self.assertEqual(app.mission_state.get(), 'EXPLORING')
+        self.assertEqual(app.mission_leg_fields['phase'].get(), 'ALIGNING')
+        self.assertEqual(app.mission_leg_fields['next_target_node'].get(), '2')
+        tracking = {'leg_id': 7, 'active': True, 'phase': 'ALIGNING', 'source': 'NONE',
+                    'remaining_mm': None, 'reference_progress_mm': 0, 'reference_model_valid': True,
+                    'verification_frames': 0, 'result': 'TARGET_NOT_ALIGNED'}
+        app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps(tracking))
+        self.assertIn('Aligning locked tracking marker', app.dfs_tracking_text.get())
+        self.assertIn('repeating corrections', app.dfs_tracking_text.get())
+        self.assertIn('±10°', app.dfs_tracking_text.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events, [])
+        app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps(
+            {**tracking, 'result': 'ROTATING_TO_REFERENCE'}))
+        self.assertIn('ROTATING_TO_REFERENCE', app.dfs_tracking_text.get())
+        self.assertEqual(app.mission_state.get(), 'EXPLORING')
+        self.assertTrue(app.auto_mode.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+        self.assertEqual(app.status_events, [])
+        app.handle_mqtt_message('robot/status', 'DFS_EVENT:TARGET_ALIGNMENT_TIMEOUT')
+        self.assertIn('alignment timed out', app.dfs_feedback.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+
     def test_node_arrival_keeps_dfs_running_through_exit_scan(self):
         app=FakeGUI()
         app.handle_mqtt_message('robot/status','DFS_EVENT:NODE_ARRIVED')
@@ -301,7 +409,7 @@ class MissionDisplayTests(unittest.TestCase):
         app.update_mission_display({**report('EXPLORING', 'START_DFS'), 'leg': {**leg, 'phase': 'REACQUIRING'}})
         self.assertTrue(app.auto_mode.get())
         self.assertEqual(app.mission_motion.get(), 'Disabled')
-        self.assertIn('reacquiring', app.dfs_feedback.get())
+        self.assertIn('confirm a recovery marker', app.dfs_feedback.get())
         self.assertEqual(app.mission_leg_fields['next_target_node'].get(), '2')
         self.assertEqual(app.mission_leg_fields['arrival_reference_node'].get(), '9')
         self.assertIsNone(app.onboard_map.snapshot)
@@ -578,7 +686,8 @@ class MissionDisplayTests(unittest.TestCase):
         self.assertEqual(len(app.logs), 1)
         app.update_mission_display(report("FAULT", "ESTOP", True, revision=4))
         self.assertEqual(len(app.logs), 2)
-        self.assertEqual(app.mission_state_label.values["fg"], "#e74c3c")
+        self.assertEqual(app.mission_state.get(), "FAULT")
+        self.assertEqual(app.mission_reason.get(), "ESTOP")
 
     def test_acknowledgements_and_refusals_do_not_replace_robot_status(self):
         app = FakeGUI()

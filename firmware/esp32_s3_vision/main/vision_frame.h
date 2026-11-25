@@ -1,3 +1,7 @@
+/**
+ * @file vision_frame.h
+ * @brief Vision frame firmware module.
+ */
 #ifndef VISION_FRAME_H
 #define VISION_FRAME_H
 
@@ -28,13 +32,19 @@ typedef struct
 } vision_marker_t;
 
 // CRC-8: polynomial 0x07, init 0, no reflection, xorout 0.
-uint8_t vision_crc8 (const uint8_t * data, size_t len);
+
+uint8_t vision_crc8 (const uint8_t * p_data, size_t len);
+
 
 // Writes one message and returns its length (7 + 6 * n). out must hold
 // VISION_FRAME_MAX bytes. Values outside a field's range are capped, and n is
 // capped at VISION_MAX_MARKERS.
-size_t vision_frame_build (uint8_t * out, uint8_t seq, uint8_t status,
-                           int64_t age_ms, const vision_marker_t * markers,
-                           int n);
+
+size_t vision_frame_build (uint8_t * p_out, uint8_t seq, uint8_t status,
+                           int64_t age_ms, const vision_marker_t * p_markers,
+                           int count);
+
 
 #endif /* VISION_FRAME_H */
+
+/* End of file. */

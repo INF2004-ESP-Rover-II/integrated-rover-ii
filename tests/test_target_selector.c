@@ -266,8 +266,54 @@ static void test_late_reference_is_distinct_aligned_and_beyond_planned_target(vo
     image.frame.markers[0]=marker(9,800,0);confirm();assert(!mission.leg.arrival_reference_node); // Known side cell rejected.
 }
 
+static void test_wider_window_only_tracks_the_locked_moving_target(void)
+{
+    setup(); image.frame.count=1; image.frame.markers[0].bearing_cdeg=1001;
+    arm(); confirm(); assert(selector.state!=TARGET_LOCKED); // Original selection limit stays 10 degrees.
+    setup(); arm(); confirm();
+    assert(mission_begin_drive(&mission,now)); rover_map_depart(&map);
+    image.frame.markers[0].bearing_cdeg=2500; frame();
+    assert(selector.available && selector.bearing_cdeg==2500 && mission.leg.next_target_node==2);
+    assert(mission_alignment_phase(&mission,true,now));
+    image.frame.markers[0].bearing_cdeg=-3000; frame();
+    assert(selector.available && selector.bearing_cdeg==-3000 && selector.state==TARGET_LOCKED);
+    assert(mission.leg.arrival_reference_node==9 && map.current_node==0);
+    image.frame.markers[0].bearing_cdeg=4500; frame(); assert(selector.available);
+    image.frame.markers[0].bearing_cdeg=4501; frame(); assert(!selector.available);
+    image.frame.markers[0].bearing_cdeg=100; image.frame.markers[0].quality=1;
+    frame(); assert(!selector.available);
+    image.frame.markers[0].quality=0; image.frame.markers[0].range_mm=0;
+    frame(); assert(!selector.available);
+    setup(); image.frame.count=1; arm(); confirm();
+    assert(mission_begin_drive(&mission,now)); rover_map_depart(&map);
+    assert(mission_alignment_phase(&mission,true,now));
+    image.frame.count=2; image.frame.markers[1]=marker(9,900,150);
+    confirm(); assert(!mission.leg.arrival_reference_node); // No new association during camera rotation.
+}
+
+static void test_locked_reference_remains_visible_for_alignment_without_changing_selection_limits(void)
+{
+    setup();arm();confirm();
+    uint32_t leg=mission.leg.leg_id;
+    image.frame.markers[0].bearing_cdeg=1200;
+    image.frame.markers[1].bearing_cdeg=1300;frame();
+    assert(mission.leg.phase==LEG_CONFIGURED && selector.available && selector.reference_available);
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9 && mission.leg.leg_id==leg);
+    assert(mission_begin_drive(&mission,now));rover_map_depart(&map);
+    image.frame.count=1;image.frame.markers[0]=marker(9,999,4500);frame();
+    assert(!selector.available && selector.reference_available && selector.reference_bearing_cdeg==4500);
+    image.frame.markers[0].bearing_cdeg=4501;frame();assert(!selector.reference_available);
+    image.frame.markers[0]=marker(9,999,1200);image.frame.markers[0].quality=1;
+    frame();assert(!selector.reference_available);
+    image.frame.markers[0].quality=0;image.frame.markers[0].range_mm=0;
+    frame();assert(!selector.reference_available);
+    assert(mission.leg.arrival_reference_node==9 && mission.leg.next_target_node==2);
+}
+
 int main(void)
 {
+    test_wider_window_only_tracks_the_locked_moving_target();
+    test_locked_reference_remains_visible_for_alignment_without_changing_selection_limits();
     test_automatic_two_and_nine();
     test_late_reference_and_ordering();
     test_filtering_and_sequence();

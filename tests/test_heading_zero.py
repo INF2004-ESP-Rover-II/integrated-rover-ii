@@ -29,9 +29,6 @@ class ZeroGUI(FakeGUI):
         self.heading_zero_pending = False
         self.heading_zero_job = None
         self.odometry_lock = threading.Lock()
-        self.robot_heading = 123.0
-        self.heading_text = {}
-        self.heading_label = SimpleNamespace(config=lambda **kwargs: self.heading_text.update(kwargs))
         self.arrival_resets = 0
         self.navigator._reset_arrival = self.reset_arrival
 
@@ -49,14 +46,12 @@ class ZeroButtonTests(unittest.TestCase):
         app.request_heading_zero()
         self.assertEqual(app.published, ['STOP', 'ZERO_HEADING'])
         self.assertTrue(app.heading_zero_pending)
-        self.assertEqual(app.robot_heading, 123)
         self.assertEqual(app.jobs[app.heading_zero_job][0], 5000)
         app.handle_heading_zero_status('HEADING_ZERO_PENDING')
         self.assertTrue(app.heading_zero_pending)
         app.handle_heading_zero_status('HEADING_ZEROED')
         self.assertFalse(app.heading_zero_pending)
-        self.assertEqual(app.robot_heading, 0)
-        self.assertEqual(app.heading_text['text'], '0.0°')
+        self.assertEqual(app.turn_heading.get(), "0")
         self.assertIsNone(app.navigator.sensor)
         self.assertIsNone(app.navigator.visible_marker)
         self.assertEqual(app.arrival_resets, 1)
@@ -118,7 +113,6 @@ class ZeroButtonTests(unittest.TestCase):
         app = ZeroGUI()
         app.request_heading_zero()
         app.handle_heading_zero_status('HEADING_ZERO_REFUSED')
-        self.assertEqual(app.robot_heading, 123)
         self.assertFalse(app.heading_zero_pending)
         app.fail_command = 'ZERO_HEADING'
         app.request_heading_zero()
@@ -132,7 +126,6 @@ class ZeroButtonTests(unittest.TestCase):
         callback()
         self.assertFalse(app.heading_zero_pending)
         self.assertEqual(app.published[-1], 'STOP')
-        self.assertEqual(app.robot_heading, 123)
 
 
 class HeadingReferenceTests(unittest.TestCase):

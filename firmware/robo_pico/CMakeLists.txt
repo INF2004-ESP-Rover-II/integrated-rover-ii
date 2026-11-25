@@ -25,6 +25,7 @@ add_executable(mecanum_robot
     src/motor_control.c          # Subsystem 6 Motion Control logic
     src/motor_hw.c               # Subsystem 6 L298N / arm / claw pins
     src/wifi_mqtt.c
+    src/mqtt_publish_policy.c
     src/uart_protocol.c
     src/safety_interlock.c
     src/mission_control.c
@@ -52,6 +53,10 @@ target_compile_definitions(mecanum_robot PRIVATE MC_ALLOW_MANUAL_WITHOUT_HEADING
 # stops an auto move. Back to 150 once the Sensor Pico sends at 20 Hz.
 target_compile_definitions(mecanum_robot PRIVATE MC_HEADING_STALE_MS=600u)
 
+# Opt in for a separate USB-serial diagnostic build; normal firmware is unchanged.
+option(ROVER_MQTT_DIAGNOSTICS "Report network timing and MQTT publication counters over USB" OFF)
+target_compile_definitions(mecanum_robot PRIVATE ROVER_MQTT_DIAGNOSTICS=$<BOOL:${ROVER_MQTT_DIAGNOSTICS}>)
+
 target_link_libraries(mecanum_robot
     pico_stdlib
     pico_rand
@@ -78,3 +83,7 @@ target_link_libraries(camera_uart_monitor pico_stdlib hardware_uart)
 pico_enable_stdio_usb(camera_uart_monitor 1)
 pico_enable_stdio_uart(camera_uart_monitor 0)
 pico_add_extra_outputs(camera_uart_monitor)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../barr_c.cmake)
+barr_c_target(mecanum_robot)
+barr_c_target(camera_uart_monitor)

@@ -1,9 +1,18 @@
+/**
+ * @file aruco_detect.c
+ * @brief Aruco detect firmware module.
+ */
 #include "aruco_detect.h"
 
 #include <math.h>
 #include <string.h>
 
 #include "aruco_dict.h"
+
+/* Fixed dimensions and iteration limits used by this module. */
+#define CONTOUR_NEIGHBOUR_COUNT 8
+#define GRAYSCALE_LEVEL_COUNT 256
+#define MARKER_CORNER_COUNT 4
 
 // Limits follow OpenCV's DetectorParameters defaults where one exists.
 #ifndef ARUCO_THRESH_WINDOW
@@ -23,194 +32,238 @@
 
 typedef struct
 {
-    int16_t x, y;
+    int16_t x;
+    int16_t y;
 } pt_t;
 
-static const int8_t DX[8] = {1,  1,  0, -1,
-                             -1, -1, 0, 1}; // clockwise on screen, y down
-static const int8_t DY[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+static const int8_t g_dx[8] = {
+    1, 1, 0, -1, -1, -1, 0, 1
+}; // clockwise on screen, y down
+static const int8_t g_dy[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
 
-#define PX(x, y) (img[(y) * stride + (x) * pixel_step])
 
 // map[i]: 0 background, 1 dark, 2 dark and already on a traced contour.
-static void threshold (const uint8_t * img, int w, int h, int stride,
-                       int pixel_step, uint8_t * map, uint32_t * col)
+static void
+threshold (const uint8_t * p_img, int width, int height, int stride,
+           int pixel_step, uint8_t * p_map, uint32_t * p_col)
 {
-    const int r = ARUCO_THRESH_WINDOW / 2;
-    memset(col, 0, (size_t)w * sizeof(uint32_t));
-    for (int y = 0; y <= r && y < h; y++)
+    const int result = ARUCO_THRESH_WINDOW / 2;
+    memset(p_col, 0, (size_t) width * sizeof(uint32_t));
+    for (int y_coordinate = 0; y_coordinate <= result && y_coordinate < height;
+         y_coordinate++)
     {
-        const uint8_t * p = img + (size_t)y * stride;
-        for (int x = 0; x < w; x++, p += pixel_step)
+        const uint8_t * p_pointer = p_img + (size_t) y_coordinate * stride;
+        for (int x_coordinate = 0; x_coordinate < width;
+             x_coordinate++, p_pointer += pixel_step)
         {
-            col[x] += *p;
+            p_col[x_coordinate] += *p_pointer;
         }
     }
-    for (int y = 0; y < h; y++)
+    for (int y_coordinate = 0; y_coordinate < height; y_coordinate++)
     {
-        if (y > 0)
+        if (y_coordinate > 0)
         {
-            if (y + r < h)
+            if (y_coordinate + result < height)
             {
-                const uint8_t * p = img + (size_t)(y + r) * stride;
-                for (int x = 0; x < w; x++, p += pixel_step)
+
+                const uint8_t * p_pointer =
+                    p_img + (size_t) (y_coordinate + result) * stride;
+
+                for (int x_coordinate = 0; x_coordinate < width;
+                     x_coordinate++, p_pointer += pixel_step)
                 {
-                    col[x] += *p;
+                    p_col[x_coordinate] += *p_pointer;
                 }
             }
-            if (y - r - 1 >= 0)
+            if (y_coordinate - result - 1 >= 0)
             {
-                const uint8_t * p = img + (size_t)(y - r - 1) * stride;
-                for (int x = 0; x < w; x++, p += pixel_step)
+
+                const uint8_t * p_pointer =
+                    p_img + (size_t) (y_coordinate - result - 1) * stride;
+
+                for (int x_coordinate = 0; x_coordinate < width;
+                     x_coordinate++, p_pointer += pixel_step)
                 {
-                    col[x] -= *p;
+                    p_col[x_coordinate] -= *p_pointer;
                 }
             }
         }
-        const int y0 = y - r < 0 ? 0 : y - r, y1 = y + r >= h ? h - 1 : y + r,
-                  rows = y1 - y0 + 1;
+
+        const int origin_y =
+            y_coordinate - result < 0 ? 0 : y_coordinate - result;
+
+
+        const int y1 = y_coordinate + result >= height ? height - 1
+                                                       : y_coordinate + result;
+
+        const int rows = y1 - origin_y + 1;
         uint32_t  sum  = 0;
-        for (int x = 0; x <= r && x < w; x++)
+        for (int x_coordinate = 0;
+             x_coordinate <= result && x_coordinate < width; x_coordinate++)
         {
-            sum += col[x];
+            sum += p_col[x_coordinate];
         }
-        const uint8_t * p   = img + (size_t)y * stride;
-        uint8_t *       row = map + (size_t)y * w;
-        for (int x = 0; x < w; x++, p += pixel_step)
+        const uint8_t * p_pointer = p_img + (size_t) y_coordinate * stride;
+        uint8_t *       p_row     = p_map + (size_t) y_coordinate * width;
+        for (int x_coordinate = 0; x_coordinate < width;
+             x_coordinate++, p_pointer += pixel_step)
         {
-            if (x > 0)
+            if (x_coordinate > 0)
             {
-                if (x + r < w)
+                if (x_coordinate + result < width)
                 {
-                    sum += col[x + r];
+                    sum += p_col[x_coordinate + result];
                 }
-                if (x - r - 1 >= 0)
+                if (x_coordinate - result - 1 >= 0)
                 {
-                    sum -= col[x - r - 1];
+                    sum -= p_col[x_coordinate - result - 1];
                 }
             }
-            const int x0 = x - r < 0 ? 0 : x - r,
-                      x1 = x + r >= w ? w - 1 : x + r;
+
+            const int origin_x =
+                x_coordinate - result < 0 ? 0 : x_coordinate - result;
+
+
+            const int x1 = x_coordinate + result >= width
+                               ? width - 1
+                               : x_coordinate + result;
+
             // pixel <= mean - C, without dividing per pixel
-            row[x] = (uint32_t)(*p + ARUCO_THRESH_C) *
-                         (uint32_t)((x1 - x0 + 1) * rows) <=
-                     sum;
+
+            p_row[x_coordinate] = (uint32_t) (*p_pointer + ARUCO_THRESH_C) *
+                                      (uint32_t) ((x1 - origin_x + 1) * rows) <=
+                                  sum;
         }
     }
     // The contour tracer reads neighbours: keep a background frame around the
     // image.
-    memset(map, 0, (size_t)w);
-    memset(map + (size_t)(h - 1) * w, 0, (size_t)w);
-    for (int y = 0; y < h; y++)
+    memset(p_map, 0, (size_t) width);
+    memset(p_map + (size_t) (height - 1) * width, 0, (size_t) width);
+    for (int y_coordinate = 0; y_coordinate < height; y_coordinate++)
     {
-        map[(size_t)y * w] = map[(size_t)y * w + w - 1] = 0;
+
+        p_map[(size_t) y_coordinate * width] =
+            p_map[(size_t) y_coordinate * width + width - 1] = 0;
     }
 }
 
 // Moore-neighbour trace from a dark pixel whose left neighbour is background.
 // Returns the point count, or 0 if the contour does not fit in cap.
-static int trace (uint8_t * map, int w, int sx, int sy, pt_t * pts, int cap)
+static int
+trace (uint8_t * p_map, int width, int sx, int sy, pt_t * p_pts, int cap)
 {
-    int x = sx, y = sy, n = 0, first_dir = -1,
-        search = 5; // start just clockwise of the west neighbour
+    int x_coordinate = sx;
+    int y_coordinate = sy;
+    int count        = 0;
+    int first_dir    = -1;
+    int search       = 5; // start just clockwise of the west neighbour
     for (;;)
     {
-        if (n >= cap)
+        if (count >= cap)
         {
             return 0;
         }
-        pts[n].x = (int16_t)x;
-        pts[n].y = (int16_t)y;
-        n++;
-        map[(size_t)y * w + x] = 2;
-        int dir                = -1;
-        for (int i = 0; i < 8; i++)
+        p_pts[count].x = (int16_t) x_coordinate;
+        p_pts[count].y = (int16_t) y_coordinate;
+        count++;
+        p_map[(size_t) y_coordinate * width + x_coordinate] = 2;
+        int dir                                             = -1;
+        for (int index = 0; index < CONTOUR_NEIGHBOUR_COUNT; index++)
         {
-            int d = (search + i) & 7;
-            if (map[(size_t)(y + DY[d]) * w + x + DX[d]])
+            int data = (uint32_t) ((search + index)) & (uint32_t) (7);
+            if (p_map[(size_t) (y_coordinate + g_dy[data]) * width +
+                      x_coordinate + g_dx[data]])
             {
-                dir = d;
+                dir = data;
                 break;
             }
         }
         if (dir < 0)
         {
-            return n; // isolated pixel
+            return count; // isolated pixel
         }
-        if (x == sx && y == sy)
+        if (x_coordinate == sx && y_coordinate == sy)
         {
             if (first_dir == dir)
             {
-                return n - 1; // back at the start, heading the same way
+                return count - 1; // back at the start, height the same way
             }
             if (first_dir < 0)
             {
                 first_dir = dir;
             }
         }
-        x += DX[dir];
-        y += DY[dir];
-        search = (dir + 5) & 7;
+        x_coordinate += g_dx[dir];
+        y_coordinate += g_dy[dir];
+        search = (uint32_t) ((dir + 5)) & (uint32_t) (7);
     }
 }
 
-static float line_dist2 (pt_t a, pt_t b, pt_t p)
+static float
+line_dist2 (pt_t first, pt_t second, pt_t pointer)
 {
-    const float dx = (float)(b.x - a.x), dy = (float)(b.y - a.y);
-    const float px = (float)(p.x - a.x), py = (float)(p.y - a.y);
-    const float len2 = dx * dx + dy * dy;
+    const float delta_x = (float) (second.x - first.x);
+    const float delta_y = (float) (second.y - first.y);
+    const float pixel_x = (float) (pointer.x - first.x);
+    const float pixel_y = (float) (pointer.y - first.y);
+    const float len2    = delta_x * delta_x + delta_y * delta_y;
     if (0.0f == len2)
     {
-        return px * px + py * py;
+        return pixel_x * pixel_x + pixel_y * pixel_y;
     }
-    const float cross = dx * py - dy * px;
+    const float cross = delta_x * pixel_y - delta_y * pixel_x;
     return cross * cross / len2;
 }
 
 // Douglas-Peucker on the arc from index i to j (j may wrap past n). Adds split
 // indices to verts in order; stops early once there are too many for a quad.
-static void simplify (const pt_t * pts, int n, int i, int j, float eps2,
-                      int * verts, int * nv)
+static void
+simplify (const pt_t * p_pts, int count, int index, int inner_index, float eps2,
+          int * p_verts, int * p_nv)
 {
-    if (*nv > 4 || j - i < 2)
+    if (*p_nv > 4 || inner_index - index < 2)
     {
         return;
     }
-    pt_t  a = pts[i % n], b = pts[j % n];
-    float best  = eps2;
-    int   split = -1;
-    for (int k = i + 1; k < j; k++)
+    pt_t  first  = p_pts[index % count];
+    pt_t  second = p_pts[inner_index % count];
+    float best   = eps2;
+    int   split  = -1;
+    for (int item_index = index + 1; item_index < inner_index; item_index++)
     {
-        float d = line_dist2(a, b, pts[k % n]);
-        if (d > best)
+        float data = line_dist2(first, second, p_pts[item_index % count]);
+        if (data > best)
         {
-            best  = d;
-            split = k;
+            best  = data;
+            split = item_index;
         }
     }
     if (split < 0)
     {
         return;
     }
-    simplify(pts, n, i, split, eps2, verts, nv);
-    if (*nv <= 4)
+    simplify(p_pts, count, index, split, eps2, p_verts, p_nv);
+    if (*p_nv <= 4)
     {
-        verts[(*nv)++] = split % n;
+        p_verts[(*p_nv)++] = split % count;
     }
-    simplify(pts, n, split, j, eps2, verts, nv);
+    simplify(p_pts, count, split, inner_index, eps2, p_verts, p_nv);
 }
 
-static int farthest (const pt_t * pts, int n, pt_t from)
+static int
+farthest (const pt_t * p_pts, int count, pt_t from)
 {
-    int best = 0, best_d = -1;
-    for (int i = 0; i < n; i++)
+    int best   = 0;
+    int best_d = -1;
+    for (int index = 0; index < count; index++)
     {
-        int dx = pts[i].x - from.x, dy = pts[i].y - from.y,
-            d = dx * dx + dy * dy;
-        if (d > best_d)
+        int delta_x = p_pts[index].x - from.x;
+        int delta_y = p_pts[index].y - from.y;
+        int data    = delta_x * delta_x + delta_y * delta_y;
+        if (data > best_d)
         {
-            best_d = d;
-            best   = i;
+            best_d = data;
+            best   = index;
         }
     }
     return best;
@@ -218,207 +271,290 @@ static int farthest (const pt_t * pts, int n, pt_t from)
 
 // Least-squares line through the middle of the contour arc from i to j, as nx*x
 // + ny*y = c.
-static void fit_line (const pt_t * pts, int n, int i, int j, float line[3])
+static void
+fit_line (const pt_t * p_pts, int count, int index, int inner_index,
+          float line[3])
 {
-    const int skip = (j - i) / 8 + 1;
-    float     sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-    int       m = 0;
-    for (int k = i + skip; k <= j - skip; k++, m++)
+    const int skip    = (inner_index - index) / 8 + 1;
+    float     sx      = 0;
+    float     sy      = 0;
+    float     sxx     = 0;
+    float     syy     = 0;
+    float     sxy     = 0;
+    int       value_m = 0;
+    for (int item_index = index + skip; item_index <= inner_index - skip;
+         item_index++, value_m++)
     {
-        const float x = pts[k % n].x, y = pts[k % n].y;
-        sx += x;
-        sy += y;
+        const float x_coordinate = p_pts[item_index % count].x;
+        const float y_coordinate = p_pts[item_index % count].y;
+        sx += x_coordinate;
+        sy += y_coordinate;
     }
-    if (m < 2)
+    if (value_m < 2)
     {
         line[2] = NAN;
         return;
     }
-    sx /= m;
-    sy /= m;
-    for (int k = i + skip; k <= j - skip; k++)
+    sx /= value_m;
+    sy /= value_m;
+    for (int item_index = index + skip; item_index <= inner_index - skip;
+         item_index++)
     {
-        const float x = pts[k % n].x - sx, y = pts[k % n].y - sy;
-        sxx += x * x;
-        syy += y * y;
-        sxy += x * y;
+        const float x_coordinate = p_pts[item_index % count].x - sx;
+        const float y_coordinate = p_pts[item_index % count].y - sy;
+        sxx += x_coordinate * x_coordinate;
+        syy += y_coordinate * y_coordinate;
+        sxy += x_coordinate * y_coordinate;
     }
-    const float angle =
-        0.5f * atan2f(2 * sxy, sxx - syy); // direction of the line
+
+    const float angle = 0.5f * atan2f(2 * sxy, sxx - syy);
+    // direction of the line
     line[0] = -sinf(angle);
     line[1] = cosf(angle);
     line[2] = line[0] * sx + line[1] * sy;
 }
 
-static uint8_t otsu (const uint8_t * v, int n)
+static uint8_t
+otsu (const uint8_t * p_value, int count)
 {
-    int hist[256] = {0};
-    for (int i = 0; i < n; i++)
+    int hist[256] = { 0 };
+    for (int index = 0; index < count; index++)
     {
-        hist[v[i]]++;
+        hist[p_value[index]]++;
     }
-    int     total = 0, weight_b = 0, best_t = 127;
-    int64_t sum_b = 0;
-    float   best  = -1;
-    for (int t = 0; t < 256; t++)
+    int     total    = 0;
+    int     weight_b = 0;
+    int     best_t   = 127;
+    int64_t sum_b    = 0;
+    float   best     = -1;
+    for (int time_value = 0; time_value < GRAYSCALE_LEVEL_COUNT; time_value++)
     {
-        total += t * hist[t];
+        total += time_value * hist[time_value];
     }
-    for (int t = 0; t < 256; t++)
+    for (int time_value = 0; time_value < GRAYSCALE_LEVEL_COUNT; time_value++)
     {
-        weight_b += hist[t];
+        weight_b += hist[time_value];
         if (0 == weight_b)
         {
             continue;
         }
-        const int weight_f = n - weight_b;
+        const int weight_f = count - weight_b;
         if (0 == weight_f)
         {
             break;
         }
-        sum_b += (int64_t)t * hist[t];
+        sum_b += (int64_t) time_value * hist[time_value];
+
         const float diff =
-            (float)sum_b / weight_b - (float)(total - sum_b) / weight_f;
-        const float between = (float)weight_b * weight_f * diff * diff;
+            (float) sum_b / weight_b - (float) (total - sum_b) / weight_f;
+
+        const float between = (float) weight_b * weight_f * diff * diff;
         if (between > best)
         {
             best   = between;
-            best_t = t;
+            best_t = time_value;
         }
     }
-    return (uint8_t)best_t;
+    return (uint8_t) best_t;
 }
 
 // Reads the marker grid through the quad's perspective. Returns 0 on success.
-static int read_bits (const uint8_t * img, int w, int h, int stride,
-                      int pixel_step, const float q[4][2], uint64_t * bits,
-                      int * border_errors)
+static int
+read_bits (const uint8_t * p_img, int width, int height, int stride,
+           int pixel_step, const float value_q[4][2], uint64_t * p_bits,
+           int * p_border_errors)
 {
+
     enum
     {
         PER_CELL = 3,
         SAMPLES  = CELLS * CELLS * PER_CELL * PER_CELL
     };
-    static const float OFFSET[PER_CELL] = {0.3f, 0.5f, 0.7f};
-    const float        dx1 = q[1][0] - q[2][0], dx2 = q[3][0] - q[2][0],
-                       sx  = q[0][0] - q[1][0] + q[2][0] - q[3][0];
-    const float        dy1 = q[1][1] - q[2][1], dy2 = q[3][1] - q[2][1],
-                       sy  = q[0][1] - q[1][1] + q[2][1] - q[3][1];
-    const float        den = dx1 * dy2 - dx2 * dy1;
+
+    static const float sample_offsets[PER_CELL] = { 0.3f, 0.5f, 0.7f };
+    const float        dx1                      = value_q[1][0] - value_q[2][0];
+    const float        dx2                      = value_q[3][0] - value_q[2][0];
+
+    const float sx =
+        value_q[0][0] - value_q[1][0] + value_q[2][0] - value_q[3][0];
+
+    const float dy1 = value_q[1][1] - value_q[2][1];
+    const float dy2 = value_q[3][1] - value_q[2][1];
+
+    const float sy =
+        value_q[0][1] - value_q[1][1] + value_q[2][1] - value_q[3][1];
+
+    const float den = dx1 * dy2 - dx2 * dy1;
     if (0.0f == den)
     {
         return -1;
     }
-    const float g = (sx * dy2 - dx2 * sy) / den,
-                k = (dx1 * sy - sx * dy1) / den;
-    const float a = q[1][0] - q[0][0] + g * q[1][0],
-                b = q[3][0] - q[0][0] + k * q[3][0], c = q[0][0];
-    const float d = q[1][1] - q[0][1] + g * q[1][1],
-                e = q[3][1] - q[0][1] + k * q[3][1], f = q[0][1];
+    const float value_g    = (sx * dy2 - dx2 * sy) / den;
+    const float item_index = (dx1 * sy - sx * dy1) / den;
+    const float first = value_q[1][0] - value_q[0][0] + value_g * value_q[1][0];
 
-    uint8_t v[SAMPLES];
-    int     n = 0, lo = 255, hi = 0;
-    for (int r = 0; r < CELLS; r++)
+    const float second =
+        value_q[3][0] - value_q[0][0] + item_index * value_q[3][0];
+
+    const float value_c = value_q[0][0];
+    const float data = value_q[1][1] - value_q[0][1] + value_g * value_q[1][1];
+
+    const float error_value =
+        value_q[3][1] - value_q[0][1] + item_index * value_q[3][1];
+
+    const float factor = value_q[0][1];
+
+    uint8_t value[SAMPLES];
+    int     count       = 0;
+    int     lower_bound = 255;
+    int     upper_bound = 0;
+    for (int result = 0; result < CELLS; result++)
     {
         for (int col = 0; col < CELLS; col++)
         {
-            for (int i = 0; i < PER_CELL; i++)
+            for (int index = 0; index < PER_CELL; index++)
             {
-                for (int j = 0; j < PER_CELL; j++)
+                for (int inner_index = 0; inner_index < PER_CELL; inner_index++)
                 {
-                    const float u = (col + OFFSET[j]) / CELLS,
-                                t = (r + OFFSET[i]) / CELLS;
-                    const float z = g * u + k * t + 1.0f;
-                    const int   x = (int)((a * u + b * t + c) / z + 0.5f);
-                    const int   y = (int)((d * u + e * t + f) / z + 0.5f);
-                    if (x < 0 || y < 0 || x >= w || y >= h)
+
+                    const float coordinate_u =
+                        (col + sample_offsets[inner_index]) / CELLS;
+
+
+                    const float time_value =
+                        (result + sample_offsets[index]) / CELLS;
+
+
+                    const float z_coordinate =
+                        value_g * coordinate_u + item_index * time_value + 1.0f;
+
+
+                    const int x_coordinate =
+                        (int) ((first * coordinate_u + second * time_value +
+                                value_c) /
+                                   z_coordinate +
+                               0.5f);
+
+
+                    const int y_coordinate =
+                        (int) ((data * coordinate_u + error_value * time_value +
+                                factor) /
+                                   z_coordinate +
+                               0.5f);
+
+                    if (x_coordinate < 0 || y_coordinate < 0 ||
+                        x_coordinate >= width || y_coordinate >= height)
                     {
                         return -1;
                     }
-                    const uint8_t p = PX(x, y);
-                    v[n++]          = p;
-                    if (p < lo)
+
+                    const uint8_t pointer =
+                        p_img[(size_t) y_coordinate * stride +
+                              (size_t) x_coordinate * pixel_step];
+
+                    value[count++] = pointer;
+                    if (pointer < lower_bound)
                     {
-                        lo = p;
+                        lower_bound = pointer;
                     }
-                    if (p > hi)
+                    if (pointer > upper_bound)
                     {
-                        hi = p;
+                        upper_bound = pointer;
                     }
                 }
             }
         }
     }
-    if (hi - lo < MIN_CONTRAST)
+    if (upper_bound - lower_bound < MIN_CONTRAST)
     {
         return -1;
     }
-    const uint8_t t = otsu(v, SAMPLES);
+    const uint8_t time_value = otsu(value, SAMPLES);
 
     uint64_t word   = 0;
     int      errors = 0;
-    n               = 0;
-    for (int r = 0; r < CELLS; r++)
+    count           = 0;
+    for (int result = 0; result < CELLS; result++)
     {
         for (int col = 0; col < CELLS; col++)
         {
             int white = 0;
-            for (int i = 0; i < PER_CELL * PER_CELL; i++)
+            for (int index = 0; index < PER_CELL * PER_CELL; index++)
             {
-                white += v[n++] > t;
+                white += value[count++] > time_value;
             }
             const int is_white = white * 2 > PER_CELL * PER_CELL;
-            if (0 == r || 0 == col || CELLS - 1 == r || CELLS - 1 == col)
+            if (0 == result || 0 == col || CELLS - 1 == result ||
+                CELLS - 1 == col)
             {
                 errors += is_white;
             }
             else
             {
-                word = (word << 1) | (uint64_t)is_white;
+                word = (word << (uint32_t) (1)) | (uint64_t) is_white;
             }
         }
     }
-    *bits          = word;
-    *border_errors = errors;
+    *p_bits          = word;
+    *p_border_errors = errors;
     return errors > MAX_BORDER_ERRORS ? -1 : 0;
 }
 
-static int try_quad (const uint8_t * img, int w, int h, int stride,
-                     int pixel_step, const pt_t * pts, int n,
-                     aruco_marker_t * m)
+static int
+try_quad (const uint8_t * p_img, int width, int height, int stride,
+          int pixel_step, const pt_t * p_pts, int count,
+          aruco_marker_t * p_value_m)
 {
-    const float eps = POLY_RATE * n;
-    const int   i1 = farthest(pts, n, pts[0]), i0 = farthest(pts, n, pts[i1]);
-    const int   lo = i0 < i1 ? i0 : i1, hi = i0 < i1 ? i1 : i0;
-    int         verts[6], nv               = 0;
-    verts[nv++] = lo;
-    simplify(pts, n, lo, hi, eps * eps, verts, &nv);
+    const float eps         = POLY_RATE * count;
+    const int   i1          = farthest(p_pts, count, p_pts[0]);
+    const int   i0          = farthest(p_pts, count, p_pts[i1]);
+    const int   lower_bound = i0 < i1 ? i0 : i1;
+    const int   upper_bound = i0 < i1 ? i1 : i0;
+    int         verts[6];
+    int         nv = 0;
+    verts[nv++]    = lower_bound;
+    simplify(p_pts, count, lower_bound, upper_bound, eps * eps, verts, &nv);
     if (nv <= 4)
     {
-        verts[nv++] = hi;
+        verts[nv++] = upper_bound;
     }
-    simplify(pts, n, hi, lo + n, eps * eps, verts, &nv);
+    simplify(p_pts, count, upper_bound, lower_bound + count, eps * eps, verts,
+             &nv);
     if (nv != 4)
     {
         return -1;
     }
 
-    float q[4][2];
-    for (int i = 0; i < 4; i++)
+    float value_q[4][2];
+    for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {
-        q[i][0] = pts[verts[i]].x;
-        q[i][1] = pts[verts[i]].y;
-        if (q[i][0] < BORDER_MARGIN || q[i][1] < BORDER_MARGIN ||
-            q[i][0] >= w - BORDER_MARGIN || q[i][1] >= h - BORDER_MARGIN)
+        value_q[index][0] = p_pts[verts[index]].x;
+        value_q[index][1] = p_pts[verts[index]].y;
+        if (value_q[index][0] < BORDER_MARGIN ||
+            value_q[index][1] < BORDER_MARGIN ||
+            value_q[index][0] >= width - BORDER_MARGIN ||
+            value_q[index][1] >= height - BORDER_MARGIN)
         {
             return -1;
         }
     }
-    for (int i = 0; i < 4; i++)
+    for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {
-        const float *a = q[i], *b = q[(i + 1) & 3], *c = q[(i + 2) & 3];
-        const float  ex = b[0] - a[0], ey = b[1] - a[1];
-        const float  cross = ex * (c[1] - b[1]) - ey * (c[0] - b[0]);
+        const float * p_first = value_q[index];
+
+        const float * p_second =
+            value_q[(uint32_t) ((index + 1)) & (uint32_t) (3)];
+
+
+        const float * p_value_c =
+            value_q[(uint32_t) ((index + 2)) & (uint32_t) (3)];
+
+        const float ex = p_second[0] - p_first[0];
+        const float ey = p_second[1] - p_first[1];
+
+        const float cross = ex * (p_value_c[1] - p_second[1]) -
+                            ey * (p_value_c[0] - p_second[0]);
+
         // Outer contours run clockwise on screen, so this also rejects the
         // inside of holes.
         if (cross <= 0 || ex * ex + ey * ey < MIN_SIDE * MIN_SIDE)
@@ -430,46 +566,62 @@ static int try_quad (const uint8_t * img, int w, int h, int stride,
     // Corners from where the fitted edges cross: steadier than single contour
     // pixels.
     float lines[4][3];
-    for (int i = 0; i < 4; i++)
+    for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {
-        const int a = verts[i], b = verts[(i + 1) & 3];
-        fit_line(pts, n, a, b > a ? b : b + n, lines[i]);
+        const int first  = verts[index];
+        const int second = verts[(uint32_t) ((index + 1)) & (uint32_t) (3)];
+        fit_line(p_pts, count, first, second > first ? second : second + count,
+                 lines[index]);
     }
-    for (int i = 0; i < 4; i++)
+    for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {
-        const float *l0 = lines[(i + 3) & 3], *l1 = lines[i];
-        const float  det = l0[0] * l1[1] - l1[0] * l0[1];
-        if (isnan(l0[2]) || isnan(l1[2]) || fabsf(det) < 0.1f)
+        const float * p_l0 = lines[(uint32_t) ((index + 3)) & (uint32_t) (3)];
+        const float * p_l1 = lines[index];
+        const float   det  = p_l0[0] * p_l1[1] - p_l1[0] * p_l0[1];
+        if (isnan(p_l0[2]) || isnan(p_l1[2]) || fabsf(det) < 0.1f)
         {
             continue;
         }
-        const float x = (l0[2] * l1[1] - l1[2] * l0[1]) / det,
-                    y = (l0[0] * l1[2] - l1[0] * l0[2]) / det;
-        if (fabsf(x - q[i][0]) < 4 && fabsf(y - q[i][1]) < 4)
+
+        const float x_coordinate =
+            (p_l0[2] * p_l1[1] - p_l1[2] * p_l0[1]) / det;
+
+
+        const float y_coordinate =
+            (p_l0[0] * p_l1[2] - p_l1[0] * p_l0[2]) / det;
+
+        if (fabsf(x_coordinate - value_q[index][0]) < 4 &&
+            fabsf(y_coordinate - value_q[index][1]) < 4)
         {
-            q[i][0] = x;
-            q[i][1] = y;
+            value_q[index][0] = x_coordinate;
+            value_q[index][1] = y_coordinate;
         }
     }
 
-    uint64_t bits;
-    int      border_errors;
-    if (read_bits(img, w, h, stride, pixel_step, q, &bits, &border_errors) != 0)
+    uint64_t bits          = 0;
+    int      border_errors = 0;
+    if (read_bits(p_img, width, height, stride, pixel_step, value_q, &bits,
+                  &border_errors) != 0)
     {
         return -1;
     }
 
-    int best_h = MAX_HAMMING + 1, best_id = -1, best_rot = 0;
-    for (int id = 0; id < ARUCO_DICT_COUNT; id++)
+    int best_h   = MAX_HAMMING + 1;
+    int best_id  = -1;
+    int best_rot = 0;
+    for (int identifier = 0; identifier < ARUCO_DICT_COUNT; identifier++)
     {
-        for (int r = 0; r < 4; r++)
+        for (int result = 0; result < MARKER_CORNER_COUNT; result++)
         {
-            const int dist = __builtin_popcountll(bits ^ ARUCO_DICT[id][r]);
+
+            const int dist =
+                __builtin_popcountll(bits ^ g_aruco_dict[identifier][result]);
+
             if (dist < best_h)
             {
                 best_h   = dist;
-                best_id  = id;
-                best_rot = r;
+                best_id  = identifier;
+                best_rot = result;
             }
         }
     }
@@ -478,73 +630,93 @@ static int try_quad (const uint8_t * img, int w, int h, int stride,
         return -1;
     }
 
-    m->id            = best_id + ARUCO_FIRST_ID;
-    m->hamming       = best_h;
-    m->border_errors = border_errors;
-    m->perimeter     = 0;
-    for (int i = 0; i < 4; i++)
+    p_value_m->id            = best_id + ARUCO_FIRST_ID;
+    p_value_m->hamming       = best_h;
+    p_value_m->border_errors = border_errors;
+    p_value_m->perimeter     = 0;
+    for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {
-        m->corners[i][0] = q[(i + best_rot) & 3][0];
-        m->corners[i][1] = q[(i + best_rot) & 3][1];
-        m->perimeter +=
-            hypotf(q[(i + 1) & 3][0] - q[i][0], q[(i + 1) & 3][1] - q[i][1]);
+
+        p_value_m->corners[index][0] =
+            value_q[(uint32_t) ((index + best_rot)) & (uint32_t) (3)][0];
+
+
+        p_value_m->corners[index][1] =
+            value_q[(uint32_t) ((index + best_rot)) & (uint32_t) (3)][1];
+
+        p_value_m->perimeter +=
+            hypotf(value_q[(uint32_t) ((index + 1)) & (uint32_t) (3)][0] -
+                       value_q[index][0],
+                   value_q[(uint32_t) ((index + 1)) & (uint32_t) (3)][1] -
+                       value_q[index][1]);
     }
     return 0;
 }
 
-int aruco_detect (const uint8_t * img, int w, int h, int stride, int pixel_step,
-                  void * work, aruco_marker_t * out, int max_out)
+int
+aruco_detect (const uint8_t * p_img, int width, int height, int stride,
+              int pixel_step, void * p_work, aruco_marker_t * p_out,
+              int max_out)
 {
-    uint8_t *  map = work;
-    uint32_t * col =
-        (uint32_t *)((uintptr_t)(map + (size_t)w * h + 3) & ~(uintptr_t)3);
-    pt_t *    pts   = (pt_t *)(col + w);
-    const int cap   = (int)ARUCO_MAX_CONTOUR(w, h);
+    uint8_t * p_map = p_work;
+
+    uint32_t * p_col =
+        (uint32_t *) ((uintptr_t) (p_map + (size_t) width * height + 3) &
+                      ~(uintptr_t) 3);
+
+    pt_t *    p_pts = (pt_t *) (p_col + width);
+    const int cap   = (int) ARUCO_MAX_CONTOUR(width, height);
     int       found = 0;
 
-    threshold(img, w, h, stride, pixel_step, map, col);
+    threshold(p_img, width, height, stride, pixel_step, p_map, p_col);
 
-    for (int y = 1; y < h - 1; y++)
+    for (int y_coordinate = 1; y_coordinate < height - 1; y_coordinate++)
     {
-        const uint8_t * row = map + (size_t)y * w;
-        for (int x = 1; x < w - 1; x++)
+        const uint8_t * p_row = p_map + (size_t) y_coordinate * width;
+        for (int x_coordinate = 1; x_coordinate < width - 1; x_coordinate++)
         {
-            if (row[x] != 1 || row[x - 1] != 0)
-            {
-                continue;
-            }
-            const int n = trace(map, w, x, y, pts, cap);
-            if (n < MIN_PERIMETER)
+            if (p_row[x_coordinate] != 1 || p_row[x_coordinate - 1] != 0)
             {
                 continue;
             }
 
-            aruco_marker_t m;
-            if (try_quad(img, w, h, stride, pixel_step, pts, n, &m) != 0)
+            const int count =
+                trace(p_map, width, x_coordinate, y_coordinate, p_pts, cap);
+
+            if (count < MIN_PERIMETER)
+            {
+                continue;
+            }
+
+            aruco_marker_t value_m;
+            if (try_quad(p_img, width, height, stride, pixel_step, p_pts, count,
+                         &value_m) != 0)
             {
                 continue;
             }
 
             int dup = -1;
-            for (int i = 0; i < found; i++)
+            for (int index = 0; index < found; index++)
             {
-                if (out[i].id == m.id)
+                if (p_out[index].id == value_m.id)
                 {
-                    dup = i;
+                    dup = index;
                 }
             }
             if (dup >= 0)
             {
-                if (m.perimeter > out[dup].perimeter)
+                if (value_m.perimeter > p_out[dup].perimeter)
                 {
-                    out[dup] = m;
+                    p_out[dup] = value_m;
                 }
             }
             else if (found < max_out)
             {
-                out[found++] = m;
+                p_out[found++] = value_m;
             }
         }
     }
     return found;
 }
+
+/* End of file. */

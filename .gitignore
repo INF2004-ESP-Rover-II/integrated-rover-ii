@@ -50,3 +50,7 @@ build/
 !/tests/test_dashboard_onboard_map.py
 !/tests/test_camera_map.c
 mosquitto-rover.conf
+!/tests/test_mqtt_publish_policy.c
+!/tests/test_mqtt_publish_queue.py
+!/firmware/BARR_C_2018.md
+!/firmware/BARR_C_CHANGED_FILES.md

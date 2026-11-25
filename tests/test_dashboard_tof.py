@@ -20,7 +20,7 @@ namespace = {
     "TOPIC_MARKER": "camera/marker",
     "TOPIC_ROVER_CAMERA": "robot/camera",
     "TOPIC_ROVER_MAP": "robot/map",
-    "TOF_UART_STALE_MS": 500, "ROBOT_LOST_S": 2.0, "WATCHDOG_CHECK_MS": 250,
+    "FRONT_CLEAR_MARGIN_MM": 50, "TOF_UART_STALE_MS": 500, "ROBOT_LOST_S": 2.0, "WATCHDOG_CHECK_MS": 250,
 }
 methods = [node for node in gui.body if isinstance(node, ast.FunctionDef) and node.name in names]
 assert len(methods) == len(names)
@@ -52,11 +52,13 @@ class FakeGUI:
     watchdog_tick = namespace["watchdog_tick"]
 
     def __init__(self):
-        self.navigator = SimpleNamespace(sensor_received=lambda data: None)
+        self.sensor_events = []
+        self.navigator = SimpleNamespace(sensor_received=self.sensor_events.append)
         self.tof_labels = {name: Label() for name in ("left", "front", "right")}
         self.tof_state_labels = {name: Label() for name in ("left", "front", "right")}
         self.tof_summary_label = Label()
         self.tof_age_label = Label()
+        self.front_blocked = False
         self.last_tof_rx = None
         self.connected = True
         self.last_telemetry_rx = time.time()
@@ -66,11 +68,6 @@ class FakeGUI:
         self.root = Root()
         self.last_msg_time = Variable()
         self.msg_count = 0
-        self.ultrasonic = {name: 0 for name in ("left", "front", "right", "back")}
-        self.ultrasonic_label = Label()
-        self.heading_label = Label()
-        self.pitch_label = Label()
-        self.roll_label = Label()
         self.odometry_lock = threading.Lock()
 
     def set_robot_link(self, state, age=0):
@@ -98,7 +95,8 @@ class ToFDisplayTests(unittest.TestCase):
         self.assertEqual(self.app.tof_labels["right"].values["text"], "--")
         self.assertEqual(self.app.tof_state_labels["right"].values["text"], "No target")
         self.assertIn("Stop request: YES", self.app.tof_summary_label.values["text"])
-        self.assertIn("Blocked: 0x02", self.app.tof_summary_label.values["text"])
+        self.assertNotIn("Blocked:", self.app.tof_summary_label.values["text"])
+        self.assertNotIn("Urgent:", self.app.tof_summary_label.values["text"])
         self.assertIn("20 ms", self.app.tof_age_label.values["text"])
 
     def test_side_urgent_is_not_presented_as_a_stop(self):
@@ -192,28 +190,24 @@ class ToFDisplayTests(unittest.TestCase):
         for label in self.app.tof_labels.values():
             self.assertEqual(label.values["text"], "--")
         self.assertIn("Stop request: --", self.app.tof_summary_label.values["text"])
-        self.assertIn("Blocked: --", self.app.tof_summary_label.values["text"])
+        self.assertNotIn("Blocked:", self.app.tof_summary_label.values["text"])
 
-    def test_actual_telemetry_handler_updates_tof_and_existing_fields(self):
+    def test_actual_telemetry_handler_updates_tof_and_forwards_sensor_data(self):
         data = {"obstacle": snapshot(), "imu": {"heading": 45, "pitch": 2, "roll": -3, "status": 0},
                 "ultrasonic": {"front": 124, "back": 400}}
         self.app.handle_mqtt_message("robot/telemetry", json.dumps(data))
         self.assertEqual(self.app.tof_labels["front"].values["text"], "100 mm")
-        self.assertEqual(self.app.ultrasonic["front"], 124)
-        self.assertEqual(self.app.heading_label.values["text"], "45.0°")
-        self.assertEqual(self.app.pitch_label.values["text"], "2.0°")
-        self.assertEqual(self.app.roll_label.values["text"], "-3.0°")
+        self.assertEqual(self.app.sensor_events[-1], data)
+        self.assertIsNotNone(self.app.last_telemetry_rx)
         self.app.handle_mqtt_message("robot/telemetry", json.dumps({"imu": {}}))
         self.assertEqual(self.app.tof_labels["front"].values["text"], "--")
 
-    def test_imu_fault_hides_angles_and_preserves_last_valid_heading(self):
-        self.app.handle_mqtt_message("robot/telemetry", json.dumps({
-            "imu": {"heading": 45, "pitch": 2, "roll": -3, "status": 0}}))
-        self.app.handle_mqtt_message("robot/telemetry", json.dumps({
-            "imu": {"heading": 0, "pitch": 0, "roll": 0, "status": 1}}))
-        self.assertEqual(self.app.robot_heading, 45)
-        for label in (self.app.heading_label, self.app.pitch_label, self.app.roll_label):
-            self.assertEqual(label.values["text"], "N/A")
+    def test_imu_health_is_forwarded_to_sensor_consumer(self):
+        healthy = {"imu": {"heading": 45, "status": 0}}
+        faulted = {"imu": {"heading": 0, "status": 1}}
+        self.app.handle_mqtt_message("robot/telemetry", json.dumps(healthy))
+        self.app.handle_mqtt_message("robot/telemetry", json.dumps(faulted))
+        self.assertEqual(self.app.sensor_events, [healthy, faulted])
 
 
 if __name__ == "__main__":

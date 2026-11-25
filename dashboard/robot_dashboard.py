@@ -13,25 +13,18 @@ import time
 import json
 from datetime import datetime
 import math
-import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from collections import deque
-import gc
 import os
 import sys
 import uuid
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rover_mapping'))
 from tkinter import ttk
-import os
 from laptop_navigation import LaptopNavigator
 from mission_display import parse_mission_report, parse_target_selection, parse_dfs_reply, parse_dfs_tracking, parse_dfs_state, LEG_FIELDS
 from rover_camera import RoverCameraCache, QUALITY_NAMES
 from onboard_map import OnboardMapCache
-from vision_feed import VisionFeed
 from mqtt_binary import encode_command, encode_heartbeat
 from matplotlib.ticker import MaxNLocator
 
@@ -129,6 +122,9 @@ class RobotGUI:
         self.last_mission_reply = None
         self.onboard_map = OnboardMapCache()
         self.pending_start_request = None
+        self.pending_map_reset = None
+        self.map_reset_armed_until = 0.0
+        self.map_reset_button_text = tk.StringVar(value='Re-initialise map')
         self.start_node_status = tk.StringVar(value="Set the node under the rover; RoboPico will confirm the map")
         self.onboard_map_status = tk.StringVar(value="Waiting for RoboPico map")
         self.robot_ip = tk.StringVar(value="N/A")
@@ -167,27 +163,9 @@ class RobotGUI:
         self.heading_zero_pending = False
         self.heading_zero_job = None
 
-        # Assumed speed (%) for the odometry estimate only
-        self.current_speed = tk.IntVar(value=80)
-        
-
-        # Robot odometry state
-        self.robot_x = 0.0  # mm
-        self.robot_y = 0.0  # mm
-        self.robot_heading = 0.0  # degrees (calibrated)
-        self.robot_pitch = 0.0  # degrees
-        self.last_telemetry_time = time.time()
-        self.odometry_lock = threading.Lock()
-
-        # Ultrasonic distances (mm)
-        self.ultrasonic = {'front': 0, 'back': 0, 'left': 0, 'right': 0}
-
         # ToF values arrive in the obstacle object of robot/telemetry.
         self.last_tof_rx = None
 
-        # Map following mode
-        self.follow_robot = tk.BooleanVar(value=True)
-        
         # Autonomous mode
         self.auto_mode = tk.BooleanVar(value=False)
         self.dfs_target = tk.StringVar(value="36")
@@ -355,109 +333,30 @@ class RobotGUI:
         self.robot_conn_label = reading(0, 1, "Robot:", '#95a5a6', textvariable=self.robot_connected)
         self.robot_status_label = reading(0, 2, "Status:", '#95a5a6', textvariable=self.robot_status)
         self.robot_status_label.config(wraplength=220)
-        self.heading_label = reading(1, 0, "Heading:", '#3498db', text="N/A")
-        self.pitch_label = reading(1, 1, "Pitch:", '#3498db', text="N/A")
-        self.roll_label = reading(1, 2, "Roll:", '#3498db', text="N/A")
-        self.ultrasonic_label = reading(2, 0, "Ultrasonic (cm):", '#3498db', text="Front:0 Back:0")
-        self.ultrasonic_label.grid(columnspan=3)
-
-            # Mission state and leg fields
-        mission_frame = tk.Frame(readings, bg='#34495e')
-        mission_frame.pack(side='top', anchor='w', padx=10, pady=(4, 6))
-        for column, (caption, variable) in enumerate((
-                ("Mission state:", self.mission_state), ("Reason:", self.mission_reason),
-                ("Mode:", self.mission_mode), ("Mission motion:", self.mission_motion))):
-            row, col = divmod(column, 3)
-            tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
-                     font=("Arial", 10, "bold")).grid(row=row, column=2 * col, padx=(0, 5), sticky='w')
-            label = tk.Label(mission_frame, textvariable=variable, fg='#95a5a6', bg='#34495e',
-                             font=("Arial", 10, "bold"), wraplength=180, justify='left')
-            label.grid(row=row, column=2 * col + 1, padx=(0, 20), sticky='w')
-            if column == 0:
-                self.mission_state_label = label
-        leg_captions = (('Leg ID:', 'leg_id'), ('Departure:', 'departure_node'),
-                        ('Next target marker:', 'next_target_node'), ('Reference:', 'arrival_reference_node'),
-                        ('Expected cell:', 'target_cell'), ('Direction:', 'direction'),
-                        ('Leg phase:', 'phase'), ('Configured:', 'configured'))
-        for index, (caption, key) in enumerate(leg_captions):
-            row, column = divmod(index + 4, 3)
-            column *= 2
-            tk.Label(mission_frame, text=caption, fg='white', bg='#34495e',
-                     font=("Arial", 9, "bold")).grid(row=row, column=column, padx=(0, 5), sticky='w')
-            tk.Label(mission_frame, textvariable=self.mission_leg_fields[key],
-                     fg='#f1c40f' if key == 'next_target_node' else '#bdc3c7', bg='#34495e',
-                     font=("Arial", 10, "bold") if key == 'next_target_node' else ("Arial", 9),
-                     wraplength=180).grid(row=row, column=column + 1, padx=(0, 20), sticky='w')
-
         tof_frame = tk.LabelFrame(page, text="ToF (mm)",
                                   fg='white', bg='#34495e', font=("Arial", 8, "bold"))
         tof_frame.pack(padx=20, pady=(2, 2), fill='x')
         self.tof_labels = {}
         self.tof_state_labels = {}
         for column, direction in enumerate(('left', 'front', 'right')):
-            base = column * 3
-            tof_frame.grid_columnconfigure(base + 1, weight=1)
-            tk.Label(tof_frame, text=direction.title(), fg='white', bg='#34495e',
-                     font=("Arial", 9, "bold")).grid(row=0, column=base, padx=(12, 4))
-            self.tof_labels[direction] = tk.Label(
-                tof_frame, text="--", fg='#95a5a6', bg='#34495e', font=("Consolas", 14, "bold"))
-            self.tof_labels[direction].grid(row=0, column=base + 1, sticky='w')
-            self.tof_state_labels[direction] = tk.Label(
-                tof_frame, text="Waiting", fg='#95a5a6', bg='#34495e', font=("Arial", 9))
-            self.tof_state_labels[direction].grid(row=0, column=base + 2, padx=(4, 12), sticky='w')
-        self.tof_summary_label = tk.Label(
-            tof_frame, text="Stop request: --   |   Blocked: --   |   Urgent: --",
-            fg='#95a5a6', bg='#34495e', font=("Consolas", 9, "bold"))
-        self.tof_summary_label.grid(row=1, column=0, columnspan=5, sticky='w', padx=12)
-        self.tof_age_label = tk.Label(
-            tof_frame, text="Waiting for ToF telemetry. Stop request is separate from the motor lock.",
-            fg='#bdc3c7', bg='#34495e', font=("Arial", 8))
-
-            # ToF readings
-        self.tof_age_label.config(anchor='w', justify='left')
-        self.tof_age_label.grid(row=2, column=0, columnspan=9, sticky='ew', padx=12, pady=(0, 2))
+            tof_frame.grid_columnconfigure(column, weight=1, uniform='tof')
+            group = tk.Frame(tof_frame, bg='#34495e')
+            group.grid(row=0, column=column, sticky='ew', padx=12, pady=(3, 4))
+            tk.Label(group, text=direction.title(), fg='white', bg='#34495e',
+                     font=('Arial', 9, 'bold')).pack(side='left', padx=(0, 6))
+            self.tof_labels[direction] = tk.Label(group, text='--', fg='#95a5a6',
+                bg='#34495e', font=('Consolas', 14, 'bold'))
+            self.tof_labels[direction].pack(side='left')
+            self.tof_state_labels[direction] = tk.Label(group, text='Waiting', fg='#95a5a6',
+                bg='#34495e', font=('Arial', 9))
+            self.tof_state_labels[direction].pack(side='left', padx=(8, 0))
+        self.tof_summary_label = tk.Label(tof_frame, text='Stop request: --',
+            fg='#95a5a6', bg='#34495e', font=('Consolas', 9, 'bold'))
+        self.tof_summary_label.grid(row=1, column=0, sticky='w', padx=12, pady=(0, 3))
+        self.tof_age_label = tk.Label(tof_frame, text='Waiting for ToF telemetry.',
+            fg='#bdc3c7', bg='#34495e', font=('Arial', 8), anchor='w', justify='left')
+        self.tof_age_label.grid(row=1, column=1, columnspan=2, sticky='ew', padx=12, pady=(0, 3))
         self.tof_age_label.bind('<Configure>', lambda e: e.widget.config(wraplength=max(e.width - 4, 200)))
-
-        marker_frame = tk.Frame(page, bg='#34495e')
-        marker_frame.pack(padx=20, pady=2, fill='x')
-        for column, (title, value) in enumerate((
-                ("Selected camera marker:", self.current_marker_text),
-                ("Lens distance:", self.marker_distance_text),
-                ("Bearing:", self.marker_bearing_text),
-                ("Last reached:", self.last_reached_marker_text),
-                ("Current node (RoboPico):", self.dfs_current_node_text))):
-            tk.Label(marker_frame, text=title, fg='white', bg='#34495e').grid(
-                row=0, column=column * 2, padx=(8, 4), sticky='w')
-            tk.Label(marker_frame, textvariable=value, fg='#3498db', bg='#34495e',
-                     font=("Arial", 10, "bold")).grid(
-                row=0, column=column * 2 + 1, padx=(0, 12), sticky='w')
-        tk.Label(marker_frame, textvariable=self.camera_relay_text, fg='#bdc3c7', bg='#34495e',
-                 font=("Arial", 9), wraplength=1100, justify='left').grid(
-                     row=3, column=0, columnspan=10, padx=8, pady=(0, 3), sticky='w')
-        self.marker_confirmation_label = tk.Label(
-            marker_frame, textvariable=self.marker_confirmation_text,
-            fg='#bdc3c7', bg='#34495e', anchor='w')
-        self.marker_confirmation_label.grid(row=1, column=0, columnspan=10,
-                                            padx=8, pady=(0, 2), sticky='w')
-        tk.Label(marker_frame, textvariable=self.node_confirmation_text,
-                 fg='#bdc3c7', bg='#34495e', anchor='w', justify='left', wraplength=1100).grid(
-                     row=2, column=0, columnspan=10, padx=8, pady=(0, 2), sticky='w')
-
-        marker_list_frame = tk.Frame(marker_frame, bg='#34495e')
-        marker_list_frame.grid(row=4, column=0, columnspan=10, sticky='ew', padx=8, pady=(0, 5))
-        tk.Label(marker_list_frame, textvariable=self.camera_marker_count, fg='white', bg='#34495e',
-                 font=("Arial", 10, "bold")).pack(side='left', anchor='n', padx=(0, 16), pady=3)
-        style = ttk.Style(self.root)
-        style.configure('Camera.Treeview', background='#2c3e50', fieldbackground='#2c3e50',
-                        foreground='white', rowheight=20)
-        self.camera_marker_table = ttk.Treeview(marker_list_frame, columns=('id', 'range', 'bearing', 'quality'),
-                                               show='headings', height=1, selectmode='none', style='Camera.Treeview')
-        for name, title, width in (('id', 'Marker ID', 90), ('range', 'Lens distance (mm)', 150),
-                                   ('bearing', 'Bearing (deg)', 130), ('quality', 'Quality', 150)):
-            self.camera_marker_table.heading(name, text=title)
-            self.camera_marker_table.column(name, width=width, minwidth=width, anchor='center')
-        self.camera_marker_table.tag_configure('unusable', foreground='#f39c12')
-        self.camera_marker_table.pack(side='left', fill='x', expand=True)
 
         dfs_frame = tk.Frame(page, bg='#34495e')
         dfs_frame.pack(padx=20, pady=2, fill='x')
@@ -465,6 +364,8 @@ class RobotGUI:
         tk.Entry(dfs_frame, textvariable=self.start_node_id, width=4).pack(side='left')
         tk.Button(dfs_frame, text="Set start node", command=self.set_start_node,
                   bg='#2980b9', fg='white').pack(side='left', padx=6)
+        tk.Button(dfs_frame, textvariable=self.map_reset_button_text, command=self.reinitialise_map,
+                  bg='#c0392b', fg='white').pack(side='left', padx=6)
         tk.Label(dfs_frame, text="Finish: all reachable exits explored", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Label(dfs_frame, text="Open exit ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
@@ -503,12 +404,12 @@ class RobotGUI:
         # Main content area
         main = tk.Frame(page, bg='#2c3e50')
         main.pack(fill='both', expand=True, padx=20, pady=(4, 8))
-        main.grid_columnconfigure(0, weight=0, minsize=220)
-        main.grid_columnconfigure(1, weight=10, minsize=400)
+        main.grid_columnconfigure(0, weight=0, minsize=300)
+        main.grid_columnconfigure(1, weight=10, minsize=350)
         main.grid_columnconfigure(2, weight=1, minsize=260)
         main.grid_rowconfigure(0, weight=1)
 
-        # LEFT COLUMN - Key mappings only (no movement buttons)
+        # LEFT COLUMN - Key mappings and camera observations
         left_col = tk.Frame(main, bg='#2c3e50')
         left_col.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         # Key mappings panel
@@ -526,6 +427,8 @@ class RobotGUI:
             "Space/X - Emergency Stop"
         )
         tk.Label(keymap_frame, text=mappings, justify='left', anchor='w', fg='white', bg='#34495e', font=("Consolas", 10)).pack(fill='x', padx=8, pady=8)
+
+        self.setup_camera_panel(left_col)
 
         # MIDDLE COLUMN - Mapping
         middle_col = tk.Frame(main, bg='#2c3e50')
@@ -592,6 +495,44 @@ class RobotGUI:
         # Start watchdog timer
         self.root.after(WATCHDOG_CHECK_MS, self.watchdog_tick)
 
+    def setup_camera_panel(self, parent):
+        self.camera_panel = tk.LabelFrame(parent, text='Camera markers', fg='white',
+            bg='#34495e', font=('Arial', 11, 'bold'))
+        self.camera_panel.pack(fill='x', pady=(4, 6))
+        panel = self.camera_panel
+        for items in ((('Current node:', self.dfs_current_node_text), ('Last reached:', self.last_reached_marker_text)),
+                      (('Selected:', self.current_marker_text),),
+                      (('Range:', self.marker_distance_text), ('Bearing:', self.marker_bearing_text))):
+            row = tk.Frame(panel, bg='#34495e')
+            row.pack(fill='x', padx=8)
+            for caption, variable in items:
+                tk.Label(row, text=caption, fg='white', bg='#34495e', font=('Arial', 8)).pack(side='left')
+                tk.Label(row, textvariable=variable, fg='#3498db', bg='#34495e',
+                         font=('Arial', 8, 'bold')).pack(side='left', padx=(3, 6))
+        self.marker_confirmation_label = tk.Label(panel, textvariable=self.marker_confirmation_text,
+            fg='#bdc3c7', bg='#34495e', anchor='nw', justify='left', wraplength=270, height=2, font=('Arial', 8))
+        self.marker_confirmation_label.pack(fill='x', padx=8, pady=(4, 0))
+        tk.Label(panel, textvariable=self.camera_relay_text, fg='#bdc3c7', bg='#34495e',
+                 anchor='nw', justify='left', wraplength=270, height=2, font=('Arial', 8)).pack(fill='x', padx=8)
+        tk.Label(panel, textvariable=self.camera_marker_count, fg='white', bg='#34495e',
+                 anchor='w', font=('Arial', 9, 'bold')).pack(fill='x', padx=8, pady=(3, 3))
+        table_frame = tk.Frame(panel, bg='#34495e')
+        table_frame.pack(fill='x', padx=6, pady=(0, 6))
+        style = ttk.Style(self.root)
+        style.configure('Camera.Treeview', background='#2c3e50', fieldbackground='#2c3e50',
+                        foreground='white', rowheight=20, font=('Arial', 8))
+        self.camera_marker_table = ttk.Treeview(table_frame, columns=('id', 'range', 'bearing', 'quality'),
+            show='headings', height=4, selectmode='none', style='Camera.Treeview')
+        for name, title, width in (('id', 'ID', 35), ('range', 'Range (mm)', 85),
+                                  ('bearing', 'Bearing', 65), ('quality', 'Quality', 65)):
+            self.camera_marker_table.heading(name, text=title)
+            self.camera_marker_table.column(name, width=width, minwidth=width, anchor='center', stretch=False)
+        self.camera_marker_table.tag_configure('unusable', foreground='#f39c12')
+        scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=self.camera_marker_table.yview)
+        self.camera_marker_table.configure(yscrollcommand=scrollbar.set)
+        self.camera_marker_table.pack(side='left', fill='x', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
     def clear_tof_readings(self, reason="Waiting"):
         """Remove old numerical readings rather than displaying them as live."""
         self.last_tof_rx = None
@@ -600,7 +541,7 @@ class RobotGUI:
             self.tof_labels[direction].config(text="--", fg='#95a5a6')
             self.tof_state_labels[direction].config(text=reason, fg='#95a5a6')
         self.tof_summary_label.config(
-            text="Stop request: --   |   Blocked: --   |   Urgent: --", fg='#95a5a6')
+            text="Stop request: --", fg='#95a5a6')
         self.tof_age_label.config(text=reason + ". Waiting for current ToF telemetry.")
 
     def update_tof_readings(self, obstacle):
@@ -655,15 +596,12 @@ class RobotGUI:
         limit = threshold + FRONT_CLEAR_MARGIN_MM if self.front_blocked else threshold
         self.front_obstacle_snapshot = (front_seen and front < limit) or stop is True
         stop_text = "YES" if stop is True else ("NO" if stop is False else "--")
-        blocked_text = f"0x{blocked:02X}" if blocked is not None else "--"
-        urgent_text = f"0x{urgent:02X}" if urgent is not None else "--"
         self.tof_summary_label.config(
-            text=f"Stop request: {stop_text}   |   Blocked: {blocked_text}   |   Urgent: {urgent_text}",
+            text=f"Stop request: {stop_text}",
             fg='#e74c3c' if stop is True else '#ecf0f1')
         age_text = f"{age_ms:.0f} ms" if age_known else "unknown"
         self.tof_age_label.config(
-            text=f"Sensor packet age: {age_text}   |   No usable return = sensor responding, distance unknown; see each label. "
-                 "Front stop disables W only; other movement keys remain available.")
+            text=f"Sensor packet age: {age_text}   |   No usable return = distance unknown.")
         self.last_tof_rx = time.time()
 
     def set_front_blocked(self, blocked):
@@ -685,23 +623,6 @@ class RobotGUI:
             self.forward_requires_release = False
             self.log("Front clear: W enabled. Press W again to drive forward.")
 
-    def update_odometry(self, command, dt):
-        """Update robot position based on movement command"""
-        with self.odometry_lock:
-            # Estimate velocity (mm/s) based on speed percentage
-            speed_factor = self.current_speed.get() / 100.0
-            base_velocity = 200.0 * speed_factor  # mm/s (adjust based on your robot)
-            
-            # (forward, right) parts of each move; heading is clockwise, so right = (cos, -sin).
-            forward, right = {
-                "FORWARD": (1, 0), "BACKWARD": (-1, 0), "LEFT": (0, -1), "RIGHT": (0, 1),
-                "FRONT_LEFT": (0.707, -0.707), "FRONT_RIGHT": (0.707, 0.707),
-                "BACK_LEFT": (-0.707, -0.707), "BACK_RIGHT": (-0.707, 0.707),
-            }.get(command, (0, 0))
-            heading_rad = math.radians(self.robot_heading)
-            step = base_velocity * dt
-            self.robot_x += step * (forward * math.sin(heading_rad) + right * math.cos(heading_rad))
-            self.robot_y += step * (forward * math.cos(heading_rad) - right * math.sin(heading_rad))
             # Heading comes exclusively from healthy IMU telemetry. Rotation
             # commands provide no measured angle and must not overwrite it.
 
@@ -756,9 +677,6 @@ class RobotGUI:
             self.navigator._sensor_timestamp = None
             self.navigator.visible_marker = None
             self.navigator._reset_arrival()
-            with self.odometry_lock:
-                self.robot_heading = 0.0
-            self.heading_label.config(text="0.0°")
             self.turn_heading.set("0")
             self.log("Current direction is now 0°. Heading turns use this new zero; reacquire the marker before DFS.")
         elif status == "HEADING_ZERO_REFUSED":
@@ -864,6 +782,9 @@ class RobotGUI:
         self.log('Dashboard monitor: ' + message)
 
     def set_start_node(self):
+        if getattr(self, 'pending_map_reset', None) is not None:
+            self.start_node_status.set('Waiting for RoboPico to confirm map re-initialisation.')
+            return
         if (self.active_command is not None or self.pressed_keys or
                 self.manual_turn_target is not None or self.heading_zero_pending):
             self.log("Stop driving and release the keys before setting the starting node.")
@@ -887,6 +808,43 @@ class RobotGUI:
             self.pending_start_request = pending
             self.start_node_status.set('Requested node %d; waiting for RoboPico map confirmation' % marker_id)
         # No local map/current-node mutation. Only robot/map can change the view.
+
+    def reinitialise_map(self):
+        if not self.connected:
+            self.map_reset_armed_until = 0.0
+            self.map_reset_button_text.set('Re-initialise map')
+            self.start_node_status.set('Connect to the broker before re-initialising the map.')
+            return
+        if (self.active_command is not None or self.pressed_keys or
+                self.manual_turn_target is not None or self.heading_zero_pending):
+            self.map_reset_armed_until = 0.0
+            self.map_reset_button_text.set('Re-initialise map')
+            self.start_node_status.set('Stop manual control and release the keys before re-initialising.')
+            return
+        now = time.monotonic()
+        if now >= self.map_reset_armed_until:
+            self.map_reset_armed_until = now + 10.0
+            self.map_reset_button_text.set('Confirm re-init')
+            self.start_node_status.set('Click Confirm re-init within 10 seconds to stop the rover and clear its map.')
+            self.root.after(10000, self.expire_map_reset_confirmation)
+            return
+        self.map_reset_armed_until = 0.0
+        self.map_reset_button_text.set('Re-initialise map')
+        pending = self.pending_map_reset
+        if pending is None:
+            token = uuid.uuid4().hex
+            pending = {'token': token, 'command': 'MAP_RESET:' + token}
+        if self.send_command(pending['command']):
+            self.pending_map_reset = pending
+            self.start_node_status.set('Re-initialisation requested; waiting for RoboPico empty map confirmation.')
+        else:
+            self.start_node_status.set('Could not send map re-initialisation. Connect and try again.')
+        # Keep the displayed map until a matching authoritative snapshot arrives.
+
+    def expire_map_reset_confirmation(self):
+        if self.map_reset_armed_until and time.monotonic() >= self.map_reset_armed_until:
+            self.map_reset_armed_until = 0.0
+            self.map_reset_button_text.set('Re-initialise map')
 
     def send_navigation_command(self, command):
         if command != 'STOP':
@@ -957,7 +915,6 @@ class RobotGUI:
         self.camera_marker_count.set('Markers in view: %d' % len(rows))
         for item in self.camera_marker_table.get_children():
             self.camera_marker_table.delete(item)
-        self.camera_marker_table.configure(height=max(1, len(rows)))
         for index, row in enumerate(rows):
             self.camera_marker_table.insert('', 'end', iid=str(index), values=row,
                 tags=() if row[3] == 'OK' and row[1] != '--' else ('unusable',))
@@ -987,6 +944,15 @@ class RobotGUI:
             self.start_node_status.set('RoboPico confirmed start node %d at (0,0)' % pending['marker_id'])
             self.pending_start_request = None
             self.dfs_feedback.set('Start node confirmed. Wait for a target, then select Start DFS.')
+            self.dfs_feedback_label.config(fg='#f1c40f')
+        reset = getattr(self, 'pending_map_reset', None)
+        if (reset is not None and snapshot.last_request == reset['token'] and
+                not snapshot.nodes and not snapshot.observed_nodes and snapshot.current_node is None):
+            self.pending_map_reset = None
+            self.pending_start_request = None
+            self.start_node_id.set('')
+            self.start_node_status.set('RoboPico map re-initialised. Set the start node before starting DFS.')
+            self.dfs_feedback.set('Map cleared by RoboPico. Set the start node first.')
             self.dfs_feedback_label.config(fg='#f1c40f')
         self.update_current_marker()
 
@@ -1048,15 +1014,11 @@ class RobotGUI:
             [] if node is None else [node.y - 0.22], 'o', color='#f39c12', markersize=8, zorder=10)
         self.canvas.draw_idle()
 
-    def update_grid_map(self):
-        """Legacy local grid rendering is disabled; only robot/map owns the view."""
 
     def submit_vision_observation(self, message):
         """Queue B3's full schema-1 JSON object from an in-process camera worker."""
         self.root.after(0, self.navigator.vision_received, message)
 
-    def update_marker_map(self, data):
-        """Camera detections are observations, never authoritative map updates."""
 
     def submit_marker_detection(self, marker_id, frame_id=None, distance_mm=None, bearing_deg=None):
         """Queue a simple lens-relative observation; an ID alone is not arrival."""
@@ -1076,15 +1038,6 @@ class RobotGUI:
         self.close()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
-    def reset_odometry(self):
-        """Reset robot position to origin"""
-        with self.odometry_lock:
-            self.robot_x = 0.0
-            self.robot_y = 0.0
-            self.robot_heading = 0.0
-        # reset ultrasonic readings too
-        self.ultrasonic = {'front': 0, 'back': 0, 'left': 0, 'right': 0}
-        self.log("Robot position reset to origin")
 
     def request_safety_reset(self):
         """Request an unlock without resuming a held movement command."""
@@ -1171,7 +1124,6 @@ class RobotGUI:
             # Drive <-> arm: stop the old one first
             self.stop_hold()
         self.active_command = cmd
-        self.last_command_time = time.time()
         self.send_command(cmd)
         self.schedule_heartbeat()
 
@@ -1188,12 +1140,6 @@ class RobotGUI:
 
     def heartbeat_tick(self):
         if self.active_command:
-            # Update odometry
-            current_time = time.time()
-            dt = current_time - getattr(self, 'last_command_time', current_time)
-            self.last_command_time = current_time
-            self.update_odometry(self.active_command, dt)
-            
             self.send_command(self.active_command, quiet=True)
             self.schedule_heartbeat()
 
@@ -1325,8 +1271,11 @@ class RobotGUI:
             self.last_dfs_reply = None
             leg_phase=report.leg.phase if report.leg is not None else 'NONE'
             message={'HOLDING':'Waiting for fresh camera observations; wheels stopped.',
-                'BACKING_UP':'RoboPico is briefly reversing to recover the locked reference.',
-                'REACQUIRING':'RoboPico has stopped and is reacquiring the locked reference.',
+                'WAITING_CAMERA':'RoboPico is stopped, waiting for fresh camera observations; DFS and target are retained.',
+                'WAITING_INPUT':'RoboPico is stopped, waiting for inputs to recover; DFS and target are retained.',
+                'CORRECTING':'RoboPico is adjusting its arrival position before confirming the node.',
+                'BACKING_UP':'RoboPico is reversing slowly to find a mapped marker or the locked reference.',
+                'REACQUIRING':'RoboPico has stopped to confirm a recovery marker and locate the target.',
                 'SEARCHING_REFERENCE':'RoboPico is moving slowly to find a different marker as the reference.',
                 'OBSTACLE_VERIFYING':'RoboPico stopped at the front obstacle and is confirming target arrival.',
                 'BRAKING':'RoboPico is verifying target arrival.', 'VERIFYING':'RoboPico is verifying target arrival.',
@@ -1353,9 +1302,6 @@ class RobotGUI:
         leg_values = report.leg.display_fields if report.leg is not None else {}
         for key, variable in self.mission_leg_fields.items():
             variable.set(leg_values.get(key, 'Unknown' if key == 'phase' else '--'))
-        colours = {"IDLE": '#95a5a6', "READY": '#27ae60', "EXPLORING": '#3498db',
-                   "PAUSED": '#f39c12', "COMPLETE": '#27ae60', "FAULT": '#e74c3c'}
-        self.mission_state_label.config(fg=colours[report.state])
         if previous is None or previous.display_values != report.display_values:
             leg_text = '' if report.leg is None else ' | leg: ' + ', '.join('%s=%s' % item for item in leg_values.items())
             self.log("Mission: %s | %s | %s | mission motion %s%s" % (
@@ -1382,7 +1328,6 @@ class RobotGUI:
         self.auto_mode.set(False)
         self.dfs_feedback.set('RoboPico mission status unavailable. Reconnect before starting DFS.')
         self.dfs_feedback_label.config(fg='#e74c3c')
-        self.mission_state_label.config(fg='#95a5a6')
 
     def watchdog_tick(self):
         if self.connected:
@@ -1396,9 +1341,6 @@ class RobotGUI:
             # Time since the last telemetry. If none yet, count from connect.
             ref = self.last_telemetry_rx or self.connect_time
             age = time.time() - ref
-            colour = '#95a5a6' if age > 0.5 else '#3498db'
-            self.heading_label.config(fg=colour)
-            self.pitch_label.config(fg=colour)
             if age > ROBOT_LOST_S and self.robot_link != "lost":
                 self.set_robot_link("lost", age)
             elif (age <= ROBOT_LOST_S and self.last_telemetry_rx
@@ -1474,6 +1416,8 @@ class RobotGUI:
             self.connected = False
 
     def disconnect(self):
+        self.map_reset_armed_until = 0.0
+        self.map_reset_button_text.set('Re-initialise map')
         if self.heading_zero_pending:
             self.send_command("STOP", quiet=True)
         if self.manual_turn_target is not None:
@@ -1676,7 +1620,6 @@ class RobotGUI:
                     raise ValueError("Expected an object")
                 if "schema" in data or "markers" in data:
                     self.navigator.vision_received(data)
-                    self.update_marker_map(data)
                 else:
                     self.navigator.marker_seen(data["marker_id"], data["frame_id"], data.get("age_ms", 0),
                                                data.get("distance_mm"), data.get("bearing_deg"))
@@ -1701,53 +1644,6 @@ class RobotGUI:
                     self.update_mission_display(data["mission"])
                 self.navigator.sensor_received(data)
                 self.update_tof_readings(data.get("obstacle"))
-                imu = data.get("imu", {})
-                ultrasonic = data.get("ultrasonic", {})
-
-                # Heading is clockwise relative to Sensor Pico startup.
-                heading = imu.get("heading", None)
-                pitch = imu.get("pitch", None)
-                roll = imu.get("roll", None)
-                imu_ok = imu.get("status", 0) == 0
-                
-                if heading is not None and imu_ok:
-                    with self.odometry_lock:
-                        self.robot_heading = float(heading)
-                    # Update heading display
-                    self.heading_label.config(text=f"{self.robot_heading:.1f}°")
-                
-                if pitch is not None and imu_ok:
-                    self.robot_pitch = float(pitch)
-                    # Update pitch display
-                    self.pitch_label.config(text=f"{self.robot_pitch:.1f}°")
-
-                if roll is not None and imu_ok:
-                    self.roll_label.config(text=f"{float(roll):.1f}°")
-
-                if not imu_ok:
-                    self.heading_label.config(text="N/A")
-                    self.pitch_label.config(text="N/A")
-                    self.roll_label.config(text="N/A")
-
-                # Update ultrasonic display
-                front = ultrasonic.get("front", self.ultrasonic.get('front', 0))
-                back = ultrasonic.get("back", self.ultrasonic.get('back', 0))
-                left = ultrasonic.get("left", self.ultrasonic.get('left', 0))
-                right = ultrasonic.get("right", self.ultrasonic.get('right', 0))
-
-                self.ultrasonic['front'] = front
-                self.ultrasonic['back'] = back
-                self.ultrasonic['left'] = left
-                self.ultrasonic['right'] = right
-
-                # Update label - check if offline/disconnected
-                # 500 = disconnected (no echo), 400 = max range, <400 = valid reading
-                front_str = "Offline" if front >= 500 else ("Far" if front >= 400 else str(front))
-                back_str = "Offline" if back >= 500 else ("Far" if back >= 400 else str(back))
-                
-                self.ultrasonic_label.config(
-                    text=f"Front:{front_str} Back:{back_str}")
-
                 self.last_telemetry_rx = time.time()
 
             except (KeyError, TypeError, ValueError, AttributeError):
@@ -1758,6 +1654,10 @@ class RobotGUI:
             self.root.after(0, self.handle_mqtt_disconnect, rc)
             
     def handle_mqtt_disconnect(self, rc):
+        self.map_reset_armed_until = 0.0
+        reset_text = getattr(self, 'map_reset_button_text', None)
+        if reset_text is not None:
+            reset_text.set('Re-initialise map')
         if self.heading_zero_pending:
             self.cancel_heading_zero()
         if self.manual_turn_target is not None:

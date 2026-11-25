@@ -1,3 +1,7 @@
+/**
+ * @file mjpeg_dht.h
+ * @brief Mjpeg dht firmware module.
+ */
 #ifndef MJPEG_DHT_H
 #define MJPEG_DHT_H
 
@@ -12,7 +16,11 @@
 // the frame has none, so ordinary JPEG decoders accept it.
 // Returns the bytes written, or 0 if src is not a valid JPEG header or dst is
 // too small. Sets *had_dht to whether src already had tables.
-size_t mjpeg_with_dht (const uint8_t * src, size_t len, uint8_t * dst,
-                       size_t dst_cap, bool * had_dht);
+
+size_t mjpeg_with_dht (const uint8_t * p_src, size_t len, uint8_t * p_dst,
+                       size_t dst_cap, bool * p_had_dht);
+
 
 #endif /* MJPEG_DHT_H */
+
+/* End of file. */

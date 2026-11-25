@@ -1,3 +1,8 @@
+/**
+ * @file app_main.c
+ * @brief App main firmware module.
+ */
+#include <inttypes.h>
 /*
  * ESP32-S3 USB Host UVC Webcam -> Wi-Fi MJPEG stream
  * ---------------------------------------------------------------------
@@ -50,7 +55,7 @@
 // WIFI_SSID, WIFI_PASSWORD: copy wifi_secrets.example.h
 #include "wifi_secrets.h"
 
-static const char * TAG = "web_cam";
+static const char * gp_tag = "web_cam";
 
 // Vision results go to the Robo Pico: UART1 TX on GPIO17 to its GP21 (UART1
 // RX).
@@ -91,89 +96,93 @@ static const char * TAG = "web_cam";
 #define FRAME_WIDTH 640 // the size camera_calib.json was calibrated at
 #define FRAME_HEIGHT 480
 
-static SemaphoreHandle_t frame_mutex;
-static uint8_t *     latest_frame_buf = NULL; // holds a copy of the newest JPEG
-static size_t        latest_frame_len = 0;
-static volatile bool have_frame       = false;
-static uint32_t      frames_received  = 0; // guarded by frame_mutex
-static int64_t       latest_frame_us =
+static SemaphoreHandle_t g_frame_mutex;
+static uint8_t * gp_latest_frame_buf = NULL; // holds a copy of the newest JPEG
+static size_t    g_latest_frame_len  = 0;
+static volatile bool g_b_have_frame  = false;
+static uint32_t      g_frames_received = 0; // guarded by frame_mutex
+static int64_t       g_latest_frame_us =
     0; // guarded by frame_mutex: when the newest frame arrived
-static volatile uint32_t frames_too_big     = 0;
-static volatile uint32_t frames_lock_missed = 0;
+static volatile uint32_t g_frames_too_big     = 0;
+static volatile uint32_t g_frames_lock_missed = 0;
 
 // Buffers required by usb_stream itself (separate from the "latest frame"
 // copy above). Allocated from PSRAM since they're sizable.
 #define XFER_BUFFER_SIZE (32 * 1024)
 #define FRAME_BUFFER_SIZE (60 * 1024)
-static uint8_t * xfer_buffer_a    = NULL;
-static uint8_t * xfer_buffer_b    = NULL;
-static uint8_t * uvc_frame_buffer = NULL;
+static uint8_t * gp_xfer_buffer_a    = NULL;
+static uint8_t * gp_xfer_buffer_b    = NULL;
+static uint8_t * gp_uvc_frame_buffer = NULL;
 
 // ---------------------------------------------------------------------
 // Called by usb_stream on every completed UVC frame. Runs in a USB task
 // context - keep it fast, just copy the JPEG bytes out.
 // ---------------------------------------------------------------------
-static void camera_frame_cb (uvc_frame_t * frame, void * user_ptr)
+static void
+camera_frame_cb (uvc_frame_t * p_frame, void * p_user_ptr)
 {
-    if (frame->frame_format != UVC_FRAME_FORMAT_MJPEG)
+    if (p_frame->frame_format != UVC_FRAME_FORMAT_MJPEG)
     {
         // Only handling MJPEG in this starting version. If your webcam
         // only offers YUYV, you'd add a JPEG encode step here.
         return;
     }
-    if (0 == frame->data_bytes || frame->data_bytes > MAX_JPEG_FRAME_SIZE)
+    if (0 == p_frame->data_bytes || p_frame->data_bytes > MAX_JPEG_FRAME_SIZE)
     {
-        ESP_LOGW(TAG, "Dropping frame of size %u (too large or empty)",
-                 (unsigned)frame->data_bytes);
-        frames_too_big++;
+        ESP_LOGW(gp_tag, "Dropping frame of size %u (too large or empty)",
+                 (unsigned) p_frame->data_bytes);
+        g_frames_too_big++;
         return;
     }
 
-    if (pdTRUE == xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(50)))
+    if (pdTRUE == xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(50)))
     {
-        memcpy(latest_frame_buf, frame->data, frame->data_bytes);
-        latest_frame_len = frame->data_bytes;
-        latest_frame_us  = esp_timer_get_time();
-        have_frame       = true;
-        frames_received++;
-        xSemaphoreGive(frame_mutex);
+        memcpy(gp_latest_frame_buf, p_frame->data, p_frame->data_bytes);
+        g_latest_frame_len = p_frame->data_bytes;
+        g_latest_frame_us  = esp_timer_get_time();
+        g_b_have_frame     = true;
+        g_frames_received++;
+        xSemaphoreGive(g_frame_mutex);
     }
     else
     {
-        frames_lock_missed++;
+        g_frames_lock_missed++;
     }
 }
 
 // ---------------------------------------------------------------------
 // Wi-Fi station setup (blocks until connected)
 // ---------------------------------------------------------------------
-static EventGroupHandle_t wifi_event_group;
+static EventGroupHandle_t g_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
-static esp_netif_t * sta_netif = NULL;
+static esp_netif_t * gp_sta_netif = NULL;
 
 #ifdef USE_STATIC_IP
 // Same approach as ESP-IDF's static_ip example: stop the DHCP client and
 // set the address once associated; esp_netif then posts IP_EVENT_STA_GOT_IP.
-static void set_static_ip (esp_netif_t * netif)
+static void
+set_static_ip (esp_netif_t * p_netif)
 {
-    esp_err_t err = esp_netif_dhcpc_stop(netif);
+    esp_err_t err = esp_netif_dhcpc_stop(p_netif);
     if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)
     {
-        ESP_LOGE(TAG, "Failed to stop DHCP client: %s", esp_err_to_name(err));
+        ESP_LOGE(gp_tag, "Failed to stop DHCP client: %s",
+                 esp_err_to_name(err));
         return;
     }
     esp_netif_ip_info_t ip = {
-        .ip      = {.addr = STATIC_IP},
-        .gw      = {.addr = STATIC_GW},
-        .netmask = {.addr = STATIC_NETMASK},
+        .ip      = { .addr = STATIC_IP },
+        .gw      = { .addr = STATIC_GW },
+        .netmask = { .addr = STATIC_NETMASK },
     };
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(p_netif, &ip));
 }
 #endif
 
-static void wifi_event_handler (void * arg, esp_event_base_t event_base,
-                                int32_t event_id, void * event_data)
+static void
+wifi_event_handler (void * p_arg, esp_event_base_t event_base, int32_t event_id,
+                    void * p_event_data)
 {
     if (WIFI_EVENT == event_base && WIFI_EVENT_STA_START == event_id)
     {
@@ -182,7 +191,7 @@ static void wifi_event_handler (void * arg, esp_event_base_t event_base,
     }
     else if (WIFI_EVENT == event_base && WIFI_EVENT_STA_CONNECTED == event_id)
     {
-        set_static_ip(sta_netif);
+        set_static_ip(gp_sta_netif);
 #endif
     }
     else if (WIFI_EVENT == event_base &&
@@ -190,25 +199,26 @@ static void wifi_event_handler (void * arg, esp_event_base_t event_base,
     {
         // Reason codes: 201 = SSID not found (wrong name or 5 GHz only), 15/204
         // = wrong password
-        ESP_LOGW(TAG, "Wi-Fi disconnected (reason %d), retrying...",
-                 ((wifi_event_sta_disconnected_t *)event_data)->reason);
+        ESP_LOGW(gp_tag, "Wi-Fi disconnected (reason %d), retrying...",
+                 ((wifi_event_sta_disconnected_t *) p_event_data)->reason);
         esp_wifi_connect();
     }
     else if (IP_EVENT == event_base && IP_EVENT_STA_GOT_IP == event_id)
     {
-        ip_event_got_ip_t * event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        ip_event_got_ip_t * event = (ip_event_got_ip_t *) p_event_data;
+        ESP_LOGI(gp_tag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(g_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
 
-static void wifi_init_sta (void)
+static void
+wifi_init_sta (void)
 {
-    wifi_event_group = xEventGroupCreate();
+    g_wifi_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    sta_netif = esp_netif_create_default_wifi_sta();
+    gp_sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -229,34 +239,35 @@ static void wifi_init_sta (void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Connecting to Wi-Fi SSID: %s", WIFI_SSID);
-    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
+    ESP_LOGI(gp_tag, "Connecting to Wi-Fi SSID: %s", WIFI_SSID);
+    xEventGroupWaitBits(g_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
                         portMAX_DELAY);
 }
 
 // ---------------------------------------------------------------------
 // HTTP: single-frame snapshot at /capture
 // ---------------------------------------------------------------------
-static esp_err_t capture_handler (httpd_req_t * req)
+static esp_err_t
+capture_handler (httpd_req_t * p_req)
 {
-    if (!have_frame)
+    if (!g_b_have_frame)
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+        httpd_resp_send_err(p_req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "No frame yet");
         return ESP_FAIL;
     }
 
     esp_err_t res = ESP_OK;
-    if (pdTRUE == xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(200)))
+    if (pdTRUE == xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(200)))
     {
-        httpd_resp_set_type(req, "image/jpeg");
-        res = httpd_resp_send(req, (const char *)latest_frame_buf,
-                              latest_frame_len);
-        xSemaphoreGive(frame_mutex);
+        httpd_resp_set_type(p_req, "image/jpeg");
+        res = httpd_resp_send(p_req, (const char *) gp_latest_frame_buf,
+                              g_latest_frame_len);
+        xSemaphoreGive(g_frame_mutex);
     }
     else
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Busy");
+        httpd_resp_send_err(p_req, HTTPD_500_INTERNAL_SERVER_ERROR, "Busy");
         res = ESP_FAIL;
     }
     return res;
@@ -267,15 +278,16 @@ static esp_err_t capture_handler (httpd_req_t * req)
 // module version, so your Python scripts work unchanged)
 // ---------------------------------------------------------------------
 #define PART_BOUNDARY "123456789000000000000987654321"
-static const char * STREAM_CONTENT_TYPE =
+static const char * gp_stream_content_type =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
-static const char * STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
-static const char * STREAM_PART =
+static const char * gp_stream_boundary = "\r\n--" PART_BOUNDARY "\r\n";
+static const char * gp_stream_part =
     "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-static esp_err_t stream_handler (httpd_req_t * req)
+static esp_err_t
+stream_handler (httpd_req_t * p_req)
 {
-    esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+    esp_err_t res = httpd_resp_set_type(p_req, gp_stream_content_type);
     if (res != ESP_OK)
     {
         return res;
@@ -285,41 +297,41 @@ static esp_err_t stream_handler (httpd_req_t * req)
 
     while (true)
     {
-        if (!have_frame)
+        if (!g_b_have_frame)
         {
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
-        if (xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(200)) != pdTRUE)
+        if (xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(200)) != pdTRUE)
         {
             continue;
         }
         // Take a local copy of length/pointer while holding the lock,
         // then release before the (potentially slow) network write.
-        size_t len = latest_frame_len;
+        size_t len = g_latest_frame_len;
         // NOTE: for simplicity we send directly out of latest_frame_buf
         // while still holding the mutex, briefly blocking the UVC
         // callback. Fine for this frame rate / size; revisit if you see
         // dropped frames under load.
-        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY,
-                                    strlen(STREAM_BOUNDARY));
+        res = httpd_resp_send_chunk(p_req, gp_stream_boundary,
+                                    strlen(gp_stream_boundary));
         if (ESP_OK == res)
         {
-            size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART,
-                                   (unsigned)len);
-            res         = httpd_resp_send_chunk(req, part_buf, hlen);
+            size_t hlen = snprintf(part_buf, sizeof(part_buf), gp_stream_part,
+                                   (unsigned) len);
+            res         = httpd_resp_send_chunk(p_req, part_buf, hlen);
         }
         if (ESP_OK == res)
         {
-            res =
-                httpd_resp_send_chunk(req, (const char *)latest_frame_buf, len);
+            res = httpd_resp_send_chunk(
+                p_req, (const char *) gp_latest_frame_buf, len);
         }
-        xSemaphoreGive(frame_mutex);
+        xSemaphoreGive(g_frame_mutex);
 
         if (res != ESP_OK)
         {
-            ESP_LOGW(TAG, "Stream client disconnected");
+            ESP_LOGW(gp_tag, "Stream client disconnected");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(30));
@@ -327,7 +339,8 @@ static esp_err_t stream_handler (httpd_req_t * req)
     return res;
 }
 
-static httpd_handle_t start_webserver (void)
+static httpd_handle_t
+start_webserver (void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -355,22 +368,23 @@ static httpd_handle_t start_webserver (void)
 // ---------------------------------------------------------------------
 // USB Host / UVC setup
 // ---------------------------------------------------------------------
-static void uvc_camera_init (void)
+static void
+uvc_camera_init (void)
 {
-    xfer_buffer_a =
-        (uint8_t *)heap_caps_malloc(XFER_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    xfer_buffer_b =
-        (uint8_t *)heap_caps_malloc(XFER_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    uvc_frame_buffer =
-        (uint8_t *)heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    latest_frame_buf =
-        (uint8_t *)heap_caps_malloc(MAX_JPEG_FRAME_SIZE, MALLOC_CAP_SPIRAM);
+    gp_xfer_buffer_a =
+        (uint8_t *) heap_caps_malloc(XFER_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    gp_xfer_buffer_b =
+        (uint8_t *) heap_caps_malloc(XFER_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    gp_uvc_frame_buffer =
+        (uint8_t *) heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    gp_latest_frame_buf =
+        (uint8_t *) heap_caps_malloc(MAX_JPEG_FRAME_SIZE, MALLOC_CAP_SPIRAM);
 
-    if (!xfer_buffer_a || !xfer_buffer_b || !uvc_frame_buffer ||
-        !latest_frame_buf)
+    if (!gp_xfer_buffer_a || !gp_xfer_buffer_b || !gp_uvc_frame_buffer ||
+        !gp_latest_frame_buf)
     {
-        ESP_LOGE(TAG, "Failed to allocate USB/frame buffers from PSRAM - check "
-                      "PSRAM is enabled");
+        ESP_LOGE(gp_tag, "Failed to allocate USB/frame buffers from PSRAM - "
+                         "check PSRAM is enabled");
         return;
     }
 
@@ -379,10 +393,10 @@ static void uvc_camera_init (void)
         .frame_height      = FRAME_HEIGHT,
         .frame_interval    = FPS2INTERVAL(15),
         .xfer_buffer_size  = XFER_BUFFER_SIZE,
-        .xfer_buffer_a     = xfer_buffer_a,
-        .xfer_buffer_b     = xfer_buffer_b,
+        .xfer_buffer_a     = gp_xfer_buffer_a,
+        .xfer_buffer_b     = gp_xfer_buffer_b,
         .frame_buffer_size = FRAME_BUFFER_SIZE,
-        .frame_buffer      = uvc_frame_buffer,
+        .frame_buffer      = gp_uvc_frame_buffer,
         .frame_cb          = &camera_frame_cb,
         .frame_cb_arg      = NULL,
     };
@@ -390,21 +404,25 @@ static void uvc_camera_init (void)
     esp_err_t ret = uvc_streaming_config(&uvc_config);
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "uvc_streaming_config failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(gp_tag, "uvc_streaming_config failed: %s",
+                 esp_err_to_name(ret));
         return;
     }
 
     ret = usb_streaming_start();
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "usb_streaming_start failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(gp_tag, "usb_streaming_start failed: %s",
+                 esp_err_to_name(ret));
         return;
     }
 
-    ESP_LOGI(TAG, "USB UVC streaming started - waiting for webcam frames...");
+    ESP_LOGI(gp_tag,
+             "USB UVC streaming started - waiting for webcam frames...");
 }
 
-static void vision_uart_init (void)
+static void
+vision_uart_init (void)
 {
     uart_config_t config = {
         .baud_rate  = VISION_BAUD,
@@ -421,25 +439,29 @@ static void vision_uart_init (void)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
-static void vision_send (uint8_t seq, uint8_t status, int64_t arrival_us,
-                         const vision_marker_t * markers, int n)
+static void
+vision_send (uint8_t seq, uint8_t status, int64_t arrival_us,
+             const vision_marker_t * p_markers, int count)
 {
     uint8_t frame[VISION_FRAME_MAX];
     int64_t age_ms = (esp_timer_get_time() - arrival_us) / 1000;
-    size_t  len    = vision_frame_build(frame, seq, status, age_ms, markers, n);
+    size_t  len =
+        vision_frame_build(frame, seq, status, age_ms, p_markers, count);
     uart_write_bytes(VISION_UART, frame, len);
 #ifdef VISION_LOOPBACK_TEST
-    ESP_LOGI(TAG,
-             "uart sent: seq %u status %u age %lld N %d, first ID %d range "
-             "%.0f bearing %+.2f quality %d",
-             seq, status, age_ms, n, n ? markers[0].id : -1,
-             n ? markers[0].range_mm : 0, n ? markers[0].bearing_deg : 0,
-             n ? markers[0].quality : -1);
+    ESP_LOGI(gp_tag,
+             "uart sent: seq %u status %u age %" PRId64
+             " N %d, first ID %d range %.0f bearing %+.2f quality %d",
+             seq, status, age_ms, count, count ? p_markers[0].id : -1,
+             count ? p_markers[0].range_mm : 0,
+             count ? p_markers[0].bearing_deg : 0,
+             count ? p_markers[0].quality : -1);
 #endif
 }
 
 #ifdef VISION_LOOPBACK_TEST
-static void loopback_task (void * arg)
+static void
+loopback_task (void * arg)
 {
     uart_config_t config = {
         .baud_rate  = VISION_BAUD,
@@ -463,7 +485,7 @@ static void loopback_task (void * arg)
     {
         if (uart_read_bytes(LOOPBACK_UART, f, 1, pdMS_TO_TICKS(1000)) != 1)
         {
-            ESP_LOGW(TAG,
+            ESP_LOGW(gp_tag,
                      "loopback: nothing on GPIO%d for 1 s. Is the jumper on?",
                      LOOPBACK_RX_PIN);
             continue;
@@ -480,29 +502,30 @@ static void loopback_task (void * arg)
             vision_crc8(f + 1, len - 2) != f[len - 1])
         {
             bad++;
-            ESP_LOGW(TAG, "loopback: bad frame, %lu so far",
-                     (unsigned long)bad);
+            ESP_LOGW(gp_tag, "loopback: bad frame, %" PRIu32 " so far",
+                     (uint32_t) bad);
             continue;
         }
         good++;
         if (last_seq >= 0 && f[1] != last_seq &&
-            f[1] != (uint8_t)(last_seq + 1))
+            f[1] != (uint8_t) (last_seq + 1))
         {
             gaps++;
         }
         last_seq = f[1];
-        ESP_LOGI(TAG,
-                 "uart read: seq %u status %u age %u N %u | %d bytes | good "
-                 "%lu bad %lu gaps %lu",
-                 f[1], f[2], f[3] | f[4] << 8, f[5], len, (unsigned long)good,
-                 (unsigned long)bad, (unsigned long)gaps);
+        ESP_LOGI(
+            gp_tag,
+            "uart read: seq %u status %u age %u N %u | %d bytes | good %" PRIu32
+            " bad %" PRIu32 " gaps %" PRIu32 "",
+            f[1], f[2], f[3] | f[4] << 8, f[5], len, (uint32_t) good,
+            (uint32_t) bad, (uint32_t) gaps);
         for (int i = 0; i < f[5]; i++)
         {
             const uint8_t * m = f + 6 + i * 6;
-            ESP_LOGI(TAG,
+            ESP_LOGI(gp_tag,
                      "uart read:   ID %u range %u bearing %+.2f quality %u",
                      m[0], m[1] | m[2] << 8,
-                     (int16_t)(m[3] | m[4] << 8) / 100.0f, m[5]);
+                     (int16_t) (m[3] | m[4] << 8) / 100.0f, m[5]);
         }
     }
 }
@@ -517,38 +540,39 @@ static void loopback_task (void * arg)
 #define BENCH_REPORT_FRAMES 30
 #define MARKER_MM 74.0f // measured side of the printed set
 
-static void vision_task (void * arg)
+static void
+vision_task (void * p_arg)
 {
     const size_t in_cap  = MAX_JPEG_FRAME_SIZE + MJPEG_STD_DHT_LEN;
     const size_t out_len = FRAME_WIDTH * FRAME_HEIGHT * 2;
-    uint8_t *    raw = heap_caps_malloc(MAX_JPEG_FRAME_SIZE, MALLOC_CAP_SPIRAM);
-    uint8_t *    in  = heap_caps_malloc(in_cap, MALLOC_CAP_SPIRAM);
-    void * work   = heap_caps_malloc(ARUCO_WORK_SIZE(FRAME_WIDTH, FRAME_HEIGHT),
+    uint8_t * p_raw = heap_caps_malloc(MAX_JPEG_FRAME_SIZE, MALLOC_CAP_SPIRAM);
+    uint8_t * p_input = heap_caps_malloc(in_cap, MALLOC_CAP_SPIRAM);
+    void * p_work = heap_caps_malloc(ARUCO_WORK_SIZE(FRAME_WIDTH, FRAME_HEIGHT),
                                      MALLOC_CAP_SPIRAM);
-    uint8_t * out = jpeg_calloc_align(out_len, 16);
-    if (!raw || !in || !work || !out)
+    uint8_t * p_out = jpeg_calloc_align(out_len, 16);
+    if (!p_raw || !p_input || !p_work || !p_out)
     {
-        ESP_LOGE(TAG, "bench: buffer allocation failed");
+        ESP_LOGE(gp_tag, "bench: buffer allocation failed");
         vTaskDelete(NULL);
         return;
     }
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type       = JPEG_PIXEL_FORMAT_CbYCrY;
 
-    ESP_LOGI(TAG, "bench: CPU %d MHz, PSRAM %u bytes",
-             CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned)esp_psram_get_size());
+    ESP_LOGI(gp_tag, "bench: CPU %d MHz, PSRAM %u bytes",
+             CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned) esp_psram_get_size());
 
     uint32_t last_seq = 0, window_start_seq = 0, errors = 0;
-    int      n        = 0;
+    int      count    = 0;
     int64_t  sum_copy = 0, sum_decode = 0, sum_detect = 0, max_decode = 0,
-             min_decode = INT64_MAX;
-    int64_t  max_detect = 0, min_detect = INT64_MAX;
-    size_t   sum_bytes     = 0;
+            min_decode = INT64_MAX;
+    int64_t max_detect = 0, min_detect = INT64_MAX;
+    size_t  sum_bytes      = 0;
     int frames_with_marker = 0, last_id = -1, last_quality = ARUCO_POSE_FAILED;
-    aruco_pose_t   last_pose = {0};
+    aruco_pose_t   last_pose = { 0 };
     int64_t        sum_pose  = 0;
     aruco_marker_t markers[4];
-    bool           had_dht      = false;
+    bool           b_had_dht    = false;
     int64_t        window_start = esp_timer_get_time();
     uint8_t        seq          = 0;
     int64_t        last_arrival_us =
@@ -572,38 +596,40 @@ static void vision_task (void * arg)
             vision_send(seq, status, last_arrival_us, NULL, 0);
             last_health_us = now;
         }
-        if (xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(200)) != pdTRUE)
+        if (xSemaphoreTake(g_frame_mutex, pdMS_TO_TICKS(200)) != pdTRUE)
         {
             continue;
         }
-        if (frames_received == last_seq)
+        if (g_frames_received == last_seq)
         {
-            xSemaphoreGive(frame_mutex);
+            xSemaphoreGive(g_frame_mutex);
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
         int64_t t0      = esp_timer_get_time();
-        size_t  raw_len = latest_frame_len;
-        memcpy(raw, latest_frame_buf, raw_len);
-        last_seq           = frames_received;
-        int64_t arrival_us = latest_frame_us;
-        xSemaphoreGive(frame_mutex);
+        size_t  raw_len = g_latest_frame_len;
+        memcpy(p_raw, gp_latest_frame_buf, raw_len);
+        last_seq           = g_frames_received;
+        int64_t arrival_us = g_latest_frame_us;
+        xSemaphoreGive(g_frame_mutex);
         last_seen_us = arrival_us;
 
-        size_t  in_len = mjpeg_with_dht(raw, raw_len, in, in_cap, &had_dht);
-        int64_t t1     = esp_timer_get_time();
+        size_t in_len =
+            mjpeg_with_dht(p_raw, raw_len, p_input, in_cap, &b_had_dht);
+        int64_t t1 = esp_timer_get_time();
         if (0 == in_len)
         {
             errors++;
-            ESP_LOGW(TAG, "bench: frame is not a usable JPEG (%u bytes)",
-                     (unsigned)raw_len);
+            ESP_LOGW(gp_tag, "bench: frame is not a usable JPEG (%u bytes)",
+                     (unsigned) raw_len);
             continue;
         }
 
-        jpeg_dec_handle_t dec = NULL;
-        jpeg_dec_io_t     io  = {
-            .inbuf = in, .inbuf_len = (int)in_len, .outbuf = out};
-        jpeg_dec_header_info_t info = {0};
+        jpeg_dec_handle_t      dec  = NULL;
+        jpeg_dec_io_t          io   = { .inbuf     = p_input,
+                                        .inbuf_len = (int) in_len,
+                                        .outbuf    = p_out };
+        jpeg_dec_header_info_t info = { 0 };
         jpeg_error_t           err  = jpeg_dec_open(&config, &dec);
         if (JPEG_ERR_OK == err)
         {
@@ -614,8 +640,8 @@ static void vision_task (void * arg)
         if (JPEG_ERR_OK == err &&
             (info.width != FRAME_WIDTH || info.height != FRAME_HEIGHT))
         {
-            ESP_LOGE(TAG, "bench: frame is %ux%u, expected %ux%u", info.width,
-                     info.height, FRAME_WIDTH, FRAME_HEIGHT);
+            ESP_LOGE(gp_tag, "bench: frame is %ux%u, expected %ux%u",
+                     info.width, info.height, FRAME_WIDTH, FRAME_HEIGHT);
             err = JPEG_ERR_UNSUPPORT_FMT;
         }
         if (JPEG_ERR_OK == err)
@@ -630,35 +656,35 @@ static void vision_task (void * arg)
         if (err != JPEG_ERR_OK)
         {
             errors++;
-            ESP_LOGW(TAG, "bench: decode failed: %d (%u bytes, had_dht=%d)",
-                     err, (unsigned)raw_len, had_dht);
+            ESP_LOGW(gp_tag, "bench: decode failed: %d (%u bytes, had_dht=%d)",
+                     err, (unsigned) raw_len, b_had_dht);
             continue;
         }
 
-        int     found = aruco_detect(out + 1, FRAME_WIDTH, FRAME_HEIGHT,
-                                     FRAME_WIDTH * 2, 2, work, markers, 4);
+        int     found = aruco_detect(p_out + 1, FRAME_WIDTH, FRAME_HEIGHT,
+                                     FRAME_WIDTH * 2, 2, p_work, markers, 4);
         int64_t t3    = esp_timer_get_time();
         vision_marker_t results[VISION_MAX_MARKERS];
         int             n_results = 0;
-        for (int i = 0; i < found; i++)
+        for (int index = 0; index < found; index++)
         {
-            aruco_pose_t    pose    = aruco_pose(markers[i].corners, MARKER_MM);
+            aruco_pose_t pose = aruco_pose(markers[index].corners, MARKER_MM);
             aruco_quality_t quality = aruco_pose_quality(&pose);
-            if (0 == i)
+            if (0 == index)
             {
                 frames_with_marker++;
                 last_id      = markers[0].id;
                 last_pose    = pose;
                 last_quality = quality;
             }
-            if (markers[i].id >= VISION_ID_MIN &&
-                markers[i].id <= VISION_ID_MAX)
+            if (markers[index].id >= VISION_ID_MIN &&
+                markers[index].id <= VISION_ID_MAX)
             {
-                results[n_results++] = (vision_marker_t){
-                    .id          = (uint8_t)markers[i].id,
+                results[n_results++] = (vision_marker_t) {
+                    .id          = (uint8_t) markers[index].id,
                     .range_mm    = pose.ok ? pose.range_mm : 0,
                     .bearing_deg = pose.ok ? pose.bearing_deg : 0,
-                    .quality     = (uint8_t)quality,
+                    .quality     = (uint8_t) quality,
                 };
             }
         }
@@ -690,31 +716,33 @@ static void vision_task (void * arg)
         {
             min_detect = t3 - t2;
         }
-        n++;
+        count++;
 
-        if (BENCH_REPORT_FRAMES == n)
+        if (BENCH_REPORT_FRAMES == count)
         {
             float secs = (esp_timer_get_time() - window_start) / 1e6f;
             ESP_LOGI(
-                TAG,
-                "bench: decode avg %lld min %lld max %lld ms | detect avg %lld "
-                "min %lld max %lld ms | "
-                "pose %lld us | copy %lld ms | %.1f fps processed, camera %.1f "
-                "fps | marker in %d/%d frames, last ID %d | "
+                gp_tag,
+                "bench: decode avg %" PRId64 " min %" PRId64 " max %" PRId64
+                " ms | detect avg %" PRId64 " min %" PRId64 " max %" PRId64
+                " ms | "
+                "pose %" PRId64 " us | copy %" PRId64
+                " ms | %.1f fps processed, camera %.1f fps | marker in %d/%d "
+                "frames, last ID %d | "
                 "range %.0f mm, forward %.0f mm, bearing %+.1f deg, side %.1f "
                 "px, shape %.2f, quality %d | "
-                "jpeg %u bytes, dht=%d | errors %lu, too big %lu, lock missed "
-                "%lu",
-                sum_decode / n / 1000, min_decode / 1000, max_decode / 1000,
-                sum_detect / n / 1000, min_detect / 1000, max_detect / 1000,
-                sum_pose / n, sum_copy / n / 1000, n / secs,
-                (last_seq - window_start_seq) / secs, frames_with_marker, n,
+                "jpeg %u bytes, dht=%d | errors %" PRIu32 ", too big %" PRIu32
+                ", lock missed %" PRIu32 "",
+                sum_decode / count / 1000, min_decode / 1000, max_decode / 1000,
+                sum_detect / count / 1000, min_detect / 1000, max_detect / 1000,
+                sum_pose / count, sum_copy / count / 1000, count / secs,
+                (last_seq - window_start_seq) / secs, frames_with_marker, count,
                 last_id, last_pose.range_mm, last_pose.forward_mm,
                 last_pose.bearing_deg, last_pose.side_px, last_pose.shape_err,
-                last_quality, (unsigned)(sum_bytes / n), had_dht,
-                (unsigned long)errors, (unsigned long)frames_too_big,
-                (unsigned long)frames_lock_missed);
-            n        = 0;
+                last_quality, (unsigned) (sum_bytes / count), b_had_dht,
+                (uint32_t) errors, (uint32_t) g_frames_too_big,
+                (uint32_t) g_frames_lock_missed);
+            count    = 0;
             sum_copy = sum_decode = sum_detect = max_decode = max_detect = 0;
             min_decode = min_detect = INT64_MAX;
             sum_bytes               = 0;
@@ -726,23 +754,24 @@ static void vision_task (void * arg)
     }
 }
 
-void app_main (void)
+void
+app_main (void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
 
-    frame_mutex = xSemaphoreCreateMutex();
+    g_frame_mutex = xSemaphoreCreateMutex();
 
     wifi_init_sta();
 
     esp_netif_ip_info_t ip_info;
     esp_netif_t *       netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_netif_get_ip_info(netif, &ip_info);
-    ESP_LOGI(TAG, "======================================================");
-    ESP_LOGI(TAG, " MJPEG stream will be at: http://" IPSTR "/stream",
+    ESP_LOGI(gp_tag, "======================================================");
+    ESP_LOGI(gp_tag, " MJPEG stream will be at: http://" IPSTR "/stream",
              IP2STR(&ip_info.ip));
-    ESP_LOGI(TAG, " Snapshot will be at:     http://" IPSTR "/capture",
+    ESP_LOGI(gp_tag, " Snapshot will be at:     http://" IPSTR "/capture",
              IP2STR(&ip_info.ip));
-    ESP_LOGI(TAG, "======================================================");
+    ESP_LOGI(gp_tag, "======================================================");
 
     start_webserver();
     uvc_camera_init();
@@ -755,3 +784,5 @@ void app_main (void)
     // outranks this.
     xTaskCreatePinnedToCore(vision_task, "vision", 4096, NULL, 2, NULL, 1);
 }
+
+/* End of file. */

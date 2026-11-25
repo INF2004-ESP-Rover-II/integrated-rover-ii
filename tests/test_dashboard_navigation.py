@@ -16,7 +16,7 @@ from laptop_navigation import LaptopNavigator
 source = Path(__file__).resolve().parents[1] / "dashboard/robot_dashboard.py"
 tree = ast.parse(source.read_text(encoding="utf-8"))
 gui = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "RobotGUI")
-names = {"on_mqtt_connect", "on_mqtt_message", "handle_mqtt_message", "update_marker_map", "submit_vision_observation", "submit_marker_detection", "send_navigation_command", "toggle_auto_mode"}
+names = {"on_mqtt_connect", "on_mqtt_message", "handle_mqtt_message", "submit_vision_observation", "submit_marker_detection", "send_navigation_command", "toggle_auto_mode"}
 namespace = {"time": time, "datetime": datetime, "json": json,
              "TOPIC_STATUS": "robot/status", "TOPIC_TELEMETRY": "robot/telemetry",
              "TOPIC_MARKER": "camera/marker", "TOPIC_ROVER_CAMERA": "robot/camera"}
@@ -36,7 +36,6 @@ class DashboardNavigationTests(unittest.TestCase):
             on_mqtt_connect = namespace["on_mqtt_connect"]
             on_mqtt_message = namespace["on_mqtt_message"]
             handle_mqtt_message = namespace["handle_mqtt_message"]
-            update_marker_map = namespace["update_marker_map"]
             submit_marker_detection = namespace["submit_marker_detection"]
             submit_vision_observation = namespace["submit_vision_observation"]
             send_navigation_command = namespace["send_navigation_command"]
@@ -50,8 +49,6 @@ class DashboardNavigationTests(unittest.TestCase):
         self.gui.update_tof_readings = lambda obstacle: None
         self.gui.log = lambda message: None
         self.gui.odometry_lock = threading.Lock()
-        self.gui.heading_label = SimpleNamespace(config=lambda **values: None)
-        self.gui.ultrasonic_label = SimpleNamespace(config=lambda **values: None)
         self.gui.ultrasonic = dict(front=0, back=0, left=0, right=0)
         self.gui.handle_mqtt_connect = lambda rc: None
 

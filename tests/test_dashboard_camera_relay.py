@@ -33,7 +33,7 @@ def observation(status="OK", age=200, markers=None, seq=194):
 class Table:
     def __init__(self):
         self.rows = {}
-        self.height = 1
+        self.height = 4
 
     def get_children(self):
         return tuple(self.rows)
@@ -198,7 +198,7 @@ class CameraRelayTests(unittest.TestCase):
                    {"id": 1, "range_mm": 473, "bearing_cdeg": -418, "quality": 0}]
         app.handle_mqtt_message("robot/camera", json.dumps(observation(markers=markers)))
         self.assertEqual(len(app.camera_marker_table.rows), 4)
-        self.assertEqual(app.camera_marker_table.height, 4)
+        self.assertEqual(app.camera_marker_table.height, 4)  # Observations never resize the view.
         self.assertEqual([row[0] for row in app.camera_marker_rows], [2, 1, 3, 4])
         self.assertEqual(app.camera_marker_rows[3], (4, '--', '--', 'POSE_FAILED'))
         self.assertEqual(app.camera_marker_rows[2][3], 'TOO_FAR')

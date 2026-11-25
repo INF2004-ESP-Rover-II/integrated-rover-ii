@@ -1,3 +1,7 @@
+/**
+ * @file aruco_detect.h
+ * @brief Aruco detect firmware module.
+ */
 #ifndef ARUCO_DETECT_H
 #define ARUCO_DETECT_H
 
@@ -14,11 +18,11 @@ typedef struct
     int   border_errors; // border cells that read white
 } aruco_marker_t;
 
-#define ARUCO_MAX_CONTOUR(w, h) (4 * ((size_t)(w) + (h)))
+#define ARUCO_MAX_CONTOUR(w, h) (4 * ((size_t) (w) + (h)))
 // Scratch memory for aruco_detect(): threshold map, column sums, contour
 // points.
 #define ARUCO_WORK_SIZE(w, h)                                                  \
-    ((size_t)(w) * (h) + (size_t)(w) * sizeof(uint32_t) +                      \
+    ((size_t) (w) * (h) + (size_t) (w) * sizeof(uint32_t) +                    \
      ARUCO_MAX_CONTOUR(w, h) * 2 * sizeof(int16_t) + 16)
 
 // Finds DICT_6X6 markers in one grayscale image. Portable C with no allocation.
@@ -26,7 +30,12 @@ typedef struct
 // can be read in place (img = buf + 1, pixel_step = 2, stride = 2 * w). work
 // must hold ARUCO_WORK_SIZE(w, h) bytes, 4-byte aligned. Returns markers
 // written.
-int aruco_detect (const uint8_t * img, int w, int h, int stride, int pixel_step,
-                  void * work, aruco_marker_t * out, int max_out);
+
+int aruco_detect (const uint8_t * p_img, int value_w, int heading, int stride,
+                  int pixel_step, void * p_work, aruco_marker_t * p_out,
+                  int max_out);
+
 
 #endif /* ARUCO_DETECT_H */
+
+/* End of file. */

@@ -1,0 +1,15 @@
+# Keep the project-owned firmware consistent across Windows and Unix.
+/firmware/common/*.[ch] text eol=lf
+/firmware/robo_pico/include/*.[ch] text eol=lf
+/firmware/robo_pico/src/*.[ch] text eol=lf
+/firmware/robo_pico/camera_monitor/*.[ch] text eol=lf
+/firmware/robo_pico/motor_bench/*.[ch] text eol=lf
+/firmware/sensor_pico/include/*.[ch] text eol=lf
+/firmware/sensor_pico/src/*.[ch] text eol=lf
+/firmware/esp32_s3_vision/main/*.[ch] text eol=lf
+/firmware/**/CMakeLists.txt text eol=lf
+/firmware/*.cmake text eol=lf
+/firmware/**/.clang-format text eol=lf
+/firmware/.clang-format text eol=lf
+/firmware/.clang-tidy text eol=lf
+/firmware/.editorconfig text eol=lf

@@ -4,7 +4,7 @@ import json
 
 
 MISSION_STATES = frozenset({"IDLE", "READY", "EXPLORING", "PAUSED", "COMPLETE", "FAULT"})
-LEG_PHASES = frozenset({'NONE', 'SCANNING', 'SELECTING', 'CONFIGURED', 'TURNING', 'APPROACHING', 'HOLDING', 'BRAKING', 'VERIFYING', 'BACKING_UP', 'REACQUIRING', 'SEARCHING_REFERENCE', 'OBSTACLE_VERIFYING', 'COMPLETE', 'CANCELLED'})
+LEG_PHASES = frozenset({'NONE', 'SCANNING', 'SELECTING', 'CONFIGURED', 'TURNING', 'APPROACHING', 'HOLDING', 'BRAKING', 'VERIFYING', 'BACKING_UP', 'REACQUIRING', 'SEARCHING_REFERENCE', 'OBSTACLE_VERIFYING', 'COMPLETE', 'CANCELLED', 'ALIGNING', 'WAITING_CAMERA', 'WAITING_INPUT', 'CORRECTING'})
 LEG_FIELDS = ('leg_id', 'departure_node', 'next_target_node', 'arrival_reference_node',
               'target_cell', 'direction', 'phase', 'configured')
 
@@ -18,7 +18,13 @@ DFS_REFUSAL_MESSAGES = {
     'CAMERA_STALE_OR_TARGET_LOST': 'The target camera observation is stale or missing. Reacquire the target.',
     'HEADING_UNAVAILABLE': 'A fresh healthy IMU heading is required before starting DFS.',
     'FRONT_BLOCKED': 'The front path is blocked. Clear it before starting DFS.',
-    'TARGET_NOT_ALIGNED': 'The target must be within 5 degrees of camera centre before starting DFS.',
+    'TARGET_NOT_ALIGNED': 'The target is outside the ±10-degree camera alignment range.',
+    'TARGET_ALIGNMENT_TIMEOUT': 'Target alignment timed out. Exploration paused; arrival was not confirmed.',
+    'TARGET_ALIGNMENT_LIMIT': 'The target is still misaligned after three correction turns. Exploration paused.',
+    'TARGET_ALIGNMENT_TARGET_LOST': 'The locked target could not be reacquired during alignment. Exploration paused.',
+    'TARGET_ALIGNMENT_CAMERA_TIMEOUT': 'Fresh camera data did not recover during alignment. Exploration paused.',
+    'TARGET_ALIGNMENT_TURN_FAILED': 'The alignment turn stopped before reaching its heading. Exploration paused.',
+    'TARGET_ALIGNMENT_MOTOR_REFUSED': 'The motor controller refused the alignment turn. Exploration paused.',
     'TARGET_TOO_CLOSE': 'Target is inside the approach stop range. Arrival has not been confirmed.',
     'SAFETY_LOCKED': 'Safety is locked. Clear the safety fault before starting DFS.',
     'MISSION_NOT_IDLE': 'Reset the mission and confirm the current node before starting DFS.',
@@ -31,7 +37,7 @@ DFS_REFUSAL_MESSAGES.update({
     'DFS_INPUT_UNAVAILABLE': 'DFS paused: fresh sensor, heading and link data are required.',
     'DFS_TURN_REFUSED': 'Motion Control refused the next DFS turn.',
     'DFS_TURN_FAILED': 'The DFS turn stopped or timed out before reaching its heading.',
-    'DFS_TURN_TIMEOUT': 'The DFS turn exceeded its 4-second heading deadline.',
+    'DFS_TURN_TIMEOUT': 'The DFS turn did not reach its heading within 5 seconds, including its retry.',
     'DFS_TURN_STOPPED': 'Motion Control stopped the DFS turn before reaching its heading.',
     'DFS_TURN_REJECTED': 'Motion Control rejected the DFS turn.',
     'DFS_TURN_LEASE_EXPIRED': 'The DFS turn lease expired; motion was stopped.',
@@ -71,7 +77,7 @@ DFS_REFUSAL_MESSAGES.update({
     'LEG_TIME_LIMIT': 'The leg reached its overall time limit, including bounded recovery waits.',
     'REAR_SENSOR_UNAVAILABLE': 'Reference recovery stopped: a usable rear ultrasonic reading is required before reversing.',
     'REAR_BLOCKED': 'Reference recovery stopped: rear clearance must exceed 250 mm.',
-    'BACKUP_MOTOR_REFUSED': 'Motion Control refused the short reference-recovery reverse.',
+    'BACKUP_MOTOR_REFUSED': 'Motion Control refused the reference-recovery reverse.',
     'BACKUP_MOTOR_STOPPED': 'The reference-recovery reverse stopped unexpectedly.',
     'REFERENCE_REACQUISITION_TIMEOUT': 'The locked reference did not supply enough usable images after recovery. Arrival remains unconfirmed.',
     'REFERENCE_RECOVERY_EXHAUSTED': 'The reference disappeared again after the single reverse attempt. Arrival remains unconfirmed.',
@@ -137,12 +143,15 @@ class DfsTrackingReport:
     last_target_range_mm: int = 0
     reference_arrival_mm: int = 600
     verification_goal: int = 3
+    recovery_marker_id: int = 0
+    recovery_marker_mapped: bool = False
 
     @property
     def change_key(self):
         # Record decisions/counts, not every changing age/distance value.
         return (self.leg_id, self.active, self.phase, self.source, self.reference_model_valid,
-                self.verification_frames, self.verification_goal, self.recovery_frames, self.input_reason, self.result)
+                self.verification_frames, self.verification_goal, self.recovery_frames, self.input_reason, self.result,
+                self.recovery_marker_id, self.recovery_marker_mapped)
 
     @property
     def log_text(self):
@@ -156,6 +165,19 @@ class DfsTrackingReport:
         remaining = '--' if self.remaining_mm is None else '~%d mm' % self.remaining_mm
         text = 'Tracking: %s | estimated remaining: %s | reference progress: %d mm | verification: %d/%d | %s' % (
             self.source, remaining, self.reference_progress_mm, self.verification_frames, self.verification_goal, self.result)
+        if self.phase == 'ALIGNING':
+            text = 'Aligning locked tracking marker (repeating corrections; within ±10° to continue) | ' + text
+        if self.phase == 'WAITING_INPUT':
+            text = 'Waiting for sensor, heading, link or motor recovery (rover stopped; DFS retained) | ' + text
+        if self.phase == 'CORRECTING':
+            text = 'Correcting arrival position; target remains unconfirmed | ' + text
+        if self.phase == 'WAITING_CAMERA':
+            text = 'Waiting for fresh camera observations (rover stopped; DFS retained) | ' + text
+        if self.phase == 'BACKING_UP':
+            text = 'Reversing slowly; looking for a locked or mapped marker | ' + text
+        if self.recovery_marker_id:
+            text += ' | recovery marker: %d (%s)' % (self.recovery_marker_id,
+                'mapped' if self.recovery_marker_mapped else 'locked marker')
         if self.source == 'REFERENCE':
             text += ' | reference arrival range: %d mm' % self.reference_arrival_mm
         if self.phase == 'SEARCHING_REFERENCE':
@@ -176,7 +198,8 @@ def parse_dfs_tracking(payload):
     optional = {'input_reason': 'NONE', 'camera_present': False, 'camera_status': 0,
         'camera_packet_age_ms': 0, 'camera_image_age_ms': 0, 'accepted_image_age_ms': 0,
         'recovery_frames': 0, 'driving_ms': 0, 'search_driving_ms': 0, 'last_target_range_mm': 0,
-        'reference_arrival_mm': 600, 'verification_goal': 3}
+        'reference_arrival_mm': 600, 'verification_goal': 3,
+        'recovery_marker_id': 0, 'recovery_marker_mapped': False}
     if not isinstance(value, dict) or not (set(fields) - optional.keys()) <= value.keys():
         raise ValueError('Incomplete tracking report')
     value = {**optional, **value}
@@ -185,7 +208,7 @@ def parse_dfs_tracking(payload):
                            ('camera_packet_age_ms', 0, 0xffffffff), ('camera_image_age_ms', 0, 0xffffffff),
                            ('accepted_image_age_ms', 0, 0xffffffff), ('driving_ms', 0, 0xffffffff),
                            ('search_driving_ms', 0, 0xffffffff), ('last_target_range_mm', 0, 65535),
-                           ('reference_arrival_mm', 1, 65535), ('verification_goal', 2, 3)):
+                           ('reference_arrival_mm', 1, 65535), ('verification_goal', 2, 3), ('recovery_marker_id', 0, 255)):
         if type(value[key]) is not int or not low <= value[key] <= high:
             raise ValueError('Invalid tracking value')
     remaining = value['remaining_mm']
@@ -193,7 +216,7 @@ def parse_dfs_tracking(payload):
         raise ValueError('Invalid verification count')
     if remaining is not None and (type(remaining) is not int or not -65535 <= remaining <= 65535):
         raise ValueError('Invalid remaining distance')
-    if any(type(value[key]) is not bool for key in ('active', 'reference_model_valid', 'camera_present')):
+    if any(type(value[key]) is not bool for key in ('active', 'reference_model_valid', 'camera_present', 'recovery_marker_mapped')):
         raise ValueError('Invalid tracking flag')
     if not isinstance(value['phase'], str) or value['phase'] not in LEG_PHASES or not isinstance(value['source'], str) or value['source'] not in {'NONE', 'TARGET', 'REFERENCE', 'OBSTACLE'}:
         raise ValueError('Invalid tracking source/phase')
@@ -228,7 +251,7 @@ def parse_dfs_state(payload):
     fields = tuple(DfsStateReport.__dataclass_fields__)
     if not isinstance(value, dict) or not set(fields) <= value.keys() or type(value['active']) is not bool:
         raise ValueError('Incomplete DFS state')
-    if not isinstance(value['stage'], str) or value['stage'] not in {'IDLE','AT_NODE','TURNING','SCANNING','WAIT_TARGET','TRAVELLING','COMPLETE','STOPPED'}:
+    if not isinstance(value['stage'], str) or value['stage'] not in {'IDLE','AT_NODE','TURNING','SCANNING','WAIT_TARGET','TRAVELLING','COMPLETE','STOPPED','WAITING_INPUT'}:
         raise ValueError('Invalid DFS stage')
     for key in ('current_node','expected_node','depth'):
         if type(value[key]) is not int or not 0 <= value[key] <= 255:

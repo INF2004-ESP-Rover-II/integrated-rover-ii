@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
 from matplotlib.colors import to_rgba
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'dashboard'))
@@ -20,7 +21,8 @@ from test_dashboard_camera_relay import CameraGUI, Variable, observation
 
 tree = ast.parse((ROOT / 'dashboard/robot_dashboard.py').read_text(encoding='utf-8'))
 gui = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'RobotGUI')
-names = {'set_start_node', 'receive_onboard_map', 'render_onboard_map', 'update_grid_map', 'update_marker_map', 'toggle_auto_mode'}
+names = {'set_start_node', 'receive_onboard_map', 'render_onboard_map', 'toggle_auto_mode',
+         'reinitialise_map', 'expire_map_reset_confirmation'}
 namespace = {'time': time, 'uuid': uuid, 'json': json, 'Rectangle': Rectangle, 'MaxNLocator': MaxNLocator}
 exec(compile(ast.Module(body=[n for n in gui.body if isinstance(n, ast.FunctionDef) and n.name in names],
                         type_ignores=[]), 'onboard_map_handlers', 'exec'), namespace)
@@ -45,6 +47,9 @@ class MapGUI(CameraGUI):
     def __init__(self):
         super().__init__()
         self.pending_start_request = None
+        self.pending_map_reset = None
+        self.map_reset_armed_until = 0.0
+        self.map_reset_button_text = Variable('Re-initialise map')
         self.start_node_id = Variable('7')
         self.start_node_status = Variable()
         self.active_command = None
@@ -66,6 +71,74 @@ for name in names:
 
 
 class OnboardMapTests(unittest.TestCase):
+    def test_reinit_requires_two_clicks_and_waits_for_matching_empty_snapshot(self):
+        app = MapGUI()
+        app.receive_onboard_map(snapshot())
+        before = app.onboard_map.snapshot
+        app.reinitialise_map()
+        self.assertEqual(app.map_reset_button_text.get(), 'Confirm re-init')
+        self.assertEqual(app.sent, [])
+        app.reinitialise_map()
+        self.assertEqual(len(app.sent), 1)
+        pending = app.pending_map_reset
+        self.assertEqual(app.sent, ['MAP_RESET:' + pending['token']])
+        self.assertEqual(len(pending['token']), 32)
+        self.assertIs(app.onboard_map.snapshot, before)
+        app.handle_mqtt_message('robot/status', 'MAP_ACK:RESET_ACCEPTED')
+        self.assertIs(app.onboard_map.snapshot, before)
+        app.receive_onboard_map(snapshot(nodes=[], revision=2))
+        self.assertIsNotNone(app.pending_map_reset) # Unrelated snapshot is not our acknowledgment.
+        app.receive_onboard_map(snapshot(nodes=[], revision=3, request=pending['token']))
+        self.assertIsNone(app.pending_map_reset)
+        self.assertEqual(app.start_node_id.get(), '')
+        self.assertEqual(app.dfs_current_node_text.get(), '--')
+        self.assertEqual(app.last_reached_marker_text.get(), '--')
+        self.assertEqual(len(app.ax.patches), 0)
+        self.assertIn('re-initialised', app.start_node_status.get())
+
+    def test_reinit_retry_reuses_request_and_prevents_conflicting_set_start(self):
+        app = MapGUI()
+        app.reinitialise_map()
+        app.reinitialise_map()
+        command = app.sent[0]
+        app.set_start_node()
+        self.assertEqual(app.sent, [command])
+        app.reinitialise_map()
+        app.reinitialise_map()
+        self.assertEqual(app.sent, [command, command])
+
+    def test_reinit_confirmation_expires_and_disconnect_disarms_it(self):
+        app = MapGUI()
+        with patch.object(time, 'monotonic', return_value=100):
+            app.reinitialise_map()
+        with patch.object(time, 'monotonic', return_value=110):
+            app.expire_map_reset_confirmation()
+            self.assertEqual(app.map_reset_button_text.get(), 'Re-initialise map')
+            app.reinitialise_map()
+        self.assertEqual(app.sent, [])
+        app.handle_mqtt_disconnect(1)
+        self.assertEqual(app.map_reset_armed_until, 0)
+        self.assertEqual(app.map_reset_button_text.get(), 'Re-initialise map')
+        app.reinitialise_map()
+        self.assertEqual(app.sent, [])
+
+    def test_reinit_is_not_sent_during_manual_control_or_when_publish_fails(self):
+        app = MapGUI()
+        app.active_command = 'FORWARD'
+        app.reinitialise_map()
+        self.assertEqual(app.map_reset_armed_until, 0)
+        app.active_command = None
+        app.connected = False
+        app.reinitialise_map()
+        self.assertEqual(app.map_reset_armed_until, 0)
+        self.assertEqual(app.sent, [])
+        app.connected = True
+        app.reinitialise_map()
+        app.send_command = lambda command: False
+        app.reinitialise_map()
+        self.assertIsNone(app.pending_map_reset)
+        self.assertIn('Could not send', app.start_node_status.get())
+
     def test_blocked_cardinal_exits_draw_thin_cell_edges_at_signed_coordinates(self):
         app = MapGUI()
         mapped = node(7, -1, 2, True)
@@ -89,7 +162,6 @@ class OnboardMapTests(unittest.TestCase):
         self.assertEqual(len(walls()), 1)
         self.assertEqual(tuple(zip(walls()[0].get_xdata(), walls()[0].get_ydata())), ((.5, -.5), (.5, .5)))
         before = app.onboard_map.snapshot
-        app.update_marker_map({'markers': [{'id': 9}]})
         app.handle_mqtt_message('robot/camera', json.dumps(observation()))
         self.assertIs(app.onboard_map.snapshot, before)
         self.assertEqual(len(walls()), 1)
@@ -210,12 +282,10 @@ class OnboardMapTests(unittest.TestCase):
         self.assertEqual(len(app.ax.patches), 5)
         self.assertEqual(app.dfs_current_node_text.get(), '7')
 
-    def test_camera_and_legacy_grid_callbacks_cannot_mutate_map_or_current_node(self):
+    def test_camera_observations_cannot_mutate_map_or_current_node(self):
         app = MapGUI()
         app.receive_onboard_map(snapshot())
         previous, draw_count = app.onboard_map.snapshot, len(app.draws)
-        app.update_marker_map({'markers': [{'id': 12}]})
-        app.update_grid_map()
         app.handle_mqtt_message('robot/camera', json.dumps(observation()))
         app.update_current_marker()
         self.assertIs(app.onboard_map.snapshot, previous)

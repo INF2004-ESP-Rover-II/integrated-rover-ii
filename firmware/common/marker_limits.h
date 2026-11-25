@@ -1,3 +1,7 @@
+/**
+ * @file marker_limits.h
+ * @brief Marker limits firmware module.
+ */
 #ifndef ROVER_MARKER_LIMITS_H
 #define ROVER_MARKER_LIMITS_H
 
@@ -6,3 +10,5 @@
 #define ROVER_MARKER_ID_MAX 255u
 
 #endif
+
+/* End of file. */

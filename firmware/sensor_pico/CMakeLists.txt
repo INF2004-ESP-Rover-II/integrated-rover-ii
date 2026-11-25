@@ -62,3 +62,7 @@ target_link_libraries(imu_only_diagnostic pico_stdlib hardware_i2c)
 pico_enable_stdio_usb(imu_only_diagnostic 1)
 pico_enable_stdio_uart(imu_only_diagnostic 0)
 pico_add_extra_outputs(imu_only_diagnostic)
+
+include(${CMAKE_CURRENT_LIST_DIR}/../barr_c.cmake)
+barr_c_target(sensor_pico)
+barr_c_target(imu_only_diagnostic)
