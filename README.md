@@ -75,6 +75,24 @@ Manual keys: W/S forward/back, A/D turn, Q/E strafe, R/T/F/G diagonals, X or Spa
 
 To try the dashboard without a rover, run `python dashboard/fake_rover.py` against a local broker.
 
+## Finding the next DFS target
+
+At a confirmed node, RoboPico keeps its chosen exit and waits for an eligible
+camera marker. After five seconds without a locked target, it scans 10 degrees
+left, centre, 10 degrees right, centre, repeating around that exit. Each stop
+settles for 300 ms, then allows two seconds for target confirmation. Only fresh
+images captured after stopping can confirm a target; moving-image candidates
+are discarded. Selection, map compatibility and arrival checks still apply.
+
+Missing markers no longer trigger `DFS_TARGET_NOT_VISIBLE` or pause exploration.
+`DFS_STATE` reports `WAIT_TARGET` with scan/wait details on the dashboard. Camera
+outages stop scanning until fresh observations return. Sensor, heading, link and
+lease waits retain DFS; operator Stop and E-stop remain effective. Each scan turn
+still stops and retries after three seconds, with a five-second turn limit;
+reaching that limit stops that scan attempt and continues searching. Searching
+does not change the confirmed node, mark a node visited, or drive forward before
+a target is locked. Forward-first exit priority remains unchanged.
+
 ## Tests
 
 - Motion control host tests: `cd firmware/robo_pico/test` then `make`. It should end with `96 passed, 0 failed`.

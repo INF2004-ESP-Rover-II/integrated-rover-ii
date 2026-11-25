@@ -265,7 +265,8 @@ begin_node (onboard_dfs_t * p_dfs, mission_t * p_mission,
     mission_clear_leg(p_mission, now);
     target_selector_init(p_selection);
     phase(p_mission, LEG_SCANNING, now);
-    p_dfs->stage  = DFS_AT_NODE;
+    p_dfs->stage             = DFS_AT_NODE;
+    p_dfs->b_target_scanning = p_dfs->b_target_scan_rotating = false;
     p_dfs->detail = "READING_NODE_EXITS";
 }
 const char *
@@ -343,7 +344,7 @@ bool
 onboard_dfs_selecting (const onboard_dfs_t * p_dfs, uint32_t now)
 {
     return p_dfs->active && !p_dfs->input_waiting &&
-           p_dfs->stage == DFS_WAIT_TARGET &&
+           !p_dfs->b_target_scan_rotating && p_dfs->stage == DFS_WAIT_TARGET &&
            (int32_t) (now - p_dfs->ready_ms) >= 0;
 }
 static void
@@ -519,6 +520,128 @@ wait_inputs (onboard_dfs_t * p_dfs, mission_t * p_mission,
     p_dfs->detail = p_reason;
 }
 
+/** @brief Discard moving-image candidates and require new settled images. */
+static void
+target_scan_pose (onboard_dfs_t * p_dfs, mission_t * p_mission,
+                  target_selector_t * p_selection, const char * p_detail,
+                  uint32_t now)
+{
+    motor_emergency_stop();
+    target_route_t route = p_selection->route;
+    mission_clear_leg(p_mission, now);
+    target_selector_set_route(p_selection, route);
+    p_dfs->b_target_scan_rotating = false;
+    p_dfs->b_turn_retry_waiting   = false;
+    p_dfs->stage_started_ms       = now;
+    p_dfs->ready_ms               = now + DFS_SETTLE_MS;
+    p_dfs->detail                 = p_detail;
+}
+
+/** @brief Search only around the selected exit; never change the DFS route. */
+static void
+start_target_scan (onboard_dfs_t * p_dfs, mission_t * p_mission,
+                   const onboard_drive_t *      p_drive,
+                   target_selector_t *          p_selection,
+                   const onboard_dfs_inputs_t * p_inputs, uint32_t now)
+{
+    // Small poses stay inside the grid planner's 15-degree heading tolerance.
+    static const int8_t offsets[] = {-10, 0, 10, 0};
+    p_dfs->b_target_scanning      = true;
+    p_dfs->target_scan_goal_deg =
+        wrap(p_drive->north_heading_deg + 90.0f * (float) p_dfs->direction +
+             offsets[p_dfs->target_scan_step]);
+    p_dfs->target_scan_step = (uint8_t) ((p_dfs->target_scan_step + 1u) % 4u);
+    target_scan_pose(p_dfs, p_mission, p_selection, "TARGET_SCAN_SETTLING",
+                     now);
+    if (error(p_dfs->target_scan_goal_deg, p_inputs->drive.heading_deg) <= 3.0f)
+    {
+        return;
+    }
+    int target = (int) (wrap(p_dfs->target_scan_goal_deg -
+                             p_inputs->heading_offset_deg) +
+                        0.5f) %
+                 360;
+    if (motor_auto_rotate_leased(target, ONBOARD_DRIVE_LEASE_MS) != MOTOR_OK)
+    {
+        wait_inputs(p_dfs, p_mission, "TARGET_SCAN_MOTOR_WAIT", now);
+        return;
+    }
+    p_dfs->b_target_scan_rotating  = true;
+    p_dfs->turn_attempt_started_ms = p_dfs->last_renew_ms = now;
+    phase(p_mission, LEG_TURNING, now);
+    p_dfs->detail = "TARGET_SCAN_TURNING";
+}
+
+/** @brief Bound each scan turn, then retry searching without pausing DFS. */
+static void
+target_scan_turn (onboard_dfs_t * p_dfs, mission_t * p_mission,
+                  target_selector_t *          p_selection,
+                  const onboard_dfs_inputs_t * p_inputs, uint32_t now)
+{
+    motor_auto_status_t status = motor_auto_status();
+    if ((status == MOTOR_AUTO_HEADING_REACHED && p_inputs->drive.stopped) ||
+        (uint32_t) (now - p_dfs->stage_started_ms) >= DFS_TURN_TIMEOUT_MS)
+    {
+        target_scan_pose(p_dfs, p_mission, p_selection,
+                         status == MOTOR_AUTO_HEADING_REACHED
+                             ? "TARGET_SCAN_SETTLING"
+                             : "TARGET_SCAN_TURN_LIMIT",
+                         now);
+        return;
+    }
+    if (status == MOTOR_AUTO_HEADING_REACHED)
+    {
+        return; // Wait for a stopped input snapshot before accepting images.
+    }
+    if (p_dfs->b_turn_retry_waiting)
+    {
+        if ((int32_t) (now - p_dfs->ready_ms) < 0 || !p_inputs->drive.stopped ||
+            (int32_t) (p_inputs->drive.sensor_received_ms - p_dfs->ready_ms) <
+                0)
+        {
+            return;
+        }
+        int target = (int) (wrap(p_dfs->target_scan_goal_deg -
+                                 p_inputs->heading_offset_deg) +
+                            0.5f) %
+                     360;
+        if (motor_auto_rotate_leased(target, ONBOARD_DRIVE_LEASE_MS) !=
+            MOTOR_OK)
+        {
+            wait_inputs(p_dfs, p_mission, "TARGET_SCAN_MOTOR_WAIT", now);
+            return;
+        }
+        p_dfs->b_turn_retry_waiting    = false;
+        p_dfs->turn_attempt_started_ms = p_dfs->last_renew_ms = now;
+        phase(p_mission, LEG_TURNING, now);
+        p_dfs->detail = "TARGET_SCAN_TURNING";
+        return;
+    }
+    if (status != MOTOR_AUTO_RUNNING)
+    {
+        target_scan_pose(p_dfs, p_mission, p_selection,
+                         "TARGET_SCAN_MOTOR_WAIT", now);
+    }
+    else if ((uint32_t) (now - p_dfs->turn_attempt_started_ms) >=
+             DFS_TURN_RETRY_MS)
+    {
+        motor_emergency_stop();
+        p_dfs->b_turn_retry_waiting = true;
+        p_dfs->ready_ms             = now + DFS_SETTLE_MS;
+        phase(p_mission, LEG_HOLDING, now);
+        p_dfs->detail = "TARGET_SCAN_RETRY_WAIT";
+    }
+    else if ((uint32_t) (now - p_dfs->last_renew_ms) >=
+             ONBOARD_DRIVE_REFRESH_MS)
+    {
+        if (!motor_auto_renew_lease())
+        {
+            wait_inputs(p_dfs, p_mission, "TARGET_SCAN_LEASE_WAIT", now);
+        }
+        p_dfs->last_renew_ms = now;
+    }
+}
+
 typedef struct
 {
     const char *       p_missing;
@@ -603,6 +726,12 @@ onboard_dfs_tick_inputs (onboard_dfs_t * p_dfs, mission_t * p_mission,
         p_dfs->input_waiting = false;
         phase(p_mission, p_dfs->input_resume_phase, now);
         p_dfs->detail = "INPUTS_RESTORED";
+        if (p_dfs->b_target_scan_rotating)
+        {
+            target_scan_pose(p_dfs, p_mission, p_selection,
+                             "TARGET_SCAN_SETTLING", now);
+            return true;
+        }
         if (p_dfs->stage == DFS_TURNING)
         {
             if (turn_timed_out(p_dfs, p_mission, now))
@@ -747,32 +876,53 @@ onboard_dfs_tick_tracking (onboard_dfs_t * p_dfs, mission_t * p_mission,
             p_camera && (p_camera->frame.status == VISION_STATUS_OK ||
                          p_camera->frame.status == VISION_STATUS_NO_MARKER);
 
-        if (!b_healthy_camera ||
+        if (!b_healthy_camera || p_camera->frame.count > VISION_MAX_MARKERS ||
             (uint32_t) (now - p_camera->received_ms) > TARGET_UART_MAX_AGE_MS ||
             (uint32_t) (now - p_camera->received_ms) + p_camera->frame.age_ms >
                 ONBOARD_DRIVE_IMAGE_MAX_AGE_MS)
         {
-            // No node-to-node movement has started. Preserve this selection and
-            // wait for a current image instead of exhausting the marker timer.
+            if (p_dfs->b_target_scan_rotating)
+            {
+                target_scan_pose(p_dfs, p_mission, p_selection,
+                                 "WAITING_FOR_FRESH_CAMERA", now);
+            }
+            // Camera outages stop scanning as well as forward movement.
             p_dfs->stage_started_ms = now;
             p_dfs->detail           = "WAITING_FOR_FRESH_CAMERA";
             return true;
         }
-        if (strcmp(p_dfs->detail, "WAITING_FOR_FRESH_CAMERA") == 0)
+        if (p_dfs->b_target_scan_rotating)
         {
-
-            p_dfs->detail = p_dfs->backtracking ? "SELECTING_PARENT_TARGET"
-                                                : "SELECTING_NEXT_TARGET";
-        }
-        if ((uint32_t) (now - p_dfs->stage_started_ms) >= DFS_TARGET_TIMEOUT_MS)
-        {
-            onboard_dfs_stop(p_dfs, p_mission, "DFS_TARGET_NOT_VISIBLE", now);
+            target_scan_turn(p_dfs, p_mission, p_selection, p_inputs, now);
             return true;
         }
-        if ((int32_t) (now - p_dfs->ready_ms) < 0 ||
-            p_selection->state != TARGET_LOCKED ||
+        if ((int32_t) (now - p_dfs->ready_ms) < 0 || !p_inputs->drive.stopped ||
+            (int32_t) (p_inputs->drive.sensor_received_ms - p_dfs->ready_ms) <
+                0)
+        {
+            return true;
+        }
+        if (strcmp(p_dfs->detail, "WAITING_FOR_FRESH_CAMERA") == 0 ||
+            p_dfs->b_target_scanning)
+        {
+
+            p_dfs->detail = p_dfs->b_target_scanning
+                                ? "SEARCHING_FOR_NEXT_TARGET"
+                            : p_dfs->backtracking ? "SELECTING_PARENT_TARGET"
+                                                  : "SELECTING_NEXT_TARGET";
+        }
+        if (p_selection->state != TARGET_LOCKED ||
             p_mission->leg.phase != LEG_CONFIGURED)
         {
+            uint32_t dwell = p_dfs->b_target_scanning
+                                 ? DFS_TARGET_SCAN_DWELL_MS
+                                 : DFS_TARGET_SCAN_DELAY_MS;
+            if ((uint32_t) (now - p_dfs->stage_started_ms) >=
+                dwell + DFS_SETTLE_MS)
+            {
+                start_target_scan(p_dfs, p_mission, p_drive, p_selection,
+                                  p_inputs, now);
+            }
             return true;
         }
 
@@ -781,7 +931,8 @@ onboard_dfs_tick_tracking (onboard_dfs_t * p_dfs, mission_t * p_mission,
 
         if (strcmp(p_result, "STARTED") == 0)
         {
-            p_dfs->stage = DFS_TRAVELLING;
+            p_dfs->b_target_scanning = false;
+            p_dfs->stage             = DFS_TRAVELLING;
 
             p_dfs->detail =
                 p_dfs->backtracking ? "BACKTRACKING" : "EXPLORING_EXIT";
@@ -927,9 +1078,11 @@ onboard_dfs_tick_recovery (onboard_dfs_t * p_dfs, mission_t * p_mission,
         onboard_dfs_stop(p_dfs, p_mission, "TARGET_CELL_OVERFLOW", now);
         return true;
     }
-    p_dfs->backtracking = p_context->choice.kind == DFS_CHOOSE_BACKTRACK;
-    p_dfs->expected_id  = p_context->choice.expected_id;
-    p_dfs->from_node    = p_context->p_node->marker_id;
+    p_dfs->backtracking      = p_context->choice.kind == DFS_CHOOSE_BACKTRACK;
+    p_dfs->expected_id       = p_context->choice.expected_id;
+    p_dfs->from_node         = p_context->p_node->marker_id;
+    p_dfs->b_target_scanning = p_dfs->b_target_scan_rotating = false;
+    p_dfs->target_scan_step                                  = 0;
     mission_clear_leg(p_mission, now);
     target_selector_set_route(
         p_selection,

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "onboard_dfs.h"
 #include "motor_driver.h"
 
@@ -52,8 +53,8 @@ static void step(uint32_t dt)
     inputs.drive.camera_status=camera.frame.status;
     inputs.drive.camera_fresh=camera.frame.status==VISION_STATUS_OK;
     inputs.drive.camera_packet_age_ms=0; inputs.drive.camera_image_age_ms=camera.frame.age_ms;
-    if (dfs.stage==DFS_TURNING && motor_status==MOTOR_AUTO_RUNNING) {
-        inputs.drive.heading_deg=(float)turn_target;inputs.drive.stopped=true;motor_status=MOTOR_AUTO_HEADING_REACHED;
+    if ((dfs.stage==DFS_TURNING || dfs.b_target_scan_rotating) && motor_status==MOTOR_AUTO_RUNNING) {
+        inputs.drive.heading_deg=fmodf((float)turn_target+inputs.heading_offset_deg+360.0f,360.0f);inputs.drive.stopped=true;motor_status=MOTOR_AUTO_HEADING_REACHED;
     }
     onboard_dfs_tick(&dfs,&mission,&map,&drive,&selection,&inputs,&camera,now);
     if (drive.active || onboard_dfs_selecting(&dfs,now))
@@ -182,7 +183,7 @@ static void test_cancel_fault_and_no_target_cannot_fake_completion(void)
     assert(dfs.active && dfs.input_waiting && mission.state==MISSION_EXPLORING && mission.leg.phase==LEG_WAITING_INPUT);
     setup();start();camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;
     for(unsigned i=0;i<100 && dfs.active;++i) step(100);
-    assert(!dfs.active && mission.state==MISSION_PAUSED && !strcmp(dfs.detail,"DFS_TARGET_NOT_VISIBLE"));
+    assert(dfs.active && mission.state==MISSION_EXPLORING && dfs.b_target_scanning);
     assert(drive_starts==0 && map.count==1);
 }
 
@@ -471,8 +472,158 @@ static void test_missing_tracking_markers_recover_without_cancelling_dfs_stack(v
     assert(map.revision==revision && !map.current_node && mission.state==MISSION_EXPLORING);
 }
 
+
+static void start_target_scan_test(void)
+{
+    setup();camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;start();
+    for(unsigned i=0;i<100 && !dfs.b_target_scan_rotating;++i) step(100);
+    assert(dfs.active && dfs.stage==DFS_WAIT_TARGET && dfs.b_target_scan_rotating);
+    assert(turn_target==350 && map.current_node==1 && !drive_starts);
+}
+static void scan_tick(uint32_t dt)
+{
+    now+=dt;inputs.drive.sensor_received_ms=now;camera.received_ms=now;
+    camera.generation++;camera.frame.seq++;
+    inputs.drive.stopped=motor_status!=MOTOR_AUTO_RUNNING;
+    onboard_dfs_tick(&dfs,&mission,&map,&drive,&selection,&inputs,&camera,now);
+}
+static void test_next_target_scan_repeats_without_losing_position_or_exits(void)
+{
+    start_target_scan_test();uint32_t revision=map.revision;
+    for(unsigned i=0;i<700;++i) {
+        step(100);
+        assert(dfs.active && mission.dfs_active && mission.state==MISSION_EXPLORING);
+        assert(dfs.stage==DFS_WAIT_TARGET && map.current_node==1 && map.revision==revision);
+        assert(dfs.depth==1 && dfs.stack[0]==1 && dfs.direction==MAP_NORTH && !drive_starts);
+        assert(selection.route.enabled && selection.route.x==0 && selection.route.y==1 && selection.route.direction==LEG_NORTH);
+        assert(turn_target==350 || turn_target==0 || turn_target==10);
+    }
+    assert(turns>20 && map.count==1 && map.nodes[0].visited && !drive.active);
+}
+static void test_scan_camera_outages_stop_rotation_and_resume_fresh_selection(void)
+{
+    for(unsigned cause=0;cause<5;++cause) {
+        start_target_scan_test();unsigned previous=turns;uint32_t revision=map.revision;
+        if(cause==0) camera.frame.status=VISION_STATUS_STALLED;
+        if(cause==1) camera.frame.status=VISION_STATUS_CAMERA_LOST;
+        if(cause==2) camera.frame.age_ms=751;
+        if(cause==3) camera.frame.count=VISION_MAX_MARKERS+1;
+        if(cause==4) { now+=301;inputs.drive.sensor_received_ms=now;
+            onboard_dfs_tick(&dfs,&mission,&map,&drive,&selection,&inputs,&camera,now); }
+        else scan_tick(100);
+        assert(!dfs.b_target_scan_rotating && motor_status==MOTOR_AUTO_STOPPED && dfs.active);
+        assert(!strcmp(dfs.detail,"WAITING_FOR_FRESH_CAMERA"));
+        if(cause<4) for(unsigned i=0;i<100;++i) step(100);
+        assert(turns==previous && !drive_starts && dfs.depth==1 && map.revision==revision);
+        camera.frame.status=VISION_STATUS_OK;camera.frame.age_ms=100;camera.frame.count=2;
+        for(unsigned i=0;i<40 && !drive.active;++i) step(100);
+        assert(drive.active && dfs.active && mission.leg.next_target_node==2);
+    }
+}
+static void test_scan_requires_post_stop_images_then_departs_in_same_grid_direction(void)
+{
+    start_target_scan_test();step(100); // Stop at the first search pose.
+    assert(!dfs.b_target_scan_rotating && inputs.drive.heading_deg==350);
+    camera.frame.status=VISION_STATUS_OK;camera.frame.count=2;camera.frame.age_ms=700;
+    for(unsigned i=0;i<6;++i) step(100); // All captures still predate selector arming.
+    assert(selection.state!=TARGET_LOCKED && map.current_node==1 && !drive_starts);
+    camera.frame.age_ms=100;
+    for(unsigned i=0;i<12 && selection.state!=TARGET_LOCKED;++i) step(100);
+    assert(selection.state==TARGET_LOCKED && map.current_node==1 && !drive_starts);
+    step(100);
+    assert(drive.active && dfs.active && dfs.stage==DFS_TRAVELLING && drive_starts==1);
+    assert(mission.leg.direction==LEG_NORTH && mission.leg.target_x==0 && mission.leg.target_y==1);
+    assert(mission.leg.next_target_node==2 && mission.leg.arrival_reference_node==9);
+}
+static void test_scan_turn_retry_and_limit_retain_dfs(void)
+{
+    start_target_scan_test();uint32_t started=now;unsigned previous=turns;
+    scan_tick(3000);
+    assert(dfs.active && dfs.b_turn_retry_waiting && motor_status==MOTOR_AUTO_STOPPED);
+    scan_tick(299);assert(turns==previous);
+    scan_tick(1);assert(turns==previous+1 && motor_status==MOTOR_AUTO_RUNNING);
+    assert(dfs.stage_started_ms==started && turn_target==350);
+    scan_tick(1700);
+    assert(dfs.active && mission.state==MISSION_EXPLORING && !dfs.b_target_scan_rotating);
+    assert(motor_status==MOTOR_AUTO_STOPPED && !strcmp(dfs.detail,"TARGET_SCAN_TURN_LIMIT"));
+    for(unsigned i=0;i<30 && !dfs.b_target_scan_rotating;++i) step(100);
+    // The centre pose already matches our simulated heading; keep scanning.
+    for(unsigned i=0;i<30 && !dfs.b_target_scan_rotating;++i) step(100);
+    assert(dfs.active && dfs.b_target_scan_rotating && !drive_starts && map.current_node==1);
+}
+static void test_scan_waits_for_inputs_and_honours_operator_stop_and_estop(void)
+{
+    for(unsigned cause=0;cause<4;++cause) {
+        start_target_scan_test();uint32_t revision=map.revision;
+        if(cause==0) inputs.drive.link_ok=false;
+        if(cause==1) inputs.drive.sensor_valid=false;
+        if(cause==2) inputs.drive.imu_ok=false;
+        if(cause==3) lease_ok=false;
+        scan_tick(100);
+        assert(dfs.active && dfs.input_waiting && motor_status==MOTOR_AUTO_STOPPED);
+        assert(mission.state==MISSION_EXPLORING && map.revision==revision);
+        inputs.drive.link_ok=inputs.drive.sensor_valid=inputs.drive.imu_ok=lease_ok=true;
+        scan_tick(60000);
+        assert(dfs.active && !dfs.input_waiting && !dfs.b_target_scan_rotating);
+        assert(map.current_node==1 && dfs.depth==1 && !drive_starts);
+    }
+    start_target_scan_test();mission_pause(&mission,MISSION_REASON_OPERATOR_STOP,now);scan_tick(100);
+    assert(!dfs.active && motor_status==MOTOR_AUTO_STOPPED && !drive_starts);
+    start_target_scan_test();inputs.drive.safety_latched=true;scan_tick(100);
+    assert(!dfs.active && motor_status==MOTOR_AUTO_STOPPED && !drive_starts);
+}
+static void test_scan_retains_backtrack_identity_and_heading_offset(void)
+{
+    start_target_scan_test();target_route_t route=selection.route;
+    route.expected_id=2;target_selector_set_route(&selection,route);dfs.expected_id=2;dfs.backtracking=true;
+    // Ignore a fresh, centred marker with the wrong expected identity.
+    step(100);camera.frame.status=VISION_STATUS_OK;camera.frame.count=1;
+    camera.frame.markers[0]=(camera_marker_t){.id=9,.range_mm=500};
+    inputs.heading_offset_deg=90;
+    for(unsigned i=0;i<100;++i) {
+        step(100);assert(dfs.active && !drive.active && !drive_starts && map.current_node==1);
+        assert(selection.route.expected_id==2 && dfs.expected_id==2 && dfs.backtracking);
+        assert(turn_target==350 || turn_target==260 || turn_target==270 || turn_target==280);
+    }
+    camera.frame.markers[0].id=2;
+    for(unsigned i=0;i<40 && !drive.active;++i) step(100);
+    assert(drive.active && mission.leg.next_target_node==2 && dfs.active);
+}
+
+
+static void test_next_target_scan_uses_chosen_exit_and_original_grid_frame(void)
+{
+    setup();inputs.tof_mm[1]=50;inputs.tof_mm[2]=1023;
+    inputs.drive.heading_deg=275;inputs.heading_offset_deg=90;
+    camera.frame.status=VISION_STATUS_NO_MARKER;camera.frame.count=0;start();
+    for(unsigned i=0;i<100 && !dfs.b_target_scan_rotating;++i) step(100);
+    assert(dfs.b_target_scan_rotating && dfs.direction==MAP_EAST && turn_target==265);
+    for(unsigned i=0;i<200;++i) {
+        step(100);assert(dfs.active && !drive.active && !drive_starts && map.current_node==1);
+        assert(selection.route.direction==LEG_EAST && selection.route.x==1 && selection.route.y==0);
+        assert(turn_target==265 || turn_target==275 || turn_target==285);
+        assert(drive.north_heading_deg==275);
+    }
+}
+static void test_confirmed_candidate_has_priority_over_scan_deadline(void)
+{
+    setup();start();for(unsigned i=0;i<40 && selection.state!=TARGET_LOCKED;++i) step(100);
+    assert(selection.state==TARGET_LOCKED && map.current_node==1 && !drive.active);
+    dfs.stage_started_ms=now-DFS_TARGET_SCAN_DELAY_MS-DFS_SETTLE_MS;
+    step(100);
+    assert(drive.active && dfs.stage==DFS_TRAVELLING && !dfs.b_target_scanning && turns==0);
+}
+
 int main(void)
 {
+    test_next_target_scan_uses_chosen_exit_and_original_grid_frame();
+    test_confirmed_candidate_has_priority_over_scan_deadline();
+    test_next_target_scan_repeats_without_losing_position_or_exits();
+    test_scan_camera_outages_stop_rotation_and_resume_fresh_selection();
+    test_scan_requires_post_stop_images_then_departs_in_same_grid_direction();
+    test_scan_turn_retry_and_limit_retain_dfs();
+    test_scan_waits_for_inputs_and_honours_operator_stop_and_estop();
+    test_scan_retains_backtrack_identity_and_heading_offset();
     test_camera_health_outages_at_node_wait_and_then_select_the_same_exit();
     test_dfs_scan_and_turn_wait_for_inputs_without_losing_stack();
     setup(); start();

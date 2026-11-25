@@ -9,7 +9,8 @@
 #define DFS_OPEN_DISTANCE_MM 500u
 #define DFS_SETTLE_MS 300u
 #define DFS_SAMPLE_MS 800u
-#define DFS_TARGET_TIMEOUT_MS 5000u
+#define DFS_TARGET_SCAN_DELAY_MS 5000u
+#define DFS_TARGET_SCAN_DWELL_MS 2000u
 #define DFS_TURN_RETRY_MS 3000u
 #define DFS_TURN_TIMEOUT_MS 5000u
 typedef enum
@@ -67,6 +68,10 @@ typedef struct
     uint32_t        last_renew_ms;
     uint32_t        turn_attempt_started_ms;
     bool            b_turn_retry_waiting;
+    bool            b_target_scanning;
+    bool            b_target_scan_rotating;
+    uint8_t         target_scan_step;
+    float           target_scan_goal_deg;
     const char *    detail;
     bool            input_waiting;
     leg_phase_t     input_resume_phase;
