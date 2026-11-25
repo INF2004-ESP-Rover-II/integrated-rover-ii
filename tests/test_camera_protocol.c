@@ -3,27 +3,31 @@
 #include <string.h>
 #include "camera_protocol.h"
 
-static unsigned feed(camera_parser_t *parser, const uint8_t *bytes, size_t length,
-                     uint32_t time_ms, camera_frame_t *frame)
+static unsigned feed (camera_parser_t * parser, const uint8_t * bytes,
+                      size_t length, uint32_t time_ms, camera_frame_t * frame)
 {
     unsigned frames = 0;
-    for (size_t i = 0; i < length; ++i) {
-        if (camera_parser_feed(parser, bytes[i], time_ms, frame)) frames++;
+    for (size_t i = 0; i < length; ++i)
+    {
+        if (camera_parser_feed(parser, bytes[i], time_ms, frame))
+        {
+            frames++;
+        }
         assert(parser->used < VISION_FRAME_MAX);
     }
     return frames;
 }
 
-static void fix_crc(uint8_t *bytes, size_t length)
+static void fix_crc (uint8_t * bytes, size_t length)
 {
     bytes[length - 1] = vision_crc8(bytes + 1, length - 2);
 }
 
-int main(void)
+int main (void)
 {
     camera_parser_t parser;
-    camera_frame_t frame;
-    uint8_t bytes[VISION_FRAME_MAX], good[VISION_FRAME_MAX];
+    camera_frame_t  frame;
+    uint8_t         bytes[VISION_FRAME_MAX], good[VISION_FRAME_MAX];
     camera_parser_init(&parser);
     assert(vision_crc8((const uint8_t *)"123456789", 9) == 0xf4);
 
@@ -35,27 +39,33 @@ int main(void)
     assert(frame.seq == 255 && frame.status == VISION_STATUS_OK);
     assert(frame.age_ms == 180 && frame.count == 1);
     assert(frame.markers[0].id == 7 && frame.markers[0].range_mm == 600);
-    assert(frame.markers[0].bearing_cdeg == -125 && frame.markers[0].quality == 0);
+    assert(frame.markers[0].bearing_cdeg == -125 &&
+           frame.markers[0].quality == 0);
 
     // Sender/receiver interoperability: four markers, embedded sync bytes,
     // positive/negative signed limits, failed pose and saturated age/range.
-    vision_marker_t markers[4] = {
-        {1, 165, 1.65f, 0}, {249, 70000, -400, 4},
-        {7, 0, 0, 1}, {12, 600, 400, 3}
-    };
-    size_t length = vision_frame_build(bytes, 0, VISION_STATUS_OK, 70000, markers, 4);
+    vision_marker_t markers[4] = {{1, 165, 1.65f, 0},
+                                  {249, 70000, -400, 4},
+                                  {7, 0, 0, 1},
+                                  {12, 600, 400, 3}};
+    size_t          length =
+        vision_frame_build(bytes, 0, VISION_STATUS_OK, 70000, markers, 4);
     assert(length == VISION_FRAME_MAX);
     assert(feed(&parser, bytes, 5, 20, &frame) == 0);
     assert(feed(&parser, bytes + 5, length - 5, 21, &frame) == 1);
     assert(frame.seq == 0 && frame.count == 4 && frame.age_ms == 65535);
     assert(frame.markers[1].id == 249);
-    assert(frame.markers[0].range_mm == 165 && frame.markers[0].bearing_cdeg == 165);
-    assert(frame.markers[1].range_mm == 65535 && frame.markers[1].bearing_cdeg == -32768);
+    assert(frame.markers[0].range_mm == 165 &&
+           frame.markers[0].bearing_cdeg == 165);
+    assert(frame.markers[1].range_mm == 65535 &&
+           frame.markers[1].bearing_cdeg == -32768);
     assert(frame.markers[2].quality == 1 && frame.markers[2].range_mm == 0);
     assert(frame.markers[3].bearing_cdeg == 32767);
 
     // All health statuses carry zero markers; identical seq is valid on health.
-    for (uint8_t status = VISION_STATUS_NO_MARKER; status <= VISION_STATUS_CAMERA_LOST; ++status) {
+    for (uint8_t status = VISION_STATUS_NO_MARKER;
+         status <= VISION_STATUS_CAMERA_LOST; ++status)
+    {
         length = vision_frame_build(bytes, 0, status, 250, NULL, 0);
         assert(feed(&parser, bytes, length, 30, &frame) == 1);
         assert(frame.status == status && frame.count == 0);
@@ -74,7 +84,8 @@ int main(void)
     camera_parser_reset(&parser);
     length = vision_frame_build(bytes, 5, VISION_STATUS_OK, 180, markers, 4);
     assert(feed(&parser, bytes, 20, 50, &frame) == 0);
-    size_t good_length = vision_frame_build(good, 9, VISION_STATUS_NO_MARKER, 300, NULL, 0);
+    size_t good_length =
+        vision_frame_build(good, 9, VISION_STATUS_NO_MARKER, 300, NULL, 0);
     assert(feed(&parser, good, good_length, 51, &frame) == 0);
     const uint8_t noise[] = {0, 0x55, 0xaa, 0, 0, 0};
     assert(feed(&parser, noise, sizeof(noise), 52, &frame) == 1);
@@ -89,14 +100,31 @@ int main(void)
 
     // Reject malformed counts/status relationships and invalid marker fields,
     // even with valid CRC; always accept the subsequent healthy frame.
-    for (unsigned variant = 0; variant < 5; ++variant) {
+    for (unsigned variant = 0; variant < 5; ++variant)
+    {
         camera_parser_reset(&parser);
-        length = vision_frame_build(bytes, 10, VISION_STATUS_OK, 180, markers, 1);
-        if (variant == 0) bytes[5] = 255;
-        if (variant == 1) bytes[2] = 255;
-        if (variant == 2) bytes[2] = VISION_STATUS_STALLED;
-        if (variant == 3) bytes[6] = 0;
-        if (variant == 4) bytes[11] = 5;
+        length =
+            vision_frame_build(bytes, 10, VISION_STATUS_OK, 180, markers, 1);
+        if (variant == 0)
+        {
+            bytes[5] = 255;
+        }
+        if (variant == 1)
+        {
+            bytes[2] = 255;
+        }
+        if (variant == 2)
+        {
+            bytes[2] = VISION_STATUS_STALLED;
+        }
+        if (variant == 3)
+        {
+            bytes[6] = 0;
+        }
+        if (variant == 4)
+        {
+            bytes[11] = 5;
+        }
         fix_crc(bytes, length);
         assert(feed(&parser, bytes, length, 200, &frame) == 0);
         assert(feed(&parser, good, good_length, 300, &frame) == 1);
@@ -105,7 +133,8 @@ int main(void)
     // Sustained arbitrary input cannot overflow the bounded candidate buffer.
     camera_parser_reset(&parser);
     uint32_t random_state = 12345;
-    for (unsigned i = 0; i < 100000; ++i) {
+    for (unsigned i = 0; i < 100000; ++i)
+    {
         random_state = random_state * 1664525u + 1013904223u;
         camera_parser_feed(&parser, (uint8_t)(random_state >> 24), 400, &frame);
         assert(parser.used < VISION_FRAME_MAX);

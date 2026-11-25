@@ -12,43 +12,58 @@
 // MQTT limits belong in lwipopts.h so the application and SDK use the same values.
 
 // =================== PRIVATE STATE ===================
-static mqtt_client_t *mqtt_client = NULL;
-static ip_addr_t mqtt_broker_ip;
-static bool wifi_initialized = false;
-static bool wifi_connected_flag = false;
-static bool mqtt_connected_flag = false;
-static mqtt_command_callback_t command_callback = NULL;
-static unsigned publishes_in_flight = 0;
-static bool telemetry_in_flight = false;
-static bool camera_in_flight = false;
-static bool map_in_flight = false;
-typedef enum { PUBLISH_STATUS, PUBLISH_SENSOR, PUBLISH_CAMERA, PUBLISH_MAP } publish_kind_t;
-static uint32_t telemetry_queued_ms = 0;
-static uint32_t last_publish_warning_ms = 0;
-static bool publish_warning_logged = false;
-static bool first_telemetry_queued = false;
-static bool first_telemetry_completed = false;
+static mqtt_client_t *         mqtt_client = NULL;
+static ip_addr_t               mqtt_broker_ip;
+static bool                    wifi_initialized    = false;
+static bool                    wifi_connected_flag = false;
+static bool                    mqtt_connected_flag = false;
+static mqtt_command_callback_t command_callback    = NULL;
+static unsigned                publishes_in_flight = 0;
+static bool                    telemetry_in_flight = false;
+static bool                    camera_in_flight    = false;
+static bool                    map_in_flight       = false;
+typedef enum
+{
+    PUBLISH_STATUS,
+    PUBLISH_SENSOR,
+    PUBLISH_CAMERA,
+    PUBLISH_MAP
+} publish_kind_t;
+static uint32_t telemetry_queued_ms       = 0;
+static uint32_t last_publish_warning_ms   = 0;
+static bool     publish_warning_logged    = false;
+static bool     first_telemetry_queued    = false;
+static bool     first_telemetry_completed = false;
 
 // FR-08: which topic the incoming data belongs to, and when we last heard the laptop
-typedef enum { IN_TOPIC_OTHER, IN_TOPIC_COMMAND, IN_TOPIC_HEARTBEAT } in_topic_t;
-static in_topic_t current_in_topic = IN_TOPIC_OTHER;
-static volatile uint32_t last_link_rx_ms = 0;
+typedef enum
+{
+    IN_TOPIC_OTHER,
+    IN_TOPIC_COMMAND,
+    IN_TOPIC_HEARTBEAT
+} in_topic_t;
+static in_topic_t        current_in_topic = IN_TOPIC_OTHER;
+static volatile uint32_t last_link_rx_ms  = 0;
 
-static void reset_publish_state(void) {
-    publishes_in_flight = 0;
-    telemetry_in_flight = false;
-    camera_in_flight = false;
-    map_in_flight = false;
-    publish_warning_logged = false;
-    first_telemetry_queued = false;
+static void reset_publish_state (void)
+{
+    publishes_in_flight       = 0;
+    telemetry_in_flight       = false;
+    camera_in_flight          = false;
+    map_in_flight             = false;
+    publish_warning_logged    = false;
+    first_telemetry_queued    = false;
     first_telemetry_completed = false;
 }
 
-static bool publish_warning_due(void) {
+static bool publish_warning_due (void)
+{
     uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (!publish_warning_logged || (uint32_t)(now - last_publish_warning_ms) >= 1000u) {
+    if (!publish_warning_logged ||
+        (uint32_t)(now - last_publish_warning_ms) >= 1000u)
+    {
         last_publish_warning_ms = now;
-        publish_warning_logged = true;
+        publish_warning_logged  = true;
         return true;
     }
     return false;
@@ -56,71 +71,103 @@ static bool publish_warning_due(void) {
 
 // =================== MQTT CALLBACKS ==================
 
-static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
+static void mqtt_connection_cb (mqtt_client_t * client, void * arg,
+                                mqtt_connection_status_t status)
+{
     reset_publish_state();
     printf("[MQTT] ===== CONNECTION CALLBACK FIRED =====\n");
     printf("[MQTT] Status code: %d\n", status);
-    
-    if (status == MQTT_CONNECT_ACCEPTED) {
+
+    if (status == MQTT_CONNECT_ACCEPTED)
+    {
         printf("[MQTT] Connected to broker successfully!\n");
         mqtt_connected_flag = true;
-    } else if (status == MQTT_CONNECT_REFUSED_PROTOCOL_VERSION) {
+    }
+    else if (status == MQTT_CONNECT_REFUSED_PROTOCOL_VERSION)
+    {
         printf("[MQTT] Connection refused: protocol version\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_REFUSED_IDENTIFIER) {
+    }
+    else if (status == MQTT_CONNECT_REFUSED_IDENTIFIER)
+    {
         printf("[MQTT] Connection refused: identifier rejected\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_REFUSED_SERVER) {
+    }
+    else if (status == MQTT_CONNECT_REFUSED_SERVER)
+    {
         printf("[MQTT] Connection refused: server unavailable\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_REFUSED_USERNAME_PASS) {
+    }
+    else if (status == MQTT_CONNECT_REFUSED_USERNAME_PASS)
+    {
         printf("[MQTT] Connection refused: bad username/password\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_REFUSED_NOT_AUTHORIZED_) {
+    }
+    else if (status == MQTT_CONNECT_REFUSED_NOT_AUTHORIZED_)
+    {
         printf("[MQTT] Connection refused: not authorized\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_DISCONNECTED) {
+    }
+    else if (status == MQTT_CONNECT_DISCONNECTED)
+    {
         printf("[MQTT] Disconnected from broker\n");
         mqtt_connected_flag = false;
-    } else if (status == MQTT_CONNECT_TIMEOUT) {
+    }
+    else if (status == MQTT_CONNECT_TIMEOUT)
+    {
         printf("[MQTT] Connection timeout!\n");
         mqtt_connected_flag = false;
-    } else {
+    }
+    else
+    {
         printf("[MQTT] Unknown status: %d\n", status);
         mqtt_connected_flag = false;
     }
 }
 
-static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
+static void mqtt_incoming_data_cb (void * arg, const u8_t * data, u16_t len,
+                                   u8_t flags)
+{
     // Accumulate message data
-    static char message_buffer[256];
+    static char   message_buffer[256];
     static size_t buffer_pos = 0;
 
     // Copy incoming data to buffer
-    if (buffer_pos + len < sizeof(message_buffer)) {
+    if (buffer_pos + len < sizeof(message_buffer))
+    {
         memcpy(message_buffer + buffer_pos, data, len);
         buffer_pos += len;
     }
 
     // Check if this is the last fragment
-    if (flags & MQTT_DATA_FLAG_LAST) {
+    if (flags & MQTT_DATA_FLAG_LAST)
+    {
         message_buffer[buffer_pos] = '\0';
-        
+
         // Process command
         uint32_t t = to_ms_since_boot(get_absolute_time());
-        switch (current_in_topic) {
+        switch (current_in_topic)
+        {
         case IN_TOPIC_COMMAND:
             last_link_rx_ms = t;
-            if (command_callback != NULL) {
-                char text[24];
-                const char *command = message_buffer;
+            if (command_callback != NULL)
+            {
+                char           text[24];
+                const char *   command = message_buffer;
                 mqtt_command_t binary;
-                if (mqtt_is_binary_command(buffer_pos)) {
-                    if (mqtt_decode_command((const uint8_t *)message_buffer, buffer_pos, &binary) &&
-                        mqtt_command_text(&binary, text, sizeof text)) {
+                if (mqtt_is_binary_command(buffer_pos))
+                {
+                    if (mqtt_decode_command((const uint8_t *)message_buffer,
+                                            buffer_pos, &binary) &&
+                        mqtt_command_text(&binary, text, sizeof text))
+                    {
                         command = text;
-                    } else {
-                        printf("[MQTT] Ignored unknown binary command (%u bytes)\n", (unsigned)buffer_pos);
+                    }
+                    else
+                    {
+                        printf(
+                            "[MQTT] Ignored unknown binary command (%u bytes)\n",
+                            (unsigned)buffer_pos);
                         break;
                     }
                 }
@@ -129,73 +176,122 @@ static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t f
             }
             break;
         case IN_TOPIC_HEARTBEAT:
-            last_link_rx_ms = t;   // heartbeat only proves the link is alive
+            last_link_rx_ms = t; // heartbeat only proves the link is alive
             break;
         default:
-            break;                 // not ours, ignore
+            break; // not ours, ignore
         }
-        
+
         // Reset buffer
         buffer_pos = 0;
     }
 }
 
-static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
-    (void)arg; (void)tot_len;
-    if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0)        current_in_topic = IN_TOPIC_COMMAND;
-    else if (strcmp(topic, MQTT_TOPIC_HEARTBEAT) == 0) current_in_topic = IN_TOPIC_HEARTBEAT;
-    else                                               current_in_topic = IN_TOPIC_OTHER;
+static void mqtt_incoming_publish_cb (void * arg, const char * topic,
+                                      u32_t tot_len)
+{
+    (void)arg;
+    (void)tot_len;
+    if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0)
+    {
+        current_in_topic = IN_TOPIC_COMMAND;
+    }
+    else if (strcmp(topic, MQTT_TOPIC_HEARTBEAT) == 0)
+    {
+        current_in_topic = IN_TOPIC_HEARTBEAT;
+    }
+    else
+    {
+        current_in_topic = IN_TOPIC_OTHER;
+    }
 }
 
-static void mqtt_subscribe_cb(void *arg, err_t result) {
-    if (result == ERR_OK) {
+static void mqtt_subscribe_cb (void * arg, err_t result)
+{
+    if (result == ERR_OK)
+    {
         printf("[MQTT] Successfully subscribed to command topic\n");
-    } else {
+    }
+    else
+    {
         printf("[MQTT] Subscribe failed (error: %d)\n", result);
     }
 }
 
-static void mqtt_publish_cb(void *arg, err_t result) {
-    if (publishes_in_flight != 0) --publishes_in_flight;
-    if (arg == &camera_in_flight) camera_in_flight = false;
-    if (arg == &map_in_flight) map_in_flight = false;
-    if (arg == &telemetry_in_flight) {
+static void mqtt_publish_cb (void * arg, err_t result)
+{
+    if (publishes_in_flight != 0)
+    {
+        --publishes_in_flight;
+    }
+    if (arg == &camera_in_flight)
+    {
+        camera_in_flight = false;
+    }
+    if (arg == &map_in_flight)
+    {
+        map_in_flight = false;
+    }
+    if (arg == &telemetry_in_flight)
+    {
         telemetry_in_flight = false;
-        if (result == ERR_OK && !first_telemetry_completed) {
+        if (result == ERR_OK && !first_telemetry_completed)
+        {
             first_telemetry_completed = true;
-            printf("[MQTT] First telemetry send completed (TCP acknowledged)\n");
+            printf(
+                "[MQTT] First telemetry send completed (TCP acknowledged)\n");
         }
     }
-    if (result != ERR_OK) {
+    if (result != ERR_OK)
+    {
         printf("[MQTT] Publish failed (error: %d)\n", result);
     }
 }
 
-static wifi_mqtt_error_t publish_message(const char *topic, const char *data, publish_kind_t kind) {
+static wifi_mqtt_error_t publish_message (const char * topic, const char * data,
+                                          publish_kind_t kind)
+{
     bool telemetry = kind == PUBLISH_SENSOR;
-    bool camera = kind == PUBLISH_CAMERA;
-    bool map = kind == PUBLISH_MAP;
-    if (!mqtt_connected_flag || mqtt_client == NULL || !mqtt_client_is_connected(mqtt_client)) {
+    bool camera    = kind == PUBLISH_CAMERA;
+    bool map       = kind == PUBLISH_MAP;
+    if (!mqtt_connected_flag || mqtt_client == NULL ||
+        !mqtt_client_is_connected(mqtt_client))
+    {
         return MQTT_ERR_CONNECT_FAILED;
     }
 
-    if (map && (map_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 3u))
+    if (map &&
+        (map_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 3u))
+    {
         return MQTT_ERR_BUSY;
-    if (camera && (camera_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 2u))
+    }
+    if (camera && (camera_in_flight ||
+                   publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 2u))
+    {
         return MQTT_ERR_BUSY;
-    if (telemetry && (telemetry_in_flight || publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 1u)) {
-        uint32_t age = to_ms_since_boot(get_absolute_time()) - telemetry_queued_ms;
-        if (telemetry_in_flight && age >= 1000u && publish_warning_due()) {
-            printf("[MQTT] Telemetry awaiting TCP completion for %lums; pending=%u/%u\n",
-                   (unsigned long)age, publishes_in_flight, (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
+    }
+    if (telemetry && (telemetry_in_flight ||
+                      publishes_in_flight >= MQTT_REQ_MAX_IN_FLIGHT - 1u))
+    {
+        uint32_t age =
+            to_ms_since_boot(get_absolute_time()) - telemetry_queued_ms;
+        if (telemetry_in_flight && age >= 1000u && publish_warning_due())
+        {
+            printf(
+                "[MQTT] Telemetry awaiting TCP completion for %lums; pending=%u/%u\n",
+                (unsigned long)age, publishes_in_flight,
+                (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
         }
         return MQTT_ERR_BUSY;
     }
 
     size_t length = strlen(data);
     // QoS 0 needs topic length + topic + payload + up to five fixed-header bytes.
-    if (length > UINT16_MAX || length + strlen(topic) + 7u > MQTT_OUTPUT_RINGBUF_SIZE) {
-        if (publish_warning_due()) {
+    if (length > UINT16_MAX ||
+        length + strlen(topic) + 7u > MQTT_OUTPUT_RINGBUF_SIZE)
+    {
+        if (publish_warning_due())
+        {
             printf("[MQTT] Payload too large: %u bytes; TX ring=%u\n",
                    (unsigned)length, (unsigned)MQTT_OUTPUT_RINGBUF_SIZE);
         }
@@ -204,140 +300,185 @@ static wifi_mqtt_error_t publish_message(const char *topic, const char *data, pu
 
     // Reserve before calling lwIP so a completion callback cannot underflow counts.
     ++publishes_in_flight;
-    if (camera) camera_in_flight = true;
-    if (map) map_in_flight = true;
-    if (telemetry) {
+    if (camera)
+    {
+        camera_in_flight = true;
+    }
+    if (map)
+    {
+        map_in_flight = true;
+    }
+    if (telemetry)
+    {
         telemetry_in_flight = true;
         telemetry_queued_ms = to_ms_since_boot(get_absolute_time());
     }
     err_t err = mqtt_publish(mqtt_client, topic, data, (u16_t)length, 0, 0,
-                            mqtt_publish_cb, telemetry ? &telemetry_in_flight :
-                                             camera ? &camera_in_flight : map ? &map_in_flight : NULL);
-    if (err != ERR_OK) {
-        if (publishes_in_flight != 0) --publishes_in_flight;
-        if (telemetry) telemetry_in_flight = false;
-        if (camera) camera_in_flight = false;
-        if (map) map_in_flight = false;
-        if (publish_warning_due()) {
-            printf("[MQTT] Publish rejected: err=%d payload=%u pending=%u/%u TX ring=%u\n",
-                   (int)err, (unsigned)length, publishes_in_flight,
-                   (unsigned)MQTT_REQ_MAX_IN_FLIGHT, (unsigned)MQTT_OUTPUT_RINGBUF_SIZE);
+                             mqtt_publish_cb,
+                             telemetry ? &telemetry_in_flight
+                             : camera  ? &camera_in_flight
+                             : map     ? &map_in_flight
+                                       : NULL);
+    if (err != ERR_OK)
+    {
+        if (publishes_in_flight != 0)
+        {
+            --publishes_in_flight;
+        }
+        if (telemetry)
+        {
+            telemetry_in_flight = false;
+        }
+        if (camera)
+        {
+            camera_in_flight = false;
+        }
+        if (map)
+        {
+            map_in_flight = false;
+        }
+        if (publish_warning_due())
+        {
+            printf(
+                "[MQTT] Publish rejected: err=%d payload=%u pending=%u/%u TX ring=%u\n",
+                (int)err, (unsigned)length, publishes_in_flight,
+                (unsigned)MQTT_REQ_MAX_IN_FLIGHT,
+                (unsigned)MQTT_OUTPUT_RINGBUF_SIZE);
         }
         return err == ERR_MEM ? MQTT_ERR_BUSY : MQTT_ERR_PUBLISH_FAILED;
     }
-    if (telemetry && !first_telemetry_queued) {
+    if (telemetry && !first_telemetry_queued)
+    {
         first_telemetry_queued = true;
-        printf("[MQTT] First telemetry queued: %u bytes on %s\n", (unsigned)length, topic);
+        printf("[MQTT] First telemetry queued: %u bytes on %s\n",
+               (unsigned)length, topic);
     }
     return WIFI_OK;
 }
 
 // ================= PUBLIC FUNCTIONS ==================
 
-wifi_mqtt_error_t wifi_init(void) {
-    if (wifi_initialized) {
+wifi_mqtt_error_t wifi_init (void)
+{
+    if (wifi_initialized)
+    {
         return WIFI_OK;
     }
 
-    if (cyw43_arch_init()) {
+    if (cyw43_arch_init())
+    {
         printf("[WIFI] Initialization failed\n");
         return WIFI_ERR_INIT_FAILED;
     }
 
     cyw43_arch_enable_sta_mode();
     wifi_initialized = true;
-    
+
     printf("[WIFI] Initialized\n");
     return WIFI_OK;
 }
 
-wifi_mqtt_error_t wifi_connect(const char *ssid, const char *password, uint32_t timeout_ms) {
-    if (!wifi_initialized) {
+wifi_mqtt_error_t wifi_connect (const char * ssid, const char * password,
+                                uint32_t timeout_ms)
+{
+    if (!wifi_initialized)
+    {
         return WIFI_ERR_INIT_FAILED;
     }
 
     printf("[WIFI] Connecting to '%s'...\n", ssid);
 
     int result = cyw43_arch_wifi_connect_timeout_ms(
-        ssid, 
-        password,
-        CYW43_AUTH_WPA2_AES_PSK, 
-        timeout_ms
-    );
+        ssid, password, CYW43_AUTH_WPA2_AES_PSK, timeout_ms);
 
-    if (result != 0) {
+    if (result != 0)
+    {
         printf("[WIFI] Connection failed (code: %d)\n", result);
         wifi_connected_flag = false;
-        return (result == -2) ? WIFI_ERR_AUTH : 
-               (result == -3) ? WIFI_ERR_TIMEOUT : 
-               WIFI_ERR_NOT_CONNECTED;
+        return (result == -2)   ? WIFI_ERR_AUTH
+               : (result == -3) ? WIFI_ERR_TIMEOUT
+                                : WIFI_ERR_NOT_CONNECTED;
     }
 
     wifi_connected_flag = true;
 
     // Disable power save mode to improve latency for MQTT messages
-    cyw43_wifi_pm(&cyw43_state, cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 20, 1, 1, 1));
+    cyw43_wifi_pm(&cyw43_state,
+                  cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 20, 1, 1, 1));
 
-    extern struct netif *netif_list;
-    if (netif_list) {
-        printf("[WIFI] Connected! IP: %s\n", 
+    extern struct netif * netif_list;
+    if (netif_list)
+    {
+        printf("[WIFI] Connected! IP: %s\n",
                ip4addr_ntoa(netif_ip4_addr(netif_list)));
     }
 
     return WIFI_OK;
 }
 
-bool wifi_is_connected(void) {
+bool wifi_is_connected (void)
+{
     return wifi_connected_flag;
 }
 
-const char* wifi_get_ip_address(void) {
-    if (!wifi_connected_flag) {
+const char * wifi_get_ip_address (void)
+{
+    if (!wifi_connected_flag)
+    {
         return NULL;
     }
 
-    extern struct netif *netif_list;
-    if (netif_list) {
+    extern struct netif * netif_list;
+    if (netif_list)
+    {
         return ip4addr_ntoa(netif_ip4_addr(netif_list));
     }
 
     return NULL;
 }
 
-wifi_mqtt_error_t mqtt_init(const char *broker_ip, uint16_t broker_port, const char *client_id) {
+wifi_mqtt_error_t mqtt_init (const char * broker_ip, uint16_t broker_port,
+                             const char * client_id)
+{
     // Parse broker IP address
-    if (!ip4addr_aton(broker_ip, &mqtt_broker_ip)) {
+    if (!ip4addr_aton(broker_ip, &mqtt_broker_ip))
+    {
         printf("[MQTT] Invalid broker IP: %s\n", broker_ip);
         return MQTT_ERR_CONNECT_FAILED;
     }
 
     // Create MQTT client
     mqtt_client = mqtt_client_new();
-    if (mqtt_client == NULL) {
+    if (mqtt_client == NULL)
+    {
         printf("[MQTT] Failed to create client\n");
         return MQTT_ERR_CONNECT_FAILED;
     }
 
     printf("[MQTT] Initialized (broker: %s:%d)\n", broker_ip, broker_port);
-    printf("[MQTT] Limits: TX ring=%u bytes; requests=%u; telemetry pending limit=1\n",
-           (unsigned)MQTT_OUTPUT_RINGBUF_SIZE, (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
+    printf(
+        "[MQTT] Limits: TX ring=%u bytes; requests=%u; telemetry pending limit=1\n",
+        (unsigned)MQTT_OUTPUT_RINGBUF_SIZE, (unsigned)MQTT_REQ_MAX_IN_FLIGHT);
     return WIFI_OK;
 }
 
-wifi_mqtt_error_t mqtt_connect(void) {
-    if (!wifi_connected_flag) {
+wifi_mqtt_error_t mqtt_connect (void)
+{
+    if (!wifi_connected_flag)
+    {
         printf("[MQTT] ERROR: WiFi not connected\n");
         return WIFI_ERR_NOT_CONNECTED;
     }
 
-    if (mqtt_client == NULL) {
+    if (mqtt_client == NULL)
+    {
         printf("[MQTT] ERROR: Client is NULL\n");
         return MQTT_ERR_CONNECT_FAILED;
     }
 
     struct mqtt_connect_client_info_t ci;
     memset(&ci, 0, sizeof(ci));
-    ci.client_id = MQTT_CLIENT_ID;
+    ci.client_id  = MQTT_CLIENT_ID;
     ci.keep_alive = 5;
 
     printf("[MQTT] ===== MQTT CONNECTION DEBUG =====\n");
@@ -345,62 +486,62 @@ wifi_mqtt_error_t mqtt_connect(void) {
     printf("[MQTT] Broker IP: %s\n", ip4addr_ntoa(&mqtt_broker_ip));
     printf("[MQTT] Broker Port: %d\n", MQTT_BROKER_PORT);
     printf("[MQTT] Keep-alive: %d\n", ci.keep_alive);
-    printf("[MQTT] Client pointer: %p\n", (void*)mqtt_client);
+    printf("[MQTT] Client pointer: %p\n", (void *)mqtt_client);
     printf("[MQTT] Calling mqtt_client_connect()...\n");
-    
-    err_t err = mqtt_client_connect(
-        mqtt_client,
-        &mqtt_broker_ip,
-        MQTT_BROKER_PORT,
-        mqtt_connection_cb,
-        NULL,
-        &ci
-    );
+
+    err_t err =
+        mqtt_client_connect(mqtt_client, &mqtt_broker_ip, MQTT_BROKER_PORT,
+                            mqtt_connection_cb, NULL, &ci);
 
     printf("[MQTT] mqtt_client_connect() returned: %d\n", (int)err);
-    
-    if (err == ERR_OK) {
+
+    if (err == ERR_OK)
+    {
         printf("[MQTT] Connection initiated successfully\n");
-    } else if (err == ERR_VAL) {
+    }
+    else if (err == ERR_VAL)
+    {
         printf("[MQTT] ERROR: Invalid value (ERR_VAL = -6)\n");
-    } else if (err == ERR_MEM) {
+    }
+    else if (err == ERR_MEM)
+    {
         printf("[MQTT] ERROR: Out of memory (ERR_MEM = -1)\n");
-    } else if (err == ERR_ISCONN) {
+    }
+    else if (err == ERR_ISCONN)
+    {
         printf("[MQTT] ERROR: Already connected (ERR_ISCONN = -8)\n");
-    } else {
+    }
+    else
+    {
         printf("[MQTT] ERROR: Unknown error code %d\n", (int)err);
     }
 
     return (err == ERR_OK) ? WIFI_OK : MQTT_ERR_CONNECT_FAILED;
 }
 
-wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
-    if (!mqtt_connected_flag || mqtt_client == NULL) {
+wifi_mqtt_error_t mqtt_subscribe_commands (mqtt_command_callback_t callback)
+{
+    if (!mqtt_connected_flag || mqtt_client == NULL)
+    {
         return MQTT_ERR_CONNECT_FAILED;
     }
 
     command_callback = callback;
 
     // Set incoming callbacks
-    mqtt_set_inpub_callback(
-        mqtt_client,
-        mqtt_incoming_publish_cb,
-        mqtt_incoming_data_cb,
-        NULL
-    );
+    mqtt_set_inpub_callback(mqtt_client, mqtt_incoming_publish_cb,
+                            mqtt_incoming_data_cb, NULL);
 
     // Subscribe to command topic
-    err_t err = mqtt_subscribe(
-        mqtt_client,
-        MQTT_TOPIC_COMMAND,
-        0,  // QoS 0
-        mqtt_subscribe_cb,
-        NULL
-    );
+    err_t err = mqtt_subscribe(mqtt_client, MQTT_TOPIC_COMMAND,
+                               0, // QoS 0
+                               mqtt_subscribe_cb, NULL);
 
     // FR-08: also listen for the dashboard heartbeat
-    err = mqtt_subscribe(mqtt_client, MQTT_TOPIC_HEARTBEAT, 0, mqtt_subscribe_cb, NULL);
-    if (err != ERR_OK) {
+    err = mqtt_subscribe(mqtt_client, MQTT_TOPIC_HEARTBEAT, 0,
+                         mqtt_subscribe_cb, NULL);
+    if (err != ERR_OK)
+    {
         printf("[MQTT] Heartbeat subscribe failed (error: %d)\n", err);
         return MQTT_ERR_SUBSCRIBE_FAILED;
     }
@@ -408,37 +549,46 @@ wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback) {
     return WIFI_OK;
 }
 
-wifi_mqtt_error_t mqtt_publish_status(const char *status) {
+wifi_mqtt_error_t mqtt_publish_status (const char * status)
+{
     return publish_message(MQTT_TOPIC_STATUS, status, PUBLISH_STATUS);
 }
 
-wifi_mqtt_error_t mqtt_publish_telemetry(const char *data) {
+wifi_mqtt_error_t mqtt_publish_telemetry (const char * data)
+{
     return publish_message(MQTT_TOPIC_TELEMETRY, data, PUBLISH_SENSOR);
 }
 
-wifi_mqtt_error_t mqtt_publish_camera(const char *data) {
+wifi_mqtt_error_t mqtt_publish_camera (const char * data)
+{
     return publish_message("robot/camera", data, PUBLISH_CAMERA);
 }
 
-wifi_mqtt_error_t mqtt_publish_map(const char *data) {
+wifi_mqtt_error_t mqtt_publish_map (const char * data)
+{
     return publish_message("robot/map", data, PUBLISH_MAP);
 }
 
-bool mqtt_is_connected(void) {
+bool mqtt_is_connected (void)
+{
     return mqtt_connected_flag && mqtt_client_is_connected(mqtt_client);
 }
 
-void wifi_mqtt_poll(void) {
-    if (wifi_initialized) {
+void wifi_mqtt_poll (void)
+{
+    if (wifi_initialized)
+    {
         cyw43_arch_poll();
     }
 }
 
 // Expose mqtt_client for LIDAR publishing
-mqtt_client_t* get_mqtt_client(void) {
+mqtt_client_t * get_mqtt_client (void)
+{
     return mqtt_client;
 }
 
-uint32_t mqtt_last_link_rx_ms(void) {
+uint32_t mqtt_last_link_rx_ms (void)
+{
     return last_link_rx_ms;
 }

@@ -15,7 +15,7 @@ static void undistort (float px, float py, float * x, float * y)
 {
     const float x0 = (px - CALIB_CX) / CALIB_FX,
                 y0 = (py - CALIB_CY) / CALIB_FY;
-    float       xu = x0, yu = y0;
+    float xu = x0, yu = y0;
     for (int i = 0; i < 5; i++)
     {
         const float r2 = xu * xu + yu * yu;

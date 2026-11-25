@@ -33,53 +33,70 @@
 #define ONBOARD_DRIVE_SEARCH_WALL_MS 30000u
 #define ONBOARD_DRIVE_OBSTACLE_CONFIRM_FRAMES 2u
 
-typedef struct {
-    bool stopped, safety_latched, link_ok, sensor_valid, imu_ok, front_fault, front_urgent, camera_fresh;
+typedef struct
+{
+    bool stopped, safety_latched, link_ok, sensor_valid, imu_ok, front_fault,
+        front_urgent, camera_fresh;
     uint16_t front_mm;
     uint32_t sensor_received_ms;
-    float heading_deg; // Sensor Pico raw startup-relative heading; unaffected by manual zero.
-    bool camera_present;
-    uint8_t camera_status;
+    float
+        heading_deg; // Sensor Pico raw startup-relative heading; unaffected by manual zero.
+    bool     camera_present;
+    uint8_t  camera_status;
     uint32_t camera_packet_age_ms, camera_image_age_ms;
-    bool reference_absent; // Explicit absence from a fresh OK/no-marker camera packet, not a stale stream.
+    bool
+        reference_absent; // Explicit absence from a fresh OK/no-marker camera packet, not a stale stream.
     uint32_t camera_generation;
 } onboard_drive_inputs_t;
-typedef struct {
-    bool active;
-    uint32_t leg_id, started_ms, last_refresh_ms;
-    const char *result;
-    bool frame_valid;
-    float north_heading_deg;
-    uint32_t map_revision, braked_ms, last_sample_generation, last_verify_generation;
+typedef struct
+{
+    bool         active;
+    uint32_t     leg_id, started_ms, last_refresh_ms;
+    const char * result;
+    bool         frame_valid;
+    float        north_heading_deg;
+    uint32_t     map_revision, braked_ms, last_sample_generation,
+        last_verify_generation;
     uint8_t reference_id, verification_frames;
-    bool reference_model_valid, estimate_valid, using_reference;
-    int32_t reference_anchor_mm, target_anchor_mm, reference_origin_mm, last_reference_mm;
-    int32_t remaining_mm, reference_progress_mm;
-    uint32_t hold_started_ms, recovery_generation, driving_ms, last_tick_ms;
-    uint8_t recovery_frames;
-    const char *input_reason;
-    bool camera_present;
-    uint8_t camera_status;
+    bool    reference_model_valid, estimate_valid, using_reference;
+    int32_t reference_anchor_mm, target_anchor_mm, reference_origin_mm,
+        last_reference_mm;
+    int32_t      remaining_mm, reference_progress_mm;
+    uint32_t     hold_started_ms, recovery_generation, driving_ms, last_tick_ms;
+    uint8_t      recovery_frames;
+    const char * input_reason;
+    bool         camera_present;
+    uint8_t      camera_status;
     uint32_t camera_packet_age_ms, camera_image_age_ms, accepted_image_age_ms;
-    bool reference_recovery, backup_used, reference_missing;
-    uint32_t reference_wait_ms, reference_missing_ms, backup_started_ms, backup_stopped_ms;
-    bool search_active, search_used, front_arrival_pending, using_obstacle;
+    bool     reference_recovery, backup_used, reference_missing;
+    uint32_t reference_wait_ms, reference_missing_ms, backup_started_ms,
+        backup_stopped_ms;
+    bool     search_active, search_used, front_arrival_pending, using_obstacle;
     uint16_t last_target_range_mm;
-    uint32_t search_driving_ms, search_hold_ms, search_generation, last_obstacle_ms;
+    uint32_t search_driving_ms, search_hold_ms, search_generation,
+        last_obstacle_ms;
     uint8_t obstacle_frames;
 } onboard_drive_t;
 
-void onboard_drive_init(onboard_drive_t *drive);
+void onboard_drive_init (onboard_drive_t * drive);
 // Bounded target leg: reference at the configured 600 mm arrival range, or
 // confirmed front obstacle arrival. Empty camera views can enter a slow search.
-const char *onboard_drive_start(onboard_drive_t *drive, mission_t *mission,
-    rover_map_t *map, const target_selector_t *selection, const onboard_drive_inputs_t *inputs, uint32_t now);
-void onboard_drive_tick(onboard_drive_t *drive, mission_t *mission,
-    rover_map_t *map, target_selector_t *selection, const onboard_drive_inputs_t *inputs, uint32_t now);
+const char * onboard_drive_start (onboard_drive_t * drive, mission_t * mission,
+                                  rover_map_t *                  map,
+                                  const target_selector_t *      selection,
+                                  const onboard_drive_inputs_t * inputs,
+                                  uint32_t                       now);
+void         onboard_drive_tick (onboard_drive_t * drive, mission_t * mission,
+                                 rover_map_t * map, target_selector_t * selection,
+                                 const onboard_drive_inputs_t * inputs, uint32_t now);
 // Called in the main loop after the independent front motor guard has braked.
 // Manual E-STOP/fault handling is separate and never commits an arrival.
-bool onboard_drive_note_front_stop(onboard_drive_t *drive, const mission_t *mission);
-void onboard_drive_stop(onboard_drive_t *drive, mission_t *mission, mission_reason_t reason,
-    const char *result, uint32_t now);
-size_t onboard_drive_format(const onboard_drive_t *drive, const mission_t *mission, char *out, size_t capacity);
+bool   onboard_drive_note_front_stop (onboard_drive_t * drive,
+                                      const mission_t * mission);
+void   onboard_drive_stop (onboard_drive_t * drive, mission_t * mission,
+                           mission_reason_t reason, const char * result,
+                           uint32_t now);
+size_t onboard_drive_format (const onboard_drive_t * drive,
+                             const mission_t * mission, char * out,
+                             size_t capacity);
 #endif

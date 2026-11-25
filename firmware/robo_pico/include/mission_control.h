@@ -5,7 +5,8 @@
 #include <stdint.h>
 #include "travel_leg.h"
 
-typedef enum {
+typedef enum
+{
     MISSION_IDLE,
     MISSION_READY,
     MISSION_EXPLORING,
@@ -14,7 +15,8 @@ typedef enum {
     MISSION_FAULT
 } mission_state_t;
 
-typedef enum {
+typedef enum
+{
     MISSION_REASON_BOOT,
     MISSION_REASON_TEST_READY,
     MISSION_REASON_TEST_START,
@@ -34,46 +36,54 @@ typedef enum {
     MISSION_REASON_DFS_COMPLETE
 } mission_reason_t;
 
-typedef enum {
+typedef enum
+{
     MISSION_ACCEPTED,
     MISSION_REJECTED_COMMAND,
     MISSION_REJECTED_STATE,
     MISSION_REJECTED_SAFETY
 } mission_result_t;
 
-typedef struct {
-    mission_state_t state;
+typedef struct
+{
+    mission_state_t  state;
     mission_reason_t reason;
-    uint32_t revision;
-    uint32_t changed_ms;
-    bool test_mode;
-    bool dfs_active;
-    travel_leg_t leg;
+    uint32_t         revision;
+    uint32_t         changed_ms;
+    bool             test_mode;
+    bool             dfs_active;
+    travel_leg_t     leg;
 } mission_t;
 
 // Cooperative main-loop owner only. No hardware calls, allocation or waits.
-void mission_init(mission_t *mission, uint32_t now_ms);
-void mission_clear_leg(mission_t *mission, uint32_t now_ms);
-bool mission_begin_drive(mission_t *mission, uint32_t now_ms);
-bool mission_motion_enabled(const mission_t *mission);
-bool mission_arrival_phase(mission_t *mission, leg_phase_t phase, uint32_t now_ms);
-bool mission_complete_target(mission_t *mission, uint32_t now_ms);
-bool mission_camera_hold(mission_t *mission, bool holding, uint32_t now_ms);
-bool mission_reference_phase(mission_t *mission, leg_phase_t phase, uint32_t now_ms);
-bool mission_search_phase(mission_t *mission, leg_phase_t phase, uint32_t now_ms);
-bool mission_start_dfs(mission_t *mission, uint32_t now_ms);
-bool mission_finish_dfs(mission_t *mission, uint32_t now_ms);
+void mission_init (mission_t * mission, uint32_t now_ms);
+void mission_clear_leg (mission_t * mission, uint32_t now_ms);
+bool mission_begin_drive (mission_t * mission, uint32_t now_ms);
+bool mission_motion_enabled (const mission_t * mission);
+bool mission_arrival_phase (mission_t * mission, leg_phase_t phase,
+                            uint32_t now_ms);
+bool mission_complete_target (mission_t * mission, uint32_t now_ms);
+bool mission_camera_hold (mission_t * mission, bool holding, uint32_t now_ms);
+bool mission_reference_phase (mission_t * mission, leg_phase_t phase,
+                              uint32_t now_ms);
+bool mission_search_phase (mission_t * mission, leg_phase_t phase,
+                           uint32_t now_ms);
+bool mission_start_dfs (mission_t * mission, uint32_t now_ms);
+bool mission_finish_dfs (mission_t * mission, uint32_t now_ms);
 // Diagnostic transitions only; READY/COMPLETE do not validate a real DFS mission.
 // Exact events: READY, START, PAUSE, COMPLETE, FAULT, RESET.
-mission_result_t mission_test_event(mission_t *mission, const char *event,
-                                   bool safety_latched, uint32_t now_ms);
-void mission_pause(mission_t *mission, mission_reason_t reason, uint32_t now_ms);
-void mission_fault(mission_t *mission, mission_reason_t reason, uint32_t now_ms);
-void mission_tick(mission_t *mission, bool safety_latched, bool link_ok, uint32_t now_ms);
+mission_result_t mission_test_event (mission_t * mission, const char * event,
+                                     bool safety_latched, uint32_t now_ms);
+void             mission_pause (mission_t * mission, mission_reason_t reason,
+                                uint32_t now_ms);
+void             mission_fault (mission_t * mission, mission_reason_t reason,
+                                uint32_t now_ms);
+void mission_tick (mission_t * mission, bool safety_latched, bool link_ok,
+                   uint32_t now_ms);
 // Diagnostic ownership persists through PAUSED/COMPLETE/FAULT until RESET.
-bool mission_command_allowed(const mission_t *mission, const char *command);
-const char *mission_state_name(mission_state_t state);
-const char *mission_reason_name(mission_reason_t reason);
-const char *mission_result_name(mission_result_t result);
+bool mission_command_allowed (const mission_t * mission, const char * command);
+const char * mission_state_name (mission_state_t state);
+const char * mission_reason_name (mission_reason_t reason);
+const char * mission_result_name (mission_result_t result);
 
 #endif

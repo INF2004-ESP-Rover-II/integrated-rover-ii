@@ -7,289 +7,539 @@
 #include <stdio.h>
 #include <string.h>
 
-void onboard_drive_init(onboard_drive_t *drive)
+void onboard_drive_init (onboard_drive_t * drive)
 {
     *drive = (onboard_drive_t){.result = "NOT_STARTED", .input_reason = "NONE"};
 }
 
-static const char *motion_problem(const onboard_drive_inputs_t *in, uint32_t now)
+static const char * motion_problem (const onboard_drive_inputs_t * in,
+                                    uint32_t                       now)
 {
-    if (in->safety_latched) return "SAFETY_LOCKED";
-    if (!in->link_ok) return "LINK_LOST";
-    if (!in->sensor_valid || (uint32_t)(now - in->sensor_received_ms) > ONBOARD_DRIVE_SENSOR_MAX_AGE_MS)
+    if (in->safety_latched)
+    {
+        return "SAFETY_LOCKED";
+    }
+    if (!in->link_ok)
+    {
+        return "LINK_LOST";
+    }
+    if (!in->sensor_valid || (uint32_t)(now - in->sensor_received_ms) >
+                                 ONBOARD_DRIVE_SENSOR_MAX_AGE_MS)
+    {
         return "SENSOR_STALE";
-    if (!in->imu_ok) return "HEADING_UNAVAILABLE";
+    }
+    if (!in->imu_ok)
+    {
+        return "HEADING_UNAVAILABLE";
+    }
     // The Sensor Pico fault bit tracks failed initialization/result timeouts.
     // A fresh zero with fault clear is a responding sensor with no usable
     // distance (e.g. no return). It is not an obstacle or a proven clear exit.
     // Permit this bounded visual approach; never turn it into a map/arrival fact.
-    if (in->front_fault) return "FRONT_SENSOR_FAULT";
-    if (in->front_urgent || front_obstacle_detected(in->front_mm, false)) return "FRONT_BLOCKED";
+    if (in->front_fault)
+    {
+        return "FRONT_SENSOR_FAULT";
+    }
+    if (in->front_urgent || front_obstacle_detected(in->front_mm, false))
+    {
+        return "FRONT_BLOCKED";
+    }
     return NULL;
 }
 
-static const char *input_problem(const target_selector_t *s, const onboard_drive_inputs_t *in, uint32_t now)
+static const char * input_problem (const target_selector_t *      s,
+                                   const onboard_drive_inputs_t * in,
+                                   uint32_t                       now)
 {
-    const char *problem=motion_problem(in,now);
-    if (problem) return problem;
-    if (!in->camera_present) return "CAMERA_UART_MISSING";
-    if (in->camera_status != VISION_STATUS_OK) return in->camera_status == VISION_STATUS_NO_MARKER ?
-        "CAMERA_NO_MARKERS" : in->camera_status == VISION_STATUS_STALLED ? "CAMERA_PROCESSING_STALLED" : "CAMERA_LOST";
-    if (in->camera_packet_age_ms > TARGET_UART_MAX_AGE_MS) return "CAMERA_PACKET_STALE";
-    if (in->camera_image_age_ms > ONBOARD_DRIVE_IMAGE_MAX_AGE_MS) return "CAMERA_IMAGE_STALE";
-    if (!in->camera_fresh) return "CAMERA_DATA_UNUSABLE";
-    if (!s->sample_generation) return "CAMERA_IMAGE_UNAVAILABLE";
-    if ((uint32_t)(now - s->sample_received_ms) > TARGET_UART_MAX_AGE_MS) return "CAMERA_ACCEPTED_IMAGE_STALE";
-    if ((uint32_t)(now - s->sample_received_ms) + s->sample_age_ms > ONBOARD_DRIVE_IMAGE_MAX_AGE_MS)
+    const char * problem = motion_problem(in, now);
+    if (problem)
+    {
+        return problem;
+    }
+    if (!in->camera_present)
+    {
+        return "CAMERA_UART_MISSING";
+    }
+    if (in->camera_status != VISION_STATUS_OK)
+    {
+        return in->camera_status == VISION_STATUS_NO_MARKER
+                   ? "CAMERA_NO_MARKERS"
+               : in->camera_status == VISION_STATUS_STALLED
+                   ? "CAMERA_PROCESSING_STALLED"
+                   : "CAMERA_LOST";
+    }
+    if (in->camera_packet_age_ms > TARGET_UART_MAX_AGE_MS)
+    {
+        return "CAMERA_PACKET_STALE";
+    }
+    if (in->camera_image_age_ms > ONBOARD_DRIVE_IMAGE_MAX_AGE_MS)
+    {
         return "CAMERA_IMAGE_STALE";
+    }
+    if (!in->camera_fresh)
+    {
+        return "CAMERA_DATA_UNUSABLE";
+    }
+    if (!s->sample_generation)
+    {
+        return "CAMERA_IMAGE_UNAVAILABLE";
+    }
+    if ((uint32_t)(now - s->sample_received_ms) > TARGET_UART_MAX_AGE_MS)
+    {
+        return "CAMERA_ACCEPTED_IMAGE_STALE";
+    }
+    if ((uint32_t)(now - s->sample_received_ms) + s->sample_age_ms >
+        ONBOARD_DRIVE_IMAGE_MAX_AGE_MS)
+    {
+        return "CAMERA_IMAGE_STALE";
+    }
     return NULL;
 }
 
-static void note_inputs(onboard_drive_t *d, const target_selector_t *s,
-                        const onboard_drive_inputs_t *in, uint32_t now)
+static void note_inputs (onboard_drive_t * d, const target_selector_t * s,
+                         const onboard_drive_inputs_t * in, uint32_t now)
 {
-    d->camera_present = in->camera_present;
-    d->camera_status = in->camera_status;
+    d->camera_present       = in->camera_present;
+    d->camera_status        = in->camera_status;
     d->camera_packet_age_ms = in->camera_packet_age_ms;
-    d->camera_image_age_ms = in->camera_image_age_ms;
-    d->accepted_image_age_ms = s->sample_generation ? (uint32_t)(now - s->sample_received_ms) + s->sample_age_ms : UINT32_MAX;
+    d->camera_image_age_ms  = in->camera_image_age_ms;
+    d->accepted_image_age_ms =
+        s->sample_generation
+            ? (uint32_t)(now - s->sample_received_ms) + s->sample_age_ms
+            : UINT32_MAX;
 }
 
-static bool recoverable_camera_problem(const char *problem)
+static bool recoverable_camera_problem (const char * problem)
 {
-    return strncmp(problem, "CAMERA_", 7) == 0 || strcmp(problem, "TRACKING_MARKERS_MISSING") == 0 ||
-        strcmp(problem, "REFERENCE_BASELINE_UNAVAILABLE") == 0;
+    return strncmp(problem, "CAMERA_", 7) == 0 ||
+           strcmp(problem, "TRACKING_MARKERS_MISSING") == 0 ||
+           strcmp(problem, "REFERENCE_BASELINE_UNAVAILABLE") == 0;
 }
 
-static bool centred(int bearing)
+static bool centred (int bearing)
 {
-    return bearing >= -ONBOARD_DRIVE_MAX_BEARING_CDEG && bearing <= ONBOARD_DRIVE_MAX_BEARING_CDEG;
+    return bearing >= -ONBOARD_DRIVE_MAX_BEARING_CDEG &&
+           bearing <= ONBOARD_DRIVE_MAX_BEARING_CDEG;
 }
 
-static const char *track(onboard_drive_t *d, const mission_t *m, const target_selector_t *s)
+static const char * track (onboard_drive_t * d, const mission_t * m,
+                           const target_selector_t * s)
 {
-    if (s->leg_id != d->leg_id || s->marker != m->leg.next_target_node) return "TRACKING_ID_CHANGED";
-    d->estimate_valid = false;
-    if (!s->available && !s->reference_available) return "TRACKING_MARKERS_MISSING";
-    if (s->reference_available && m->leg.arrival_reference_node && s->reference_marker != m->leg.arrival_reference_node)
+    if (s->leg_id != d->leg_id || s->marker != m->leg.next_target_node)
+    {
         return "TRACKING_ID_CHANGED";
-    if (s->available && !centred(s->bearing_cdeg)) return "TARGET_NOT_ALIGNED";
+    }
+    d->estimate_valid = false;
+    if (!s->available && !s->reference_available)
+    {
+        return "TRACKING_MARKERS_MISSING";
+    }
+    if (s->reference_available && m->leg.arrival_reference_node &&
+        s->reference_marker != m->leg.arrival_reference_node)
+    {
+        return "TRACKING_ID_CHANGED";
+    }
+    if (s->available && !centred(s->bearing_cdeg))
+    {
+        return "TARGET_NOT_ALIGNED";
+    }
     bool ref = s->reference_available && m->leg.arrival_reference_node &&
-        s->reference_marker == m->leg.arrival_reference_node;
-    if (!s->available && (!ref || (!d->reference_model_valid &&
-        !(d->search_active && d->last_target_range_mm)))) return "REFERENCE_BASELINE_UNAVAILABLE";
-    if (!s->available && (s->reference_bearing_cdeg < -TARGET_MAX_BEARING_CDEG ||
-        s->reference_bearing_cdeg > TARGET_MAX_BEARING_CDEG)) return "REFERENCE_NOT_ALIGNED";
-    if (d->reference_model_valid && m->leg.arrival_reference_node != d->reference_id) return "TRACKING_ID_CHANGED";
-    if (s->sample_generation != d->last_sample_generation) {
-        if (s->available) d->last_target_range_mm=s->range_mm;
-        if (ref && d->reference_model_valid) {
-            int32_t step = d->last_reference_mm - s->reference_range_mm;
-            int32_t backwards=d->reference_recovery && d->backup_used ?
-                ONBOARD_DRIVE_RECOVERY_BACKWARDS_MM : ONBOARD_DRIVE_REFERENCE_BACKWARDS_MM;
+               s->reference_marker == m->leg.arrival_reference_node;
+    if (!s->available &&
+        (!ref || (!d->reference_model_valid &&
+                  !(d->search_active && d->last_target_range_mm))))
+    {
+        return "REFERENCE_BASELINE_UNAVAILABLE";
+    }
+    if (!s->available &&
+        (s->reference_bearing_cdeg < -TARGET_MAX_BEARING_CDEG ||
+         s->reference_bearing_cdeg > TARGET_MAX_BEARING_CDEG))
+    {
+        return "REFERENCE_NOT_ALIGNED";
+    }
+    if (d->reference_model_valid &&
+        m->leg.arrival_reference_node != d->reference_id)
+    {
+        return "TRACKING_ID_CHANGED";
+    }
+    if (s->sample_generation != d->last_sample_generation)
+    {
+        if (s->available)
+        {
+            d->last_target_range_mm = s->range_mm;
+        }
+        if (ref && d->reference_model_valid)
+        {
+            int32_t step      = d->last_reference_mm - s->reference_range_mm;
+            int32_t backwards = d->reference_recovery && d->backup_used
+                                    ? ONBOARD_DRIVE_RECOVERY_BACKWARDS_MM
+                                    : ONBOARD_DRIVE_REFERENCE_BACKWARDS_MM;
             if (step > ONBOARD_DRIVE_REFERENCE_MAX_STEP_MM || step < -backwards)
+            {
                 return "REFERENCE_RANGE_INCONSISTENT";
+            }
         }
         // A simultaneous pair validates ordering. A reference confirmed later
         // during slow search uses the user's known 600 mm marker spacing.
-        if (s->available && ref) {
-            int bearing_delta = (int)s->reference_bearing_cdeg - s->bearing_cdeg;
-            if ((uint32_t)s->reference_range_mm < (uint32_t)s->range_mm + TARGET_REFERENCE_MIN_GAP_MM ||
-                bearing_delta < -TARGET_REFERENCE_MAX_DELTA_CDEG || bearing_delta > TARGET_REFERENCE_MAX_DELTA_CDEG)
+        if (s->available && ref)
+        {
+            int bearing_delta =
+                (int)s->reference_bearing_cdeg - s->bearing_cdeg;
+            if ((uint32_t)s->reference_range_mm <
+                    (uint32_t)s->range_mm + TARGET_REFERENCE_MIN_GAP_MM ||
+                bearing_delta < -TARGET_REFERENCE_MAX_DELTA_CDEG ||
+                bearing_delta > TARGET_REFERENCE_MAX_DELTA_CDEG)
+            {
                 return "REFERENCE_GEOMETRY_INCONSISTENT";
-            if (!d->reference_model_valid) d->reference_origin_mm = s->reference_range_mm;
+            }
+            if (!d->reference_model_valid)
+            {
+                d->reference_origin_mm = s->reference_range_mm;
+            }
             d->reference_model_valid = true;
-            d->reference_id = m->leg.arrival_reference_node;
-            d->target_anchor_mm = s->range_mm;
-            d->reference_anchor_mm = s->reference_range_mm;
+            d->reference_id          = m->leg.arrival_reference_node;
+            d->target_anchor_mm      = s->range_mm;
+            d->reference_anchor_mm   = s->reference_range_mm;
         }
-        if (ref && !d->reference_model_valid && d->search_active && d->last_target_range_mm) {
-            d->reference_model_valid=true; d->reference_id=m->leg.arrival_reference_node;
-            d->reference_origin_mm=d->reference_anchor_mm=s->reference_range_mm;
-            d->target_anchor_mm=d->last_target_range_mm;
+        if (ref && !d->reference_model_valid && d->search_active &&
+            d->last_target_range_mm)
+        {
+            d->reference_model_valid = true;
+            d->reference_id          = m->leg.arrival_reference_node;
+            d->reference_origin_mm   = d->reference_anchor_mm =
+                s->reference_range_mm;
+            d->target_anchor_mm = d->last_target_range_mm;
         }
-        if (ref) d->last_reference_mm = s->reference_range_mm;
+        if (ref)
+        {
+            d->last_reference_mm = s->reference_range_mm;
+        }
         d->last_sample_generation = s->sample_generation;
     }
     d->using_reference = ref && d->reference_model_valid;
-    d->remaining_mm = d->using_reference ? (int32_t)s->reference_range_mm-ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM :
-        (int32_t)s->range_mm;
+    d->remaining_mm    = d->using_reference
+                             ? (int32_t)s->reference_range_mm -
+                                ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM
+                             : (int32_t)s->range_mm;
     if (ref && d->reference_model_valid)
-        d->reference_progress_mm = d->reference_origin_mm - (int32_t)s->reference_range_mm;
+    {
+        d->reference_progress_mm =
+            d->reference_origin_mm - (int32_t)s->reference_range_mm;
+    }
     d->estimate_valid = true;
     return NULL;
 }
 
-static const char *plan_cell(const onboard_drive_t *d, const rover_map_t *map, uint8_t target_id,
-    float heading, float *north, leg_direction_t *direction, int16_t *x, int16_t *y)
+static const char * plan_cell (const onboard_drive_t * d,
+                               const rover_map_t * map, uint8_t target_id,
+                               float heading, float * north,
+                               leg_direction_t * direction, int16_t * x,
+                               int16_t * y)
 {
-    if (!isfinite(heading) || heading < 0.0f || heading >= 360.0f) return "HEADING_UNAVAILABLE";
-    if (!d->frame_valid && map->count != 1u) return "GRID_HEADING_UNAVAILABLE";
-    *north = d->frame_valid ? d->north_heading_deg : heading;
-    float delta = fmodf(heading - *north + 360.0f, 360.0f);
+    if (!isfinite(heading) || heading < 0.0f || heading >= 360.0f)
+    {
+        return "HEADING_UNAVAILABLE";
+    }
+    if (!d->frame_valid && map->count != 1u)
+    {
+        return "GRID_HEADING_UNAVAILABLE";
+    }
+    *north            = d->frame_valid ? d->north_heading_deg : heading;
+    float    delta    = fmodf(heading - *north + 360.0f, 360.0f);
     unsigned cardinal = (unsigned)((delta + 45.0f) / 90.0f) % 4u;
-    float error = fabsf(delta - cardinal * 90.0f);
-    if (error > 180.0f) error = 360.0f - error;
-    if (error > 15.0f) return "GRID_DIRECTION_NOT_ALIGNED";
-    static const int8_t dx[] = {0,1,0,-1}, dy[] = {1,0,-1,0};
-    const map_node_t *from = rover_map_find_id(map, map->current_node);
-    int32_t tx = (int32_t)from->x + dx[cardinal], ty = (int32_t)from->y + dy[cardinal];
-    if (tx < INT16_MIN || tx > INT16_MAX || ty < INT16_MIN || ty > INT16_MAX) return "TARGET_CELL_OVERFLOW";
-    const map_node_t *known = rover_map_find_id(map, target_id);
-    const map_node_t *occupant = rover_map_find_cell(map, (int16_t)tx, (int16_t)ty);
-    if ((known && (known->x != tx || known->y != ty)) || (occupant && occupant->marker_id != target_id))
+    float    error    = fabsf(delta - cardinal * 90.0f);
+    if (error > 180.0f)
+    {
+        error = 360.0f - error;
+    }
+    if (error > 15.0f)
+    {
+        return "GRID_DIRECTION_NOT_ALIGNED";
+    }
+    static const int8_t dx[] = {0, 1, 0, -1}, dy[] = {1, 0, -1, 0};
+    const map_node_t *  from = rover_map_find_id(map, map->current_node);
+    int32_t             tx   = (int32_t)from->x + dx[cardinal],
+            ty               = (int32_t)from->y + dy[cardinal];
+    if (tx < INT16_MIN || tx > INT16_MAX || ty < INT16_MIN || ty > INT16_MAX)
+    {
+        return "TARGET_CELL_OVERFLOW";
+    }
+    const map_node_t * known = rover_map_find_id(map, target_id);
+    const map_node_t * occupant =
+        rover_map_find_cell(map, (int16_t)tx, (int16_t)ty);
+    if ((known && (known->x != tx || known->y != ty)) ||
+        (occupant && occupant->marker_id != target_id))
+    {
         return "TARGET_MAP_CONFLICT";
+    }
     if (from->exits[cardinal] == MAP_EXIT_BLOCKED ||
-        (known && known->exits[(cardinal + 2u) % 4u] == MAP_EXIT_BLOCKED)) return "FRONT_BLOCKED";
-    if (!known && map->count >= ROVER_MAP_CAPACITY) return "MAP_FULL";
+        (known && known->exits[(cardinal + 2u) % 4u] == MAP_EXIT_BLOCKED))
+    {
+        return "FRONT_BLOCKED";
+    }
+    if (!known && map->count >= ROVER_MAP_CAPACITY)
+    {
+        return "MAP_FULL";
+    }
     *direction = (leg_direction_t)cardinal;
-    *x = (int16_t)tx; *y = (int16_t)ty;
+    *x         = (int16_t)tx;
+    *y         = (int16_t)ty;
     return NULL;
 }
 
-const char *onboard_drive_start(onboard_drive_t *d, mission_t *m, rover_map_t *map,
-    const target_selector_t *s, const onboard_drive_inputs_t *in, uint32_t now)
+const char * onboard_drive_start (onboard_drive_t * d, mission_t * m,
+                                  rover_map_t *                  map,
+                                  const target_selector_t *      s,
+                                  const onboard_drive_inputs_t * in,
+                                  uint32_t                       now)
 {
     // Check this on RoboPico, never rely on the dashboard's cached map.
-    if (!map->count) return "START_NODE_NOT_SET";
-    if (d->active && m->state == MISSION_EXPLORING && d->leg_id == m->leg.leg_id) return "ALREADY_RUNNING";
-    const map_node_t *current = rover_map_find_id(map, map->current_node);
-    if (!current || !current->visited) return "CURRENT_NODE_UNKNOWN";
-    if (in->safety_latched) return "SAFETY_LOCKED";
-    if (m->test_mode || (m->state != MISSION_IDLE && m->state != MISSION_READY &&
-        !(m->dfs_active && m->state == MISSION_EXPLORING))) return "MISSION_NOT_IDLE";
-    if (!in->stopped) return "MOTOR_BUSY";
-    if (s->state != TARGET_LOCKED || !m->leg.configured || m->leg.phase != LEG_CONFIGURED ||
-        !m->leg.next_target_node || s->leg_id != m->leg.leg_id || s->marker != m->leg.next_target_node ||
-        m->leg.departure_node != map->current_node) return "NO_LOCKED_TARGET";
-    const char *problem = input_problem(s, in, now);
-    if (problem) return problem;
-    if (!s->available) return "TARGET_NOT_VISIBLE_AT_START";
-    if (!centred(s->bearing_cdeg)) return "TARGET_NOT_ALIGNED";
-    if (s->range_mm <= ONBOARD_DRIVE_NEAR_RANGE_MM) return "TARGET_TOO_CLOSE";
-    float north;
+    if (!map->count)
+    {
+        return "START_NODE_NOT_SET";
+    }
+    if (d->active && m->state == MISSION_EXPLORING &&
+        d->leg_id == m->leg.leg_id)
+    {
+        return "ALREADY_RUNNING";
+    }
+    const map_node_t * current = rover_map_find_id(map, map->current_node);
+    if (!current || !current->visited)
+    {
+        return "CURRENT_NODE_UNKNOWN";
+    }
+    if (in->safety_latched)
+    {
+        return "SAFETY_LOCKED";
+    }
+    if (m->test_mode ||
+        (m->state != MISSION_IDLE && m->state != MISSION_READY &&
+         !(m->dfs_active && m->state == MISSION_EXPLORING)))
+    {
+        return "MISSION_NOT_IDLE";
+    }
+    if (!in->stopped)
+    {
+        return "MOTOR_BUSY";
+    }
+    if (s->state != TARGET_LOCKED || !m->leg.configured ||
+        m->leg.phase != LEG_CONFIGURED || !m->leg.next_target_node ||
+        s->leg_id != m->leg.leg_id || s->marker != m->leg.next_target_node ||
+        m->leg.departure_node != map->current_node)
+    {
+        return "NO_LOCKED_TARGET";
+    }
+    const char * problem = input_problem(s, in, now);
+    if (problem)
+    {
+        return problem;
+    }
+    if (!s->available)
+    {
+        return "TARGET_NOT_VISIBLE_AT_START";
+    }
+    if (!centred(s->bearing_cdeg))
+    {
+        return "TARGET_NOT_ALIGNED";
+    }
+    if (s->range_mm <= ONBOARD_DRIVE_NEAR_RANGE_MM)
+    {
+        return "TARGET_TOO_CLOSE";
+    }
+    float           north;
     leg_direction_t direction;
-    int16_t x, y;
-    problem = plan_cell(d, map, m->leg.next_target_node, in->heading_deg, &north, &direction, &x, &y);
-    if (problem) return problem;
-    onboard_drive_t prepared = {.active = true, .leg_id = m->leg.leg_id,
-        .started_ms = now, .last_refresh_ms = now, .result = "APPROACHING",
-        .frame_valid = true, .north_heading_deg = north, .last_tick_ms = now, .input_reason = "NONE"};
+    int16_t         x, y;
+    problem = plan_cell(d, map, m->leg.next_target_node, in->heading_deg,
+                        &north, &direction, &x, &y);
+    if (problem)
+    {
+        return problem;
+    }
+    onboard_drive_t prepared = {.active            = true,
+                                .leg_id            = m->leg.leg_id,
+                                .started_ms        = now,
+                                .last_refresh_ms   = now,
+                                .result            = "APPROACHING",
+                                .frame_valid       = true,
+                                .north_heading_deg = north,
+                                .last_tick_ms      = now,
+                                .input_reason      = "NONE"};
     note_inputs(&prepared, s, in, now);
     problem = track(&prepared, m, s);
-    if (problem) return problem;
-    motor_error_t result = motor_auto_drive_leased(MC_AUTO_APPROACH_PCT, ONBOARD_DRIVE_LEASE_MS);
-    if (result != MOTOR_OK) return result == MOTOR_ERR_NO_HEADING ? "HEADING_UNAVAILABLE" :
-        result == MOTOR_ERR_FRONT_BLOCKED ? "FRONT_BLOCKED" : "MOTOR_REFUSED";
-    if (!mission_begin_drive(m, now)) {
+    if (problem)
+    {
+        return problem;
+    }
+    motor_error_t result =
+        motor_auto_drive_leased(MC_AUTO_APPROACH_PCT, ONBOARD_DRIVE_LEASE_MS);
+    if (result != MOTOR_OK)
+    {
+        return result == MOTOR_ERR_NO_HEADING      ? "HEADING_UNAVAILABLE"
+               : result == MOTOR_ERR_FRONT_BLOCKED ? "FRONT_BLOCKED"
+                                                   : "MOTOR_REFUSED";
+    }
+    if (!mission_begin_drive(m, now))
+    {
         motor_emergency_stop();
         return "MISSION_NOT_IDLE";
     }
-    *d = prepared;
+    *d               = prepared;
     m->leg.direction = direction;
-    m->leg.target_x = x; m->leg.target_y = y;
-    m->leg.target_cell_valid = true; // Planned adjacency, not yet inserted/visited.
+    m->leg.target_x  = x;
+    m->leg.target_y  = y;
+    m->leg.target_cell_valid =
+        true;              // Planned adjacency, not yet inserted/visited.
     rover_map_depart(map); // Only after motor acceptance; no invented arrival.
     d->map_revision = map->revision;
     return "STARTED";
 }
 
-void onboard_drive_stop(onboard_drive_t *d, mission_t *m, mission_reason_t reason,
-                        const char *result, uint32_t now)
+void onboard_drive_stop (onboard_drive_t * d, mission_t * m,
+                         mission_reason_t reason, const char * result,
+                         uint32_t now)
 {
     motor_emergency_stop();
     mission_pause(m, reason, now);
-    d->active = false;
-    d->reference_recovery = false;
-    d->search_active = false;
+    d->active                = false;
+    d->reference_recovery    = false;
+    d->search_active         = false;
     d->front_arrival_pending = false;
-    d->estimate_valid = false;
-    d->result = result;
+    d->estimate_valid        = false;
+    d->result                = result;
 }
 
-static bool reference_absent(const onboard_drive_inputs_t *in)
+static bool reference_absent (const onboard_drive_inputs_t * in)
 {
     return in->reference_absent && in->camera_present &&
-        (in->camera_status==VISION_STATUS_OK || in->camera_status==VISION_STATUS_NO_MARKER) &&
-        in->camera_packet_age_ms<=TARGET_UART_MAX_AGE_MS && in->camera_image_age_ms<=ONBOARD_DRIVE_IMAGE_MAX_AGE_MS;
+           (in->camera_status == VISION_STATUS_OK ||
+            in->camera_status == VISION_STATUS_NO_MARKER) &&
+           in->camera_packet_age_ms <= TARGET_UART_MAX_AGE_MS &&
+           in->camera_image_age_ms <= ONBOARD_DRIVE_IMAGE_MAX_AGE_MS;
 }
 
-static bool recovery_failure(onboard_drive_t *d,mission_t *m,const char *problem,uint32_t now)
+static bool recovery_failure (onboard_drive_t * d, mission_t * m,
+                              const char * problem, uint32_t now)
 {
-    d->input_reason=problem;
-    onboard_drive_stop(d,m,MISSION_REASON_INPUT_LOST,problem,now);
+    d->input_reason = problem;
+    onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST, problem, now);
     return true;
 }
 
-static void finish_backup(onboard_drive_t *d,mission_t *m,const target_selector_t *s,uint32_t now)
+static void finish_backup (onboard_drive_t * d, mission_t * m,
+                           const target_selector_t * s, uint32_t now)
 {
     motor_emergency_stop();
-    mission_reference_phase(m,LEG_REACQUIRING,now);
-    d->backup_stopped_ms=now; d->recovery_frames=0; d->verification_frames=0;
-    d->recovery_generation=s->sample_generation; d->estimate_valid=false;
-    d->result="SETTLING_AFTER_BACKUP";
+    mission_reference_phase(m, LEG_REACQUIRING, now);
+    d->backup_stopped_ms   = now;
+    d->recovery_frames     = 0;
+    d->verification_frames = 0;
+    d->recovery_generation = s->sample_generation;
+    d->estimate_valid      = false;
+    d->result              = "SETTLING_AFTER_BACKUP";
 }
 
 // Returns true while recovery owns this tick (including a terminal failure).
 // Only explicit absence from a live camera stream can initiate the timed bump.
-static bool recover_reference(onboard_drive_t *d,mission_t *m,const target_selector_t *s,
-    const onboard_drive_inputs_t *in,uint32_t now,bool *resuming)
+static bool recover_reference (onboard_drive_t * d, mission_t * m,
+                               const target_selector_t *      s,
+                               const onboard_drive_inputs_t * in, uint32_t now,
+                               bool * resuming)
 {
-    const char *problem=input_problem(s,in,now);
-    if (m->leg.phase==LEG_BACKING_UP) {
-        bool seen_now=!problem && s->reference_available &&
-            (int32_t)(s->sample_received_ms-s->sample_age_ms-d->backup_started_ms)>=0;
-        if ((uint32_t)(now-d->backup_started_ms)>=ONBOARD_DRIVE_BACKUP_MS || seen_now) {
-            finish_backup(d,m,s,now); return true;
+    const char * problem = input_problem(s, in, now);
+    if (m->leg.phase == LEG_BACKING_UP)
+    {
+        bool seen_now = !problem && s->reference_available &&
+                        (int32_t)(s->sample_received_ms - s->sample_age_ms -
+                                  d->backup_started_ms) >= 0;
+        if ((uint32_t)(now - d->backup_started_ms) >= ONBOARD_DRIVE_BACKUP_MS ||
+            seen_now)
+        {
+            finish_backup(d, m, s, now);
+            return true;
         }
-        if (motor_auto_status()!=MOTOR_AUTO_RUNNING)
-            return recovery_failure(d,m,"BACKUP_MOTOR_STOPPED",now);
+        if (motor_auto_status() != MOTOR_AUTO_RUNNING)
+        {
+            return recovery_failure(d, m, "BACKUP_MOTOR_STOPPED", now);
+        }
         // A single non-renewed lease bounds reverse motion even if the main loop stalls.
-        d->result="BACKING_UP_FOR_REFERENCE";
+        d->result = "BACKING_UP_FOR_REFERENCE";
         return true;
     }
-    bool after_backup=m->leg.phase==LEG_REACQUIRING;
-    if (reference_absent(in) && !d->reference_missing) {
-        d->reference_missing=true; d->reference_missing_ms=now;
+    bool after_backup = m->leg.phase == LEG_REACQUIRING;
+    if (reference_absent(in) && !d->reference_missing)
+    {
+        d->reference_missing    = true;
+        d->reference_missing_ms = now;
     }
-    uint32_t settled=after_backup ? d->backup_stopped_ms+ONBOARD_DRIVE_SETTLE_MS : d->reference_wait_ms;
-    if (after_backup && (uint32_t)(now-d->backup_stopped_ms)<ONBOARD_DRIVE_SETTLE_MS) return true;
-    uint32_t limit=after_backup ? ONBOARD_DRIVE_SETTLE_MS+ONBOARD_DRIVE_REACQUIRE_MS :
-        ONBOARD_DRIVE_REFERENCE_MISSING_MS+ONBOARD_DRIVE_REACQUIRE_MS;
-    if ((uint32_t)(now-(after_backup?d->backup_stopped_ms:d->reference_wait_ms))>=limit)
-        return recovery_failure(d,m,"REFERENCE_REACQUISITION_TIMEOUT",now);
+    uint32_t settled = after_backup
+                           ? d->backup_stopped_ms + ONBOARD_DRIVE_SETTLE_MS
+                           : d->reference_wait_ms;
+    if (after_backup &&
+        (uint32_t)(now - d->backup_stopped_ms) < ONBOARD_DRIVE_SETTLE_MS)
+    {
+        return true;
+    }
+    uint32_t limit =
+        after_backup
+            ? ONBOARD_DRIVE_SETTLE_MS + ONBOARD_DRIVE_REACQUIRE_MS
+            : ONBOARD_DRIVE_REFERENCE_MISSING_MS + ONBOARD_DRIVE_REACQUIRE_MS;
+    if ((uint32_t)(now - (after_backup ? d->backup_stopped_ms
+                                       : d->reference_wait_ms)) >= limit)
+    {
+        return recovery_failure(d, m, "REFERENCE_REACQUISITION_TIMEOUT", now);
+    }
 
     // No geometry or confirmation is taken from a pre-recovery/moving image.
     if (!problem && s->reference_available &&
-        (int32_t)(s->sample_received_ms-s->sample_age_ms-settled)>=0) {
-        problem=track(d,m,s);
-        if (problem && !recoverable_camera_problem(problem)) return recovery_failure(d,m,problem,now);
-        if (!problem && s->sample_generation!=d->recovery_generation) {
-            d->reference_missing=false;
-            d->recovery_generation=s->sample_generation;
-            if (++d->recovery_frames>=ONBOARD_DRIVE_RECOVERY_FRAMES) {
+        (int32_t)(s->sample_received_ms - s->sample_age_ms - settled) >= 0)
+    {
+        problem = track(d, m, s);
+        if (problem && !recoverable_camera_problem(problem))
+        {
+            return recovery_failure(d, m, problem, now);
+        }
+        if (!problem && s->sample_generation != d->recovery_generation)
+        {
+            d->reference_missing   = false;
+            d->recovery_generation = s->sample_generation;
+            if (++d->recovery_frames >= ONBOARD_DRIVE_RECOVERY_FRAMES)
+            {
                 // Restart ordinary braking/verification from the new stationary
                 // position. No pre-backup verification count can survive motion.
-                d->reference_recovery=false; d->verification_frames=0;
-                mission_reference_phase(m,LEG_APPROACHING,now);
-                d->last_refresh_ms=now; *resuming=true;
+                d->reference_recovery  = false;
+                d->verification_frames = 0;
+                mission_reference_phase(m, LEG_APPROACHING, now);
+                d->last_refresh_ms = now;
+                *resuming          = true;
                 return false;
             }
-            d->result="CONFIRMING_REFERENCE_RECOVERY";
+            d->result = "CONFIRMING_REFERENCE_RECOVERY";
             return true;
         }
     }
     if (!after_backup && d->reference_missing &&
-        (uint32_t)(now-d->reference_missing_ms)>=ONBOARD_DRIVE_REFERENCE_MISSING_MS) {
-        if (reference_absent(in)) {
-            if (d->backup_used) return recovery_failure(d,m,"REFERENCE_RECOVERY_EXHAUSTED",now);
+        (uint32_t)(now - d->reference_missing_ms) >=
+            ONBOARD_DRIVE_REFERENCE_MISSING_MS)
+    {
+        if (reference_absent(in))
+        {
+            if (d->backup_used)
+            {
+                return recovery_failure(d, m, "REFERENCE_RECOVERY_EXHAUSTED",
+                                        now);
+            }
             // This bounded camera-recovery pulse does not consult rear ranging.
-            if (motor_auto_drive_leased(-ONBOARD_DRIVE_BACKUP_PCT,ONBOARD_DRIVE_BACKUP_MS)!=MOTOR_OK)
-                return recovery_failure(d,m,"BACKUP_MOTOR_REFUSED",now);
-            d->backup_used=true; d->backup_started_ms=now;
-            d->recovery_frames=0; d->estimate_valid=false;
-            mission_reference_phase(m,LEG_BACKING_UP,now);
-            d->result="BACKING_UP_FOR_REFERENCE";
+            if (motor_auto_drive_leased(-ONBOARD_DRIVE_BACKUP_PCT,
+                                        ONBOARD_DRIVE_BACKUP_MS) != MOTOR_OK)
+            {
+                return recovery_failure(d, m, "BACKUP_MOTOR_REFUSED", now);
+            }
+            d->backup_used       = true;
+            d->backup_started_ms = now;
+            d->recovery_frames   = 0;
+            d->estimate_valid    = false;
+            mission_reference_phase(m, LEG_BACKING_UP, now);
+            d->result = "BACKING_UP_FOR_REFERENCE";
             return true;
         }
         // The two-second missing threshold is not a camera deadline. A packet
@@ -297,259 +547,469 @@ static bool recover_reference(onboard_drive_t *d,mission_t *m,const target_selec
         // successive healthy images. Stay stopped until fresh absence arrives
         // or the existing overall recovery window expires above; never reverse
         // using stale evidence. Explicit stalled/lost camera health still fails.
-        if (problem) {
-            if (!in->camera_present || (in->camera_status!=VISION_STATUS_OK &&
-                in->camera_status!=VISION_STATUS_NO_MARKER))
-                return recovery_failure(d,m,"CAMERA_RECOVERY_TIMEOUT",now);
-            d->input_reason=in->camera_packet_age_ms>TARGET_UART_MAX_AGE_MS ? "CAMERA_PACKET_STALE" :
-                in->camera_image_age_ms>ONBOARD_DRIVE_IMAGE_MAX_AGE_MS ? "CAMERA_IMAGE_STALE" : problem;
-            d->estimate_valid=false;
-            d->result="WAITING_FOR_FRESH_REFERENCE_FRAME";
+        if (problem)
+        {
+            if (!in->camera_present ||
+                (in->camera_status != VISION_STATUS_OK &&
+                 in->camera_status != VISION_STATUS_NO_MARKER))
+            {
+                return recovery_failure(d, m, "CAMERA_RECOVERY_TIMEOUT", now);
+            }
+            d->input_reason =
+                in->camera_packet_age_ms > TARGET_UART_MAX_AGE_MS
+                    ? "CAMERA_PACKET_STALE"
+                : in->camera_image_age_ms > ONBOARD_DRIVE_IMAGE_MAX_AGE_MS
+                    ? "CAMERA_IMAGE_STALE"
+                    : problem;
+            d->estimate_valid = false;
+            d->result         = "WAITING_FOR_FRESH_REFERENCE_FRAME";
             return true;
         }
     }
-    if (reference_absent(in)) { d->recovery_frames=0; d->estimate_valid=false; }
-    d->input_reason=after_backup?"REFERENCE_REACQUISITION":"REFERENCE_NOT_VISIBLE";
-    d->result=after_backup?"REACQUIRING_REFERENCE":"WAITING_FOR_REFERENCE";
+    if (reference_absent(in))
+    {
+        d->recovery_frames = 0;
+        d->estimate_valid  = false;
+    }
+    d->input_reason =
+        after_backup ? "REFERENCE_REACQUISITION" : "REFERENCE_NOT_VISIBLE";
+    d->result =
+        after_backup ? "REACQUIRING_REFERENCE" : "WAITING_FOR_REFERENCE";
     return true;
 }
 
-bool onboard_drive_note_front_stop(onboard_drive_t *d,const mission_t *m)
+bool onboard_drive_note_front_stop (onboard_drive_t * d, const mission_t * m)
 {
-    if (!d->active || m->test_mode || m->state!=MISSION_EXPLORING || !m->leg.configured ||
-        !m->leg.target_cell_valid || !m->leg.next_target_node || !d->last_target_range_mm ||
-        d->leg_id!=m->leg.leg_id || m->leg.phase==LEG_BACKING_UP || m->leg.phase==LEG_REACQUIRING)
+    if (!d->active || m->test_mode || m->state != MISSION_EXPLORING ||
+        !m->leg.configured || !m->leg.target_cell_valid ||
+        !m->leg.next_target_node || !d->last_target_range_mm ||
+        d->leg_id != m->leg.leg_id || m->leg.phase == LEG_BACKING_UP ||
+        m->leg.phase == LEG_REACQUIRING)
+    {
         return false;
-    d->front_arrival_pending=true;
+    }
+    d->front_arrival_pending = true;
     return true;
 }
 
-static bool commit_arrival(onboard_drive_t *d,mission_t *m,rover_map_t *map,bool wall,uint32_t now)
+static bool commit_arrival (onboard_drive_t * d, mission_t * m,
+                            rover_map_t * map, bool wall, uint32_t now)
 {
-    if (!m->leg.target_cell_valid || rover_map_add(map,m->leg.next_target_node,
-        m->leg.target_x,m->leg.target_y,false)!=MAP_OK || rover_map_arrive(map,m->leg.next_target_node)!=MAP_OK) {
-        onboard_drive_stop(d,m,MISSION_REASON_INPUT_LOST,"ARRIVAL_MAP_COMMIT_FAILED",now); return false;
+    if (!m->leg.target_cell_valid ||
+        rover_map_add(map, m->leg.next_target_node, m->leg.target_x,
+                      m->leg.target_y, false) != MAP_OK ||
+        rover_map_arrive(map, m->leg.next_target_node) != MAP_OK)
+    {
+        onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST,
+                           "ARRIVAL_MAP_COMMIT_FAILED", now);
+        return false;
     }
-    mission_complete_target(m,now);
-    rover_map_set_exit(map,m->leg.departure_node,(map_direction_t)m->leg.direction,MAP_EXIT_TRAVERSED);
-    rover_map_set_exit(map,m->leg.next_target_node,(map_direction_t)(((unsigned)m->leg.direction+2u)%4u),MAP_EXIT_TRAVERSED);
-    if (wall) rover_map_set_exit(map,m->leg.next_target_node,(map_direction_t)m->leg.direction,MAP_EXIT_BLOCKED);
-    d->active=false; d->search_active=false; d->result="ARRIVED";
+    mission_complete_target(m, now);
+    rover_map_set_exit(map, m->leg.departure_node,
+                       (map_direction_t)m->leg.direction, MAP_EXIT_TRAVERSED);
+    rover_map_set_exit(
+        map, m->leg.next_target_node,
+        (map_direction_t)(((unsigned)m->leg.direction + 2u) % 4u),
+        MAP_EXIT_TRAVERSED);
+    if (wall)
+    {
+        rover_map_set_exit(map, m->leg.next_target_node,
+                           (map_direction_t)m->leg.direction, MAP_EXIT_BLOCKED);
+    }
+    d->active        = false;
+    d->search_active = false;
+    d->result        = "ARRIVED";
     return true;
 }
 
-static void verify_obstacle(onboard_drive_t *d,mission_t *m,rover_map_t *map,
-    const onboard_drive_inputs_t *in,uint32_t now)
+static void verify_obstacle (onboard_drive_t * d, mission_t * m,
+                             rover_map_t *                  map,
+                             const onboard_drive_inputs_t * in, uint32_t now)
 {
-    if ((uint32_t)(now-d->braked_ms)>=ONBOARD_DRIVE_VERIFY_TIMEOUT_MS) {
-        recovery_failure(d,m,"OBSTACLE_ARRIVAL_NOT_CONFIRMED",now); return;
+    if ((uint32_t)(now - d->braked_ms) >= ONBOARD_DRIVE_VERIFY_TIMEOUT_MS)
+    {
+        recovery_failure(d, m, "OBSTACLE_ARRIVAL_NOT_CONFIRMED", now);
+        return;
     }
-    if ((uint32_t)(now-d->braked_ms)<ONBOARD_DRIVE_SETTLE_MS ||
-        (int32_t)(in->sensor_received_ms-d->braked_ms-ONBOARD_DRIVE_SETTLE_MS)<0 ||
-        in->sensor_received_ms==d->last_obstacle_ms) return;
-    d->last_obstacle_ms=in->sensor_received_ms;
-    if (!front_obstacle_detected(in->front_mm,in->front_fault)) {
-        d->obstacle_frames=d->verification_frames=0; return;
+    if ((uint32_t)(now - d->braked_ms) < ONBOARD_DRIVE_SETTLE_MS ||
+        (int32_t)(in->sensor_received_ms - d->braked_ms -
+                  ONBOARD_DRIVE_SETTLE_MS) < 0 ||
+        in->sensor_received_ms == d->last_obstacle_ms)
+    {
+        return;
     }
-    d->verification_frames=++d->obstacle_frames;
-    if (d->obstacle_frames>=ONBOARD_DRIVE_OBSTACLE_CONFIRM_FRAMES) commit_arrival(d,m,map,true,now);
+    d->last_obstacle_ms = in->sensor_received_ms;
+    if (!front_obstacle_detected(in->front_mm, in->front_fault))
+    {
+        d->obstacle_frames = d->verification_frames = 0;
+        return;
+    }
+    d->verification_frames = ++d->obstacle_frames;
+    if (d->obstacle_frames >= ONBOARD_DRIVE_OBSTACLE_CONFIRM_FRAMES)
+    {
+        commit_arrival(d, m, map, true, now);
+    }
 }
 
-static const char *search_camera_problem(const onboard_drive_inputs_t *in)
+static const char * search_camera_problem (const onboard_drive_inputs_t * in)
 {
-    if (!in->camera_present) return "CAMERA_UART_MISSING";
-    if (in->camera_status!=VISION_STATUS_OK && in->camera_status!=VISION_STATUS_NO_MARKER)
-        return in->camera_status==VISION_STATUS_STALLED?"CAMERA_PROCESSING_STALLED":"CAMERA_LOST";
-    if (in->camera_packet_age_ms>TARGET_UART_MAX_AGE_MS) return "CAMERA_PACKET_STALE";
-    if (in->camera_image_age_ms>ONBOARD_DRIVE_IMAGE_MAX_AGE_MS) return "CAMERA_IMAGE_STALE";
+    if (!in->camera_present)
+    {
+        return "CAMERA_UART_MISSING";
+    }
+    if (in->camera_status != VISION_STATUS_OK &&
+        in->camera_status != VISION_STATUS_NO_MARKER)
+    {
+        return in->camera_status == VISION_STATUS_STALLED
+                   ? "CAMERA_PROCESSING_STALLED"
+                   : "CAMERA_LOST";
+    }
+    if (in->camera_packet_age_ms > TARGET_UART_MAX_AGE_MS)
+    {
+        return "CAMERA_PACKET_STALE";
+    }
+    if (in->camera_image_age_ms > ONBOARD_DRIVE_IMAGE_MAX_AGE_MS)
+    {
+        return "CAMERA_IMAGE_STALE";
+    }
     return NULL;
 }
 
-static bool start_search(onboard_drive_t *d,mission_t *m,target_selector_t *s,
-    const onboard_drive_inputs_t *in,uint32_t now)
+static bool start_search (onboard_drive_t * d, mission_t * m,
+                          target_selector_t *            s,
+                          const onboard_drive_inputs_t * in, uint32_t now)
 {
     // A responding, fault-free sensor can report no usable return (0).
     // Permit the bounded slow search without turning that unknown distance
     // into a clear exit or arrival fact. motion_problem still rejects faults
     // and stale packets; a positive close range still brakes independently.
-    if (in->front_mm && in->front_mm!=1023u && in->front_mm<ONBOARD_DRIVE_SEARCH_CLEAR_MM) {
-        recovery_failure(d,m,"SEARCH_FRONT_NOT_CLEAR",now); return false;
+    if (in->front_mm && in->front_mm != 1023u &&
+        in->front_mm < ONBOARD_DRIVE_SEARCH_CLEAR_MM)
+    {
+        recovery_failure(d, m, "SEARCH_FRONT_NOT_CLEAR", now);
+        return false;
     }
-    if (motor_auto_drive_leased(ONBOARD_DRIVE_SEARCH_PCT,ONBOARD_DRIVE_LEASE_MS)!=MOTOR_OK) {
-        recovery_failure(d,m,"SEARCH_MOTOR_REFUSED",now); return false;
+    if (motor_auto_drive_leased(ONBOARD_DRIVE_SEARCH_PCT,
+                                ONBOARD_DRIVE_LEASE_MS) != MOTOR_OK)
+    {
+        recovery_failure(d, m, "SEARCH_MOTOR_REFUSED", now);
+        return false;
     }
-    d->search_active=d->search_used=true; d->last_refresh_ms=now;
-    d->estimate_valid=false; d->recovery_frames=0; d->input_reason="NONE";
-    s->allow_late_reference=true;
-    mission_search_phase(m,LEG_SEARCHING_REFERENCE,now);
-    d->result="SEARCHING_FOR_REFERENCE";
+    d->search_active = d->search_used = true;
+    d->last_refresh_ms                = now;
+    d->estimate_valid                 = false;
+    d->recovery_frames                = 0;
+    d->input_reason                   = "NONE";
+    s->allow_late_reference           = true;
+    mission_search_phase(m, LEG_SEARCHING_REFERENCE, now);
+    d->result = "SEARCHING_FOR_REFERENCE";
     return true;
 }
 
 // Fresh NO_MARKER images keep the slow search alive. Transport/processing gaps
 // brake and require post-hold images; they never authorise unobserved travel.
-static bool search_tick(onboard_drive_t *d,mission_t *m,target_selector_t *s,
-    const onboard_drive_inputs_t *in,uint32_t now,bool *reference_ready)
+static bool search_tick (onboard_drive_t * d, mission_t * m,
+                         target_selector_t *            s,
+                         const onboard_drive_inputs_t * in, uint32_t now,
+                         bool * reference_ready)
 {
-    if (d->search_driving_ms>=ONBOARD_DRIVE_SEARCH_MAX_MS)
-        return recovery_failure(d,m,"REFERENCE_SEARCH_LIMIT",now);
-    const char *problem=search_camera_problem(in);
-    if (problem) {
-        if (m->leg.phase==LEG_SEARCHING_REFERENCE) {
-            motor_emergency_stop(); mission_search_phase(m,LEG_HOLDING,now);
-            d->search_hold_ms=now; d->recovery_frames=0; d->search_generation=in->camera_generation;
+    if (d->search_driving_ms >= ONBOARD_DRIVE_SEARCH_MAX_MS)
+    {
+        return recovery_failure(d, m, "REFERENCE_SEARCH_LIMIT", now);
+    }
+    const char * problem = search_camera_problem(in);
+    if (problem)
+    {
+        if (m->leg.phase == LEG_SEARCHING_REFERENCE)
+        {
+            motor_emergency_stop();
+            mission_search_phase(m, LEG_HOLDING, now);
+            d->search_hold_ms    = now;
+            d->recovery_frames   = 0;
+            d->search_generation = in->camera_generation;
         }
-        d->estimate_valid=false; d->input_reason=problem; d->result="HOLDING_FOR_SEARCH_CAMERA";
-        if ((uint32_t)(now-d->search_hold_ms)>=ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
-            return recovery_failure(d,m,"CAMERA_RECOVERY_TIMEOUT",now);
+        d->estimate_valid = false;
+        d->input_reason   = problem;
+        d->result         = "HOLDING_FOR_SEARCH_CAMERA";
+        if ((uint32_t)(now - d->search_hold_ms) >=
+            ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
+        {
+            return recovery_failure(d, m, "CAMERA_RECOVERY_TIMEOUT", now);
+        }
         return true;
     }
-    if (m->leg.phase==LEG_HOLDING) {
-        if ((uint32_t)(now-d->search_hold_ms)>=ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
-            return recovery_failure(d,m,"CAMERA_RECOVERY_TIMEOUT",now);
-        if ((int32_t)(now-in->camera_image_age_ms-d->search_hold_ms)<0 ||
-            in->camera_generation==d->search_generation) return true;
-        d->search_generation=in->camera_generation;
-        if (++d->recovery_frames<ONBOARD_DRIVE_RECOVERY_FRAMES) return true;
-        if (motor_auto_drive_leased(ONBOARD_DRIVE_SEARCH_PCT,ONBOARD_DRIVE_LEASE_MS)!=MOTOR_OK)
-            return recovery_failure(d,m,"SEARCH_MOTOR_REFUSED",now);
-        d->last_refresh_ms=now; mission_search_phase(m,LEG_SEARCHING_REFERENCE,now);
+    if (m->leg.phase == LEG_HOLDING)
+    {
+        if ((uint32_t)(now - d->search_hold_ms) >=
+            ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
+        {
+            return recovery_failure(d, m, "CAMERA_RECOVERY_TIMEOUT", now);
+        }
+        if ((int32_t)(now - in->camera_image_age_ms - d->search_hold_ms) < 0 ||
+            in->camera_generation == d->search_generation)
+        {
+            return true;
+        }
+        d->search_generation = in->camera_generation;
+        if (++d->recovery_frames < ONBOARD_DRIVE_RECOVERY_FRAMES)
+        {
+            return true;
+        }
+        if (motor_auto_drive_leased(ONBOARD_DRIVE_SEARCH_PCT,
+                                    ONBOARD_DRIVE_LEASE_MS) != MOTOR_OK)
+        {
+            return recovery_failure(d, m, "SEARCH_MOTOR_REFUSED", now);
+        }
+        d->last_refresh_ms = now;
+        mission_search_phase(m, LEG_SEARCHING_REFERENCE, now);
     }
-    if (s->reference_available && !input_problem(s,in,now)) {
-        problem=track(d,m,s);
-        if (problem) return recovery_failure(d,m,problem,now);
-        d->search_active=false; s->allow_late_reference=false;
-        mission_search_phase(m,LEG_APPROACHING,now); *reference_ready=true;
-        d->input_reason="NONE"; d->result="LATE_REFERENCE_LOCKED";
+    if (s->reference_available && !input_problem(s, in, now))
+    {
+        problem = track(d, m, s);
+        if (problem)
+        {
+            return recovery_failure(d, m, problem, now);
+        }
+        d->search_active        = false;
+        s->allow_late_reference = false;
+        mission_search_phase(m, LEG_APPROACHING, now);
+        *reference_ready = true;
+        d->input_reason  = "NONE";
+        d->result        = "LATE_REFERENCE_LOCKED";
         return false;
     }
-    if (s->available && !input_problem(s,in,now)) d->last_target_range_mm=s->range_mm;
-    d->estimate_valid=false;
-    d->input_reason=in->front_mm?"NONE":"FRONT_DISTANCE_UNKNOWN";
-    d->result=in->front_mm?"SEARCHING_FOR_REFERENCE":"SEARCHING_WITH_NO_FRONT_RETURN";
-    if (motor_auto_status()!=MOTOR_AUTO_RUNNING) return recovery_failure(d,m,"MOTOR_STOPPED",now);
-    if ((uint32_t)(now-d->last_refresh_ms)>=ONBOARD_DRIVE_REFRESH_MS) {
-        if (!motor_auto_renew_lease()) return recovery_failure(d,m,"DRIVE_LEASE_EXPIRED",now);
-        d->last_refresh_ms=now;
+    if (s->available && !input_problem(s, in, now))
+    {
+        d->last_target_range_mm = s->range_mm;
+    }
+    d->estimate_valid = false;
+    d->input_reason   = in->front_mm ? "NONE" : "FRONT_DISTANCE_UNKNOWN";
+    d->result         = in->front_mm ? "SEARCHING_FOR_REFERENCE"
+                                     : "SEARCHING_WITH_NO_FRONT_RETURN";
+    if (motor_auto_status() != MOTOR_AUTO_RUNNING)
+    {
+        return recovery_failure(d, m, "MOTOR_STOPPED", now);
+    }
+    if ((uint32_t)(now - d->last_refresh_ms) >= ONBOARD_DRIVE_REFRESH_MS)
+    {
+        if (!motor_auto_renew_lease())
+        {
+            return recovery_failure(d, m, "DRIVE_LEASE_EXPIRED", now);
+        }
+        d->last_refresh_ms = now;
     }
     return true;
 }
 
-void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, target_selector_t *s,
-                        const onboard_drive_inputs_t *in, uint32_t now)
+void onboard_drive_tick (onboard_drive_t * d, mission_t * m, rover_map_t * map,
+                         target_selector_t *            s,
+                         const onboard_drive_inputs_t * in, uint32_t now)
 {
-    if (!d->active) return;
-    uint32_t elapsed = now - d->last_tick_ms;
-    d->last_tick_ms = now;
-    if (m->leg.phase == LEG_APPROACHING && !d->search_used) d->driving_ms += elapsed;
-    if (m->leg.phase == LEG_SEARCHING_REFERENCE || (m->leg.phase==LEG_APPROACHING && d->search_used))
-        d->search_driving_ms += elapsed;
-    note_inputs(d, s, in, now);
-    if (m->state != MISSION_EXPLORING || m->test_mode || !m->leg.configured || m->leg.leg_id != d->leg_id) {
-        motor_emergency_stop();
-        if (m->state == MISSION_EXPLORING) mission_pause(m, MISSION_REASON_MOTOR_STOPPED, now);
-        d->active = false;
-        d->estimate_valid = false;
-        d->result = m->reason == MISSION_REASON_LINK_LOST ? "LINK_LOST" :
-            m->reason == MISSION_REASON_FRONT_STOP ? "FRONT_BLOCKED" :
-            m->reason == MISSION_REASON_ESTOP ? "SAFETY_LOCKED" : "CANCELLED";
+    if (!d->active)
+    {
         return;
     }
-    const char *problem = motion_problem(in,now);
-    uint32_t wall_limit=ONBOARD_DRIVE_MAX_WALL_MS+
-        ((d->reference_recovery || d->backup_used)?ONBOARD_DRIVE_RECOVERY_WALL_MS:0u);
-    if (d->search_used) wall_limit=ONBOARD_DRIVE_SEARCH_WALL_MS;
-    if ((!problem || recoverable_camera_problem(problem)) &&
-        (uint32_t)(now - d->started_ms) >= wall_limit) problem = "LEG_TIME_LIMIT";
-    bool front_stop=problem && strcmp(problem,"FRONT_BLOCKED")==0;
-    if ((!problem || front_stop) && map->revision != d->map_revision) problem = "MAP_CHANGED_DURING_LEG";
-    front_stop=problem && strcmp(problem,"FRONT_BLOCKED")==0;
-    if ((!problem || front_stop) && (d->front_arrival_pending ||
-        (front_obstacle_detected(in->front_mm,in->front_fault) && onboard_drive_note_front_stop(d,m)))) {
-        d->front_arrival_pending=false;
-        if (m->leg.phase!=LEG_OBSTACLE_VERIFYING) {
-            motor_emergency_stop(); mission_search_phase(m,LEG_OBSTACLE_VERIFYING,now);
-            d->using_obstacle=true; d->using_reference=false; d->search_active=false;
-            d->reference_recovery=false; d->braked_ms=now;
-            d->verification_frames=d->obstacle_frames=0; d->last_obstacle_ms=in->sensor_received_ms;
-            s->allow_late_reference=false;
-        }
-        problem=NULL;
+    uint32_t elapsed = now - d->last_tick_ms;
+    d->last_tick_ms  = now;
+    if (m->leg.phase == LEG_APPROACHING && !d->search_used)
+    {
+        d->driving_ms += elapsed;
     }
-    if ((!problem || front_stop) && m->leg.phase==LEG_OBSTACLE_VERIFYING) {
-        d->remaining_mm=0; d->estimate_valid=true; d->input_reason="NONE";
-        d->result="VERIFYING_OBSTACLE_ARRIVAL"; verify_obstacle(d,m,map,in,now); return;
+    if (m->leg.phase == LEG_SEARCHING_REFERENCE ||
+        (m->leg.phase == LEG_APPROACHING && d->search_used))
+    {
+        d->search_driving_ms += elapsed;
     }
-    bool search_reference_ready=false;
-    if (!problem && !d->search_active && !d->reference_model_valid && !s->available &&
-        d->last_target_range_mm && (m->leg.phase==LEG_APPROACHING || m->leg.phase==LEG_HOLDING) &&
-        !search_camera_problem(in)) {
-        if (!start_search(d,m,s,in,now)) return;
-    }
-    if (!problem && d->search_active && search_tick(d,m,s,in,now,&search_reference_ready)) return;
-    bool reference_resuming=false;
-    if (!problem && !d->reference_recovery && d->reference_model_valid &&
-        m->leg.arrival_reference_node==d->reference_id && reference_absent(in)) {
+    note_inputs(d, s, in, now);
+    if (m->state != MISSION_EXPLORING || m->test_mode || !m->leg.configured ||
+        m->leg.leg_id != d->leg_id)
+    {
         motor_emergency_stop();
-        mission_reference_phase(m,LEG_HOLDING,now);
-        d->reference_recovery=true; d->reference_wait_ms=now;
-        d->reference_missing=true; d->reference_missing_ms=now;
-        d->recovery_generation=s->sample_generation; d->recovery_frames=0;
-        d->verification_frames=0; d->estimate_valid=false;
-    }
-    if (!problem && d->reference_recovery && recover_reference(d,m,s,in,now,&reference_resuming)) return;
-    if (!problem) problem=input_problem(s,in,now);
-    if (!problem) problem = track(d, m, s);
-    if (problem) {
-        d->input_reason = problem;
+        if (m->state == MISSION_EXPLORING)
+        {
+            mission_pause(m, MISSION_REASON_MOTOR_STOPPED, now);
+        }
+        d->active         = false;
         d->estimate_valid = false;
-        if (recoverable_camera_problem(problem)) {
-            if (m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING) {
+        d->result         = m->reason == MISSION_REASON_LINK_LOST ? "LINK_LOST"
+                            : m->reason == MISSION_REASON_FRONT_STOP ? "FRONT_BLOCKED"
+                            : m->reason == MISSION_REASON_ESTOP ? "SAFETY_LOCKED"
+                                                                : "CANCELLED";
+        return;
+    }
+    const char * problem = motion_problem(in, now);
+    uint32_t     wall_limit =
+        ONBOARD_DRIVE_MAX_WALL_MS + ((d->reference_recovery || d->backup_used)
+                                         ? ONBOARD_DRIVE_RECOVERY_WALL_MS
+                                         : 0u);
+    if (d->search_used)
+    {
+        wall_limit = ONBOARD_DRIVE_SEARCH_WALL_MS;
+    }
+    if ((!problem || recoverable_camera_problem(problem)) &&
+        (uint32_t)(now - d->started_ms) >= wall_limit)
+    {
+        problem = "LEG_TIME_LIMIT";
+    }
+    bool front_stop = problem && strcmp(problem, "FRONT_BLOCKED") == 0;
+    if ((!problem || front_stop) && map->revision != d->map_revision)
+    {
+        problem = "MAP_CHANGED_DURING_LEG";
+    }
+    front_stop = problem && strcmp(problem, "FRONT_BLOCKED") == 0;
+    if ((!problem || front_stop) &&
+        (d->front_arrival_pending ||
+         (front_obstacle_detected(in->front_mm, in->front_fault) &&
+          onboard_drive_note_front_stop(d, m))))
+    {
+        d->front_arrival_pending = false;
+        if (m->leg.phase != LEG_OBSTACLE_VERIFYING)
+        {
+            motor_emergency_stop();
+            mission_search_phase(m, LEG_OBSTACLE_VERIFYING, now);
+            d->using_obstacle      = true;
+            d->using_reference     = false;
+            d->search_active       = false;
+            d->reference_recovery  = false;
+            d->braked_ms           = now;
+            d->verification_frames = d->obstacle_frames = 0;
+            d->last_obstacle_ms     = in->sensor_received_ms;
+            s->allow_late_reference = false;
+        }
+        problem = NULL;
+    }
+    if ((!problem || front_stop) && m->leg.phase == LEG_OBSTACLE_VERIFYING)
+    {
+        d->remaining_mm   = 0;
+        d->estimate_valid = true;
+        d->input_reason   = "NONE";
+        d->result         = "VERIFYING_OBSTACLE_ARRIVAL";
+        verify_obstacle(d, m, map, in, now);
+        return;
+    }
+    bool search_reference_ready = false;
+    if (!problem && !d->search_active && !d->reference_model_valid &&
+        !s->available && d->last_target_range_mm &&
+        (m->leg.phase == LEG_APPROACHING || m->leg.phase == LEG_HOLDING) &&
+        !search_camera_problem(in))
+    {
+        if (!start_search(d, m, s, in, now))
+        {
+            return;
+        }
+    }
+    if (!problem && d->search_active &&
+        search_tick(d, m, s, in, now, &search_reference_ready))
+    {
+        return;
+    }
+    bool reference_resuming = false;
+    if (!problem && !d->reference_recovery && d->reference_model_valid &&
+        m->leg.arrival_reference_node == d->reference_id &&
+        reference_absent(in))
+    {
+        motor_emergency_stop();
+        mission_reference_phase(m, LEG_HOLDING, now);
+        d->reference_recovery   = true;
+        d->reference_wait_ms    = now;
+        d->reference_missing    = true;
+        d->reference_missing_ms = now;
+        d->recovery_generation  = s->sample_generation;
+        d->recovery_frames      = 0;
+        d->verification_frames  = 0;
+        d->estimate_valid       = false;
+    }
+    if (!problem && d->reference_recovery &&
+        recover_reference(d, m, s, in, now, &reference_resuming))
+    {
+        return;
+    }
+    if (!problem)
+    {
+        problem = input_problem(s, in, now);
+    }
+    if (!problem)
+    {
+        problem = track(d, m, s);
+    }
+    if (problem)
+    {
+        d->input_reason   = problem;
+        d->estimate_valid = false;
+        if (recoverable_camera_problem(problem))
+        {
+            if (m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING)
+            {
                 // Cached-frame expiry/missing detections supply no contradictory
                 // position measurement. Keep distinct valid post-brake samples
                 // within the bounded verification window; wheels stay stopped.
-                if ((uint32_t)(now - d->braked_ms) < ONBOARD_DRIVE_VERIFY_TIMEOUT_MS) {
+                if ((uint32_t)(now - d->braked_ms) <
+                    ONBOARD_DRIVE_VERIFY_TIMEOUT_MS)
+                {
                     d->result = "WAITING_FOR_CAMERA_VERIFICATION";
                     return; // Already stopped; wait for fresh confirmation, never restart motion.
                 }
-            } else {
-                if (m->leg.phase == LEG_APPROACHING) {
+            }
+            else
+            {
+                if (m->leg.phase == LEG_APPROACHING)
+                {
                     motor_emergency_stop();
                     mission_camera_hold(m, true, now);
-                    d->hold_started_ms = now;
+                    d->hold_started_ms     = now;
                     d->recovery_generation = s->sample_generation;
-                    d->recovery_frames = 0;
+                    d->recovery_frames     = 0;
                 }
-                if ((uint32_t)(now - d->hold_started_ms) < ONBOARD_DRIVE_CAMERA_RECOVERY_MS) {
+                if ((uint32_t)(now - d->hold_started_ms) <
+                    ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
+                {
                     // Likewise preserve a valid recovery image while waiting
                     // for the next distinct one. Never count stale/missing input.
                     d->result = "HOLDING_FOR_CAMERA";
                     return;
                 }
             }
-            problem = m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING ?
-                "ARRIVAL_VERIFICATION_TIMEOUT" : "CAMERA_RECOVERY_TIMEOUT";
+            problem =
+                m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING
+                    ? "ARRIVAL_VERIFICATION_TIMEOUT"
+                    : "CAMERA_RECOVERY_TIMEOUT";
         }
-        onboard_drive_stop(d, m, in->safety_latched ? MISSION_REASON_ESTOP :
-            !in->link_ok ? MISSION_REASON_LINK_LOST : in->front_urgent || front_obstacle_detected(in->front_mm, in->front_fault) ?
-            MISSION_REASON_FRONT_STOP : strcmp(problem, "LEG_TIME_LIMIT") == 0 ? MISSION_REASON_DRIVE_TIMEOUT :
-            MISSION_REASON_INPUT_LOST, problem, now);
+        onboard_drive_stop(
+            d, m,
+            in->safety_latched ? MISSION_REASON_ESTOP
+            : !in->link_ok     ? MISSION_REASON_LINK_LOST
+            : in->front_urgent ||
+                    front_obstacle_detected(in->front_mm, in->front_fault)
+                ? MISSION_REASON_FRONT_STOP
+            : strcmp(problem, "LEG_TIME_LIMIT") == 0
+                ? MISSION_REASON_DRIVE_TIMEOUT
+                : MISSION_REASON_INPUT_LOST,
+            problem, now);
         return;
     }
     bool resuming = reference_resuming || search_reference_ready;
-    if (m->leg.phase == LEG_HOLDING) {
-        if ((uint32_t)(now - d->hold_started_ms) >= ONBOARD_DRIVE_CAMERA_RECOVERY_MS) {
-            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST, "CAMERA_RECOVERY_TIMEOUT", now);
+    if (m->leg.phase == LEG_HOLDING)
+    {
+        if ((uint32_t)(now - d->hold_started_ms) >=
+            ONBOARD_DRIVE_CAMERA_RECOVERY_MS)
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST,
+                               "CAMERA_RECOVERY_TIMEOUT", now);
             return;
         }
         uint32_t image_ms = s->sample_received_ms - s->sample_age_ms;
-        if ((int32_t)(image_ms - d->hold_started_ms) < 0) {
+        if ((int32_t)(image_ms - d->hold_started_ms) < 0)
+        {
             d->result = "WAITING_FOR_POST_HOLD_IMAGE";
             return;
         }
-        if (s->sample_generation == d->recovery_generation) return;
+        if (s->sample_generation == d->recovery_generation)
+        {
+            return;
+        }
         d->recovery_generation = s->sample_generation;
-        if (++d->recovery_frames < ONBOARD_DRIVE_RECOVERY_FRAMES) {
+        if (++d->recovery_frames < ONBOARD_DRIVE_RECOVERY_FRAMES)
+        {
             d->result = "CONFIRMING_CAMERA_RECOVERY";
             return;
         }
@@ -557,97 +1017,159 @@ void onboard_drive_tick(onboard_drive_t *d, mission_t *m, rover_map_t *map, targ
         resuming = true;
     }
     d->input_reason = "NONE";
-    if (m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING) {
-        if ((uint32_t)(now - d->braked_ms) >= ONBOARD_DRIVE_VERIFY_TIMEOUT_MS) {
-            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST, "ARRIVAL_VERIFICATION_TIMEOUT", now);
+    if (m->leg.phase == LEG_BRAKING || m->leg.phase == LEG_VERIFYING)
+    {
+        if ((uint32_t)(now - d->braked_ms) >= ONBOARD_DRIVE_VERIFY_TIMEOUT_MS)
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST,
+                               "ARRIVAL_VERIFICATION_TIMEOUT", now);
             return;
         }
-        if ((uint32_t)(now - d->braked_ms) < ONBOARD_DRIVE_SETTLE_MS) return;
-        if (m->leg.phase == LEG_BRAKING) {
+        if ((uint32_t)(now - d->braked_ms) < ONBOARD_DRIVE_SETTLE_MS)
+        {
+            return;
+        }
+        if (m->leg.phase == LEG_BRAKING)
+        {
             mission_arrival_phase(m, LEG_VERIFYING, now);
         }
         d->result = "VERIFYING_ARRIVAL";
         // Do not confirm using cached/pre-brake images from a delayed pipeline.
         uint32_t image_ms = s->sample_received_ms - s->sample_age_ms;
-        if ((int32_t)(image_ms - (d->braked_ms + ONBOARD_DRIVE_SETTLE_MS)) < 0 ||
-            s->sample_generation == d->last_verify_generation) return;
-        d->last_verify_generation = s->sample_generation;
-        if (!d->using_reference || !d->reference_model_valid ||
-            d->remaining_mm < -ONBOARD_DRIVE_VERIFY_ERROR_MM || d->remaining_mm > ONBOARD_DRIVE_VERIFY_ERROR_MM) {
-            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST, "ARRIVAL_ESTIMATE_NOT_CONFIRMED", now);
+        if ((int32_t)(image_ms - (d->braked_ms + ONBOARD_DRIVE_SETTLE_MS)) <
+                0 ||
+            s->sample_generation == d->last_verify_generation)
+        {
             return;
         }
-        if (++d->verification_frames < ONBOARD_DRIVE_VERIFY_FRAMES) return;
-        commit_arrival(d,m,map,false,now);
+        d->last_verify_generation = s->sample_generation;
+        if (!d->using_reference || !d->reference_model_valid ||
+            d->remaining_mm < -ONBOARD_DRIVE_VERIFY_ERROR_MM ||
+            d->remaining_mm > ONBOARD_DRIVE_VERIFY_ERROR_MM)
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_INPUT_LOST,
+                               "ARRIVAL_ESTIMATE_NOT_CONFIRMED", now);
+            return;
+        }
+        if (++d->verification_frames < ONBOARD_DRIVE_VERIFY_FRAMES)
+        {
+            return;
+        }
+        commit_arrival(d, m, map, false, now);
         return;
     }
-    if (d->using_reference && d->remaining_mm <= ONBOARD_DRIVE_ARRIVAL_STOP_MM) {
-        if (d->remaining_mm < -ONBOARD_DRIVE_VERIFY_ERROR_MM) {
-            onboard_drive_stop(d, m, MISSION_REASON_APPROACH_LIMIT, "TARGET_OVERSHOOT_UNCONFIRMED", now);
+    if (d->using_reference && d->remaining_mm <= ONBOARD_DRIVE_ARRIVAL_STOP_MM)
+    {
+        if (d->remaining_mm < -ONBOARD_DRIVE_VERIFY_ERROR_MM)
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_APPROACH_LIMIT,
+                               "TARGET_OVERSHOOT_UNCONFIRMED", now);
             return;
         }
         motor_emergency_stop();
         mission_arrival_phase(m, LEG_BRAKING, now);
         d->braked_ms = now;
-        d->result = "BRAKING_FOR_ARRIVAL";
+        d->result    = "BRAKING_FOR_ARRIVAL";
         return;
     }
-    if (!d->using_reference && s->range_mm <= ONBOARD_DRIVE_NEAR_RANGE_MM) {
-        onboard_drive_stop(d, m, MISSION_REASON_APPROACH_LIMIT, "NEAR_TARGET_UNCONFIRMED", now);
+    if (!d->using_reference && s->range_mm <= ONBOARD_DRIVE_NEAR_RANGE_MM)
+    {
+        onboard_drive_stop(d, m, MISSION_REASON_APPROACH_LIMIT,
+                           "NEAR_TARGET_UNCONFIRMED", now);
         return;
     }
-    if (d->search_used && d->search_driving_ms>=ONBOARD_DRIVE_SEARCH_MAX_MS) {
-        recovery_failure(d,m,"REFERENCE_SEARCH_LIMIT",now); return;
-    }
-    if (!d->search_used && d->driving_ms >= ONBOARD_DRIVE_MAX_MS) {
-        onboard_drive_stop(d, m, MISSION_REASON_DRIVE_TIMEOUT, "DRIVE_TIME_LIMIT", now);
+    if (d->search_used && d->search_driving_ms >= ONBOARD_DRIVE_SEARCH_MAX_MS)
+    {
+        recovery_failure(d, m, "REFERENCE_SEARCH_LIMIT", now);
         return;
     }
-    if (resuming) {
-        motor_error_t result = motor_auto_drive_leased(d->search_used?ONBOARD_DRIVE_SEARCH_PCT:MC_AUTO_APPROACH_PCT, ONBOARD_DRIVE_LEASE_MS);
-        if (result != MOTOR_OK) {
-            onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED, "MOTOR_REFUSED", now);
+    if (!d->search_used && d->driving_ms >= ONBOARD_DRIVE_MAX_MS)
+    {
+        onboard_drive_stop(d, m, MISSION_REASON_DRIVE_TIMEOUT,
+                           "DRIVE_TIME_LIMIT", now);
+        return;
+    }
+    if (resuming)
+    {
+        motor_error_t result = motor_auto_drive_leased(
+            d->search_used ? ONBOARD_DRIVE_SEARCH_PCT : MC_AUTO_APPROACH_PCT,
+            ONBOARD_DRIVE_LEASE_MS);
+        if (result != MOTOR_OK)
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED,
+                               "MOTOR_REFUSED", now);
             return;
         }
         d->last_refresh_ms = now;
-        d->result = search_reference_ready?"LATE_REFERENCE_LOCKED":
-            reference_resuming?"RESUMED_AFTER_REFERENCE_RECOVERY":"RESUMED_AFTER_CAMERA_GAP";
+        d->result          = search_reference_ready ? "LATE_REFERENCE_LOCKED"
+                             : reference_resuming ? "RESUMED_AFTER_REFERENCE_RECOVERY"
+                                                  : "RESUMED_AFTER_CAMERA_GAP";
         return;
     }
-    if (motor_auto_status() != MOTOR_AUTO_RUNNING) {
-        onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED, "MOTOR_STOPPED", now);
+    if (motor_auto_status() != MOTOR_AUTO_RUNNING)
+    {
+        onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED, "MOTOR_STOPPED",
+                           now);
         return;
     }
-    if ((uint32_t)(now - d->last_refresh_ms) >= ONBOARD_DRIVE_REFRESH_MS) {
-        if (!motor_auto_renew_lease()) {
-            onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED, "DRIVE_LEASE_EXPIRED", now);
+    if ((uint32_t)(now - d->last_refresh_ms) >= ONBOARD_DRIVE_REFRESH_MS)
+    {
+        if (!motor_auto_renew_lease())
+        {
+            onboard_drive_stop(d, m, MISSION_REASON_MOTOR_STOPPED,
+                               "DRIVE_LEASE_EXPIRED", now);
             return;
         }
         d->last_refresh_ms = now;
     }
 }
 
-size_t onboard_drive_format(const onboard_drive_t *d, const mission_t *m, char *out, size_t capacity)
+size_t onboard_drive_format (const onboard_drive_t * d, const mission_t * m,
+                             char * out, size_t capacity)
 {
-    if (!out || !capacity) return 0;
+    if (!out || !capacity)
+    {
+        return 0;
+    }
     char remaining[20];
-    if (d->estimate_valid) snprintf(remaining, sizeof(remaining), "%ld", (long)d->remaining_mm);
-    else snprintf(remaining, sizeof(remaining), "null");
-    int length = snprintf(out, capacity,
+    if (d->estimate_valid)
+    {
+        snprintf(remaining, sizeof(remaining), "%ld", (long)d->remaining_mm);
+    }
+    else
+    {
+        snprintf(remaining, sizeof(remaining), "null");
+    }
+    int length = snprintf(
+        out, capacity,
         "{\"leg_id\":%lu,\"active\":%s,\"phase\":\"%s\",\"source\":\"%s\",\"remaining_mm\":%s,"
         "\"reference_progress_mm\":%ld,\"reference_model_valid\":%s,\"verification_frames\":%u,\"result\":\"%s\","
         "\"input_reason\":\"%s\",\"camera_present\":%s,\"camera_status\":%u,\"camera_packet_age_ms\":%lu,"
         "\"camera_image_age_ms\":%lu,\"accepted_image_age_ms\":%lu,\"recovery_frames\":%u,\"driving_ms\":%lu,"
         "\"search_driving_ms\":%lu,\"last_target_range_mm\":%u,\"reference_arrival_mm\":%u,\"verification_goal\":%u}",
-        (unsigned long)d->leg_id, d->active ? "true" : "false", travel_leg_phase_name(m->leg.phase),
-        !d->estimate_valid ? "NONE" : d->using_obstacle ? "OBSTACLE" : d->using_reference ? "REFERENCE" : "TARGET", remaining,
-        (long)d->reference_progress_mm, d->reference_model_valid ? "true" : "false",
-        (unsigned)d->verification_frames, d->result, d->input_reason ? d->input_reason : "NONE",
+        (unsigned long)d->leg_id, d->active ? "true" : "false",
+        travel_leg_phase_name(m->leg.phase),
+        !d->estimate_valid   ? "NONE"
+        : d->using_obstacle  ? "OBSTACLE"
+        : d->using_reference ? "REFERENCE"
+                             : "TARGET",
+        remaining, (long)d->reference_progress_mm,
+        d->reference_model_valid ? "true" : "false",
+        (unsigned)d->verification_frames, d->result,
+        d->input_reason ? d->input_reason : "NONE",
         d->camera_present ? "true" : "false", (unsigned)d->camera_status,
-        (unsigned long)d->camera_packet_age_ms, (unsigned long)d->camera_image_age_ms,
-        (unsigned long)d->accepted_image_age_ms, (unsigned)d->recovery_frames, (unsigned long)d->driving_ms,
-        (unsigned long)d->search_driving_ms,(unsigned)d->last_target_range_mm,(unsigned)ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM,
-        d->using_obstacle?(unsigned)ONBOARD_DRIVE_OBSTACLE_CONFIRM_FRAMES:(unsigned)ONBOARD_DRIVE_VERIFY_FRAMES);
-    if (length < 0 || (size_t)length >= capacity) { out[0] = '\0'; return 0; }
+        (unsigned long)d->camera_packet_age_ms,
+        (unsigned long)d->camera_image_age_ms,
+        (unsigned long)d->accepted_image_age_ms, (unsigned)d->recovery_frames,
+        (unsigned long)d->driving_ms, (unsigned long)d->search_driving_ms,
+        (unsigned)d->last_target_range_mm,
+        (unsigned)ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM,
+        d->using_obstacle ? (unsigned)ONBOARD_DRIVE_OBSTACLE_CONFIRM_FRAMES
+                          : (unsigned)ONBOARD_DRIVE_VERIFY_FRAMES);
+    if (length < 0 || (size_t)length >= capacity)
+    {
+        out[0] = '\0';
+        return 0;
+    }
     return (size_t)length;
 }

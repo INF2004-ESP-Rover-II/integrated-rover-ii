@@ -3,95 +3,98 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "lwip/apps/mqtt.h"  // <--- ADD THIS LINE
+#include "lwip/apps/mqtt.h" // <--- ADD THIS LINE
 
-uint32_t mqtt_last_link_rx_ms(void);
+uint32_t mqtt_last_link_rx_ms (void);
 
 // Error codes
-typedef enum {
-    WIFI_OK = 0,
-    WIFI_ERR_INIT_FAILED = -1,
-    WIFI_ERR_AUTH = -2,
-    WIFI_ERR_TIMEOUT = -3,
-    WIFI_ERR_NOT_CONNECTED = -4,
-    MQTT_ERR_CONNECT_FAILED = -5,
-    MQTT_ERR_PUBLISH_FAILED = -6,
+typedef enum
+{
+    WIFI_OK                   = 0,
+    WIFI_ERR_INIT_FAILED      = -1,
+    WIFI_ERR_AUTH             = -2,
+    WIFI_ERR_TIMEOUT          = -3,
+    WIFI_ERR_NOT_CONNECTED    = -4,
+    MQTT_ERR_CONNECT_FAILED   = -5,
+    MQTT_ERR_PUBLISH_FAILED   = -6,
     MQTT_ERR_SUBSCRIBE_FAILED = -7,
-    MQTT_ERR_BUSY = -8  // Try the latest telemetry again after network progress.
+    MQTT_ERR_BUSY = -8 // Try the latest telemetry again after network progress.
 } wifi_mqtt_error_t;
 
 // Command callback type
-typedef void (*mqtt_command_callback_t)(const char *command);
+typedef void (*mqtt_command_callback_t)(const char * command);
 
 /**
  * @brief Initialize WiFi subsystem
  */
-wifi_mqtt_error_t wifi_init(void);
+wifi_mqtt_error_t wifi_init (void);
 
 /**
  * @brief Connect to WiFi network
  */
-wifi_mqtt_error_t wifi_connect(const char *ssid, const char *password, uint32_t timeout_ms);
+wifi_mqtt_error_t wifi_connect (const char * ssid, const char * password,
+                                uint32_t timeout_ms);
 
 /**
  * @brief Check WiFi connection status
  */
-bool wifi_is_connected(void);
+bool wifi_is_connected (void);
 
 /**
  * @brief Get IP address
  */
-const char* wifi_get_ip_address(void);
+const char * wifi_get_ip_address (void);
 
 /**
  * @brief Initialize MQTT client
  */
-wifi_mqtt_error_t mqtt_init(const char *broker_ip, uint16_t broker_port, const char *client_id);
+wifi_mqtt_error_t mqtt_init (const char * broker_ip, uint16_t broker_port,
+                             const char * client_id);
 
 /**
  * @brief Connect to MQTT broker
  */
-wifi_mqtt_error_t mqtt_connect(void);
+wifi_mqtt_error_t mqtt_connect (void);
 
 /**
  * @brief Subscribe to command topic
  */
-wifi_mqtt_error_t mqtt_subscribe_commands(mqtt_command_callback_t callback);
+wifi_mqtt_error_t mqtt_subscribe_commands (mqtt_command_callback_t callback);
 
 /**
  * @brief Publish status message
  */
-wifi_mqtt_error_t mqtt_publish_status(const char *status);
+wifi_mqtt_error_t mqtt_publish_status (const char * status);
 
 /**
  * @brief Publish the latest telemetry, or return MQTT_ERR_BUSY without queueing it.
  * At most one telemetry publish is awaiting completion; poll the network before retrying.
  */
-wifi_mqtt_error_t mqtt_publish_telemetry(const char *data);
+wifi_mqtt_error_t mqtt_publish_telemetry (const char * data);
 // robot/camera, QoS 0, not retained; one camera publish in flight at most.
-wifi_mqtt_error_t mqtt_publish_camera(const char *data);
+wifi_mqtt_error_t mqtt_publish_camera (const char * data);
 // Full authoritative map, QoS 0/not retained; one snapshot in flight.
-wifi_mqtt_error_t mqtt_publish_map(const char *data);
+wifi_mqtt_error_t mqtt_publish_map (const char * data);
 
 /**
  * @brief Check MQTT connection status
  */
-bool mqtt_is_connected(void);
+bool mqtt_is_connected (void);
 
 /**
  * @brief Poll WiFi/MQTT (call in main loop)
  */
-void wifi_mqtt_poll(void);
+void wifi_mqtt_poll (void);
 
 /**
  * @brief Get MQTT client pointer for direct publishing
  * @return Pointer to mqtt_client_t
  */
-mqtt_client_t* get_mqtt_client(void);  // <--- ADD THIS FUNCTION DECLARATION
+mqtt_client_t * get_mqtt_client (void); // <--- ADD THIS FUNCTION DECLARATION
 
 /**
  * @brief Time (ms since boot) of the last message from the laptop, 0 if none yet (FR-08)
  */
-uint32_t mqtt_last_link_rx_ms(void);
+uint32_t mqtt_last_link_rx_ms (void);
 
 #endif // WIFI_MQTT_H
