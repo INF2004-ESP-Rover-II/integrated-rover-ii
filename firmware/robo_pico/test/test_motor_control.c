@@ -646,7 +646,7 @@ static void test_park (void)
     uint32_t w = mc_pack_manual_park(1, -MC_PARK_PCT);
     sim_cmd(&s, w);
     int ticks = 0;
-    while (mc_state(&s.mc) != MS_IDLE && ticks < 200)
+    while (mc_state(&s.mc) != MS_IDLE && ticks < 1500) /* 30 s */
     {
         sim_tick(&s);
         if (ticks % 5 == 0)

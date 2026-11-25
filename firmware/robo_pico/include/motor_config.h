@@ -67,14 +67,14 @@
 #define MC_AUTO_CRUISE_PCT   30 /* floor calibration 30 Oct */
 #define MC_AUTO_APPROACH_PCT 30 /* slower near a marker (NFR-05 overshoot) */
 #define MC_PARK_PCT          60 /* parallel park strafe effort (35 too weak) */
-#define MC_PARK_DURATION_MS  1500u /* parallel park strafe time */
+#define MC_PARK_DURATION_MS  20000u /* parallel park strafe time (20 s) */
 
 /* ---------------- Dashboard key speeds (motor_driver.c) ----------------
  * Power for each dashboard key, 0..100 %. Starting values from the bench
  * tests: strafe and diagonal need more (only 2 wheels push on a diagonal,
  * and mecanum rollers slip sideways). Forward also gets the team's pitch
  * boost on a slope. Tune on the floor, then rebuild. */
-#define MC_DASH_STRAIGHT_PCT 7   /* W / S      forward, backward */
+#define MC_DASH_STRAIGHT_PCT 15  /* W / S      forward, backward */
 #define MC_DASH_STRAFE_PCT   100 /* Q / E      strafe left, right (zigzag) */
 #define MC_DASH_DIAGONAL_PCT 60  /* R T F G    diagonals (bench: m 30 30 0) */
 #define MC_DASH_ROTATE_PCT   60  /* A / D      rotate on the spot */
