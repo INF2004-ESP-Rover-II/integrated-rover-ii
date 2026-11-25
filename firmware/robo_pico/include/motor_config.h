@@ -17,7 +17,8 @@
  * vTaskDelayUntil in motor_task.c). */
 #define MC_PERIOD_MS 20u
 
-/* FR-42 / A12: no command or refresh for this long -> SAFE STOP. */
+/* FR-42 / A12: no command or refresh for this long -> fault flag, hard
+ * stop to IDLE (PWM 0, active brake). Only E-STOP enters SAFE STOP. */
 #define MC_CMD_TIMEOUT_MS 300u
 
 /* ~3 missed 20 Hz heading frames -> stop. Must stay below 1024 ms (the
@@ -63,7 +64,7 @@
 /* ---------------- Speed (A5) ---------------- */
 /* Provisional cruise 0.3 m/s. The % that gives 0.3 m/s must be measured;
  * these are effort percentages, not m/s. Exploration chooses the speed. */
-#define MC_AUTO_CRUISE_PCT   30 /* floor calibration 30 Oct (same as W/S) */
+#define MC_AUTO_CRUISE_PCT   30 /* floor calibration 30 Oct */
 #define MC_AUTO_APPROACH_PCT 30 /* slower near a marker (NFR-05 overshoot) */
 #define MC_PARK_PCT          60 /* parallel park strafe effort (35 too weak) */
 #define MC_PARK_DURATION_MS  1500u /* parallel park strafe time */

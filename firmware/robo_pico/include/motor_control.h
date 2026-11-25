@@ -11,7 +11,9 @@
  * Statechart (Week 6 Section 6.6):
  *   ZERO GYRO -> IDLE -> VALIDATE -> MANUAL MODE | AUTO ROTATE | AUTO DRIVE
  *   -> RAMP DOWN -> IDLE
- *   e-stop / command timeout / stale heading / link lost -> SAFE STOP
+ *   e-stop while moving -> SAFE STOP
+ *   command timeout / stale heading -> IDLE with a fault flag (PWM 0,
+ *   active brake); link lost is handled in Robo Comms (operator stop)
  *   SAFE STOP -> (fault cleared + operator reset) -> IDLE
  *   operator stop -> IDLE with PWM 0 at once
  *

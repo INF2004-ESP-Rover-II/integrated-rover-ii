@@ -556,7 +556,7 @@ void mc_step (volatile mc_t * m, uint32_t now_ms, uint32_t heading_word,
         s        = MS_IDLE;
     }
 
-    /* ---- faults while moving -> SAFE STOP (no ramp) ---- */
+    /* ---- faults while moving -> fault flag, hard stop to IDLE ---- */
     if (s == MS_MANUAL || s == MS_AUTO_ROTATE || s == MS_AUTO_DRIVE)
     {
         bool needs_heading =

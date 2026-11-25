@@ -146,9 +146,9 @@ static void test_packing (void)
     const char * old_text = "FORWARD:90:100:100:100:100";
     printf("  motor command: old text %zu bytes -> packed %zu bytes\n",
            strlen(old_text), sizeof(uint32_t));
-    printf(
-        "  heading: old float %zu bytes -> 12-bit field (2 bytes with 4-bit seq)\n",
-        sizeof(float));
+    printf("  heading: old float %zu bytes -> 12-bit field (2 bytes with 4-bit "
+           "seq)\n",
+           sizeof(float));
     printf("  sizeof(mc_t) private state = %zu bytes\n", sizeof(mc_t));
 }
 
@@ -419,7 +419,8 @@ static void test_heading_stale_and_wrap (void)
     CHECK(ticks * (int)MC_PERIOD_MS <= (int)MC_HEADING_STALE_MS + 60,
           "within ~%u ms (got %d)", MC_HEADING_STALE_MS,
           ticks * (int)MC_PERIOD_MS);
-    /* keep the old word for > 1024 ms: the rolling stamp wraps, latch must hold */
+    /* keep the old word for > 1024 ms: the rolling stamp wraps, latch must hold
+     */
     bool ever_fresh = false;
     for (int i = 0; i < 80; i++)
     {
@@ -488,9 +489,9 @@ static void test_rotate_to_heading (void)
               "%.0f->%.0f turns the short way", cases[c][0], cases[c][1]);
         CHECK(mc_state(&s.mc) == MS_IDLE, "%.0f->%.0f back to IDLE",
               cases[c][0], cases[c][1]);
-        printf(
-            "  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg (local brake)\n",
-            cases[c][0], cases[c][1], ticks * (int)MC_PERIOD_MS, err);
+        printf("  %5.0f -> %5.0f deg: done in %4d ms, final error %+.1f deg "
+               "(local brake)\n",
+               cases[c][0], cases[c][1], ticks * (int)MC_PERIOD_MS, err);
         CHECK(fabs(err) <= 5.0, "final error within 5 deg");
     }
 }
@@ -532,7 +533,8 @@ static void test_heading_hold (void)
     sim_init(&n, 45);
     sim_tick(&n);
     n.bias_dps = 8.0;
-    /* same disturbance, no hold: drive via manual with w=0 but no heading -> compare */
+    /* same disturbance, no hold: drive via manual with w=0 but no heading ->
+     * compare */
     double drift = 8.0 * 4.0;
     printf(
         "  without heading hold the same rover would drift ~%.0f deg in 4 s\n",
@@ -659,8 +661,8 @@ static void test_park (void)
 
 static void test_zigzag_strafe (void)
 {
-    puts(
-        "zigzag strafe: diagonals in turn, 2 wheels at full, no forward drift on average");
+    puts("zigzag strafe: diagonals in turn, 2 wheels at full, no forward drift "
+         "on average");
     mc_set_zigzag(200);
     sim_t s;
     sim_init(&s, 0);

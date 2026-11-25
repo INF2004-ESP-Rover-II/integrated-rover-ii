@@ -120,7 +120,8 @@ int main (void)
     assert(motor_motion_state() == MS_IDLE);
     assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
 
-    // Only explicit manual E-STOP locks every direction; readings cannot release it.
+    // Only explicit manual E-STOP locks every direction; readings cannot
+    // release it.
     motor_manual_estop();
     assert(motor_safety_is_latched());
     motor_safety_receive(false, clock_ms);

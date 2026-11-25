@@ -76,12 +76,13 @@ static const char * result_name (int r)
 static void print_status (int heading_tenths)
 {
     EventBits_t f = xEventGroupGetBits(motor_task_faults());
-    printf(
-        "[motor] state=%s faults=0x%02lx last_result=%s(seq %u) loop=%luus wcet=%luus heading=%s",
-        state_name(motor_task_state()), (unsigned long)f,
-        result_name(s_last_result), s_last_result_seq,
-        (unsigned long)motor_task_last_us(),
-        (unsigned long)motor_task_wcet_us(), heading_tenths >= 0 ? "" : "off");
+    printf("[motor] state=%s faults=0x%02lx last_result=%s(seq %u) loop=%luus "
+           "wcet=%luus heading=%s",
+           state_name(motor_task_state()), (unsigned long)f,
+           result_name(s_last_result), s_last_result_seq,
+           (unsigned long)motor_task_last_us(),
+           (unsigned long)motor_task_wcet_us(),
+           heading_tenths >= 0 ? "" : "off");
     if (heading_tenths >= 0)
     {
         printf("%d.%d", heading_tenths / 10, heading_tenths % 10);
@@ -287,9 +288,10 @@ static void bench_task (void * arg)
                 {
                     /* Changing PWM at run time crashed the Pico on the rover,
                      * so the frequency is fixed per firmware build instead. */
-                    printf(
-                        "[bench] PWM is fixed at %lu Hz in this firmware. Flash motor_bench_1k.uf2 or motor_bench_10k.uf2 to change it.\n",
-                        (unsigned long)motor_hw_pwm_freq());
+                    printf("[bench] PWM is fixed at %lu Hz in this firmware. "
+                           "Flash motor_bench_1k.uf2 or motor_bench_10k.uf2 to "
+                           "change it.\n",
+                           (unsigned long)motor_hw_pwm_freq());
                 }
                 else
                 {
@@ -298,8 +300,8 @@ static void bench_task (void * arg)
 
                 if (w)
                 {
-                    held =
-                        w; /* refreshed until it ends; late refreshes are ignored */
+                    held = w; /* refreshed until it ends; late refreshes are
+                                 ignored */
                     if (!motor_task_send_cmd(w))
                     {
                         printf("[bench] queue full\n");
