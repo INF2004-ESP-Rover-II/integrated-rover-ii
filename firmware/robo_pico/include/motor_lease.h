@@ -1,6 +1,6 @@
 /**
  * @file motor_lease.h
- * @brief Motor lease firmware module.
+ * @brief Motor firmware module.
  */
 #ifndef ROVER_MOTOR_LEASE_H
 #define ROVER_MOTOR_LEASE_H
@@ -13,10 +13,10 @@ typedef struct
     uint16_t duration_ms;
 } motor_lease_t;
 static inline bool
-motor_lease_expired (const motor_lease_t * p_lease, uint32_t now)
+motor_lease_expired (const volatile motor_lease_t * lease, uint32_t now)
 {
-    return p_lease->duration_ms &&
-           (uint32_t) (now - p_lease->refreshed_ms) > p_lease->duration_ms;
+    return lease->duration_ms &&
+           (uint32_t) (now - lease->refreshed_ms) > lease->duration_ms;
 }
 #endif
 

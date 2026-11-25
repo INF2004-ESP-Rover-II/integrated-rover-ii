@@ -3,9 +3,9 @@
  * @brief Ultrasonic firmware module.
  */
 #include "ultrasonic.h"
-#include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
+#include "pico/stdlib.h"
 
 // Local implementation constants (don’t leak into the API)
 #define TRIGGER_PULSE_US 10

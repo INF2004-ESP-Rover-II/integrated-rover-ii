@@ -3,9 +3,9 @@
  * @brief Sd card firmware module.
  */
 #include "sd_card.h"
-#include "pico/stdlib.h"
-#include "hardware/spi.h"
 #include "ff.h"
+#include "hardware/spi.h"
+#include "pico/stdlib.h"
 #include <stdio.h> // ← Add this
 #include <string.h>
 

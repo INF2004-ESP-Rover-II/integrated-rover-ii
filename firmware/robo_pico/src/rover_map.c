@@ -2,8 +2,8 @@
  * @file rover_map.c
  * @brief Rover map firmware module.
  */
-#include <inttypes.h>
 #include "rover_map.h"
+#include <inttypes.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -94,8 +94,7 @@ rover_map_observe (rover_map_t * p_map, uint8_t marker_id, int16_t x_coordinate,
     }
 
     p_map->observed[p_map->observed_count++] = (map_observed_node_t) {
-        .marker_id = marker_id, .x = x_coordinate, .y = y_coordinate
-    };
+        .marker_id = marker_id, .x = x_coordinate, .y = y_coordinate};
 
     p_map->revision++;
     return MAP_OK;
@@ -164,10 +163,10 @@ rover_map_add (rover_map_t * p_map, uint8_t marker_id, int16_t x_coordinate,
         p_map->observed_count--;
     }
 
-    p_map->nodes[p_map->count] = (map_node_t) { .marker_id = marker_id,
-                                                .x         = x_coordinate,
-                                                .y         = y_coordinate,
-                                                .visited   = b_visited };
+    p_map->nodes[p_map->count] = (map_node_t) {.marker_id = marker_id,
+                                               .x         = x_coordinate,
+                                               .y         = y_coordinate,
+                                               .visited   = b_visited};
 
     if (!p_map->count)
     {
@@ -208,7 +207,7 @@ rover_map_start (rover_map_t * p_map, uint8_t marker_id)
     uint32_t revision = p_map->revision + 1u;
     uint64_t boot_id  = p_map->boot_id;
     rover_map_init(p_map, boot_id);
-    p_map->nodes[0] = (map_node_t) { .marker_id = marker_id, .visited = true };
+    p_map->nodes[0] = (map_node_t) {.marker_id = marker_id, .visited = true};
     p_map->count    = 1;
     p_map->current_node = marker_id;
     p_map->revision     = revision;
@@ -418,22 +417,22 @@ rover_map_result_name (map_result_t result)
 {
     switch (result)
     {
-        case MAP_OK:
-            return "OK";
-        case MAP_INVALID_ID:
-            return "INVALID_ID";
-        case MAP_FULL:
-            return "CAPACITY_FULL";
-        case MAP_ID_CONFLICT:
-            return "ID_COORDINATE_CONFLICT";
-        case MAP_CELL_OCCUPIED:
-            return "CELL_OCCUPIED";
-        case MAP_NOT_FOUND:
-            return "NOT_FOUND";
-        case MAP_INVALID_EXIT:
-            return "INVALID_EXIT";
-        default:
-            return "UNKNOWN";
+    case MAP_OK:
+        return "OK";
+    case MAP_INVALID_ID:
+        return "INVALID_ID";
+    case MAP_FULL:
+        return "CAPACITY_FULL";
+    case MAP_ID_CONFLICT:
+        return "ID_COORDINATE_CONFLICT";
+    case MAP_CELL_OCCUPIED:
+        return "CELL_OCCUPIED";
+    case MAP_NOT_FOUND:
+        return "NOT_FOUND";
+    case MAP_INVALID_EXIT:
+        return "INVALID_EXIT";
+    default:
+        return "UNKNOWN";
     }
 }
 

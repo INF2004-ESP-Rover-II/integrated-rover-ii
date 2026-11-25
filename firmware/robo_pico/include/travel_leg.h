@@ -59,23 +59,17 @@ typedef struct
 
 void travel_leg_init (travel_leg_t * p_leg);
 
-
 bool travel_leg_clear (travel_leg_t * p_leg);
-
 
 const char * travel_leg_phase_name (leg_phase_t phase);
 
-
 const char * travel_leg_direction_name (leg_direction_t direction);
-
 
 size_t travel_leg_format_json (const travel_leg_t * p_leg, char * p_out,
                                size_t capacity);
 
-
 size_t travel_leg_format_status (const travel_leg_t * p_leg, char * p_out,
                                  size_t capacity);
-
 
 #endif
 

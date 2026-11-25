@@ -3,11 +3,11 @@
  * @brief Rplidar firmware module.
  */
 #include "rplidar.h"
-#include "sensor_config.h"
-#include "pico/stdlib.h"
-#include "hardware/uart.h"
 #include "hardware/irq.h"
 #include "hardware/sync.h" // Add this include for interrupt functions
+#include "hardware/uart.h"
+#include "pico/stdlib.h"
+#include "sensor_config.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -40,7 +40,7 @@ static volatile struct
 } g_irq_state;
 
 // Static functions
-static void rplidar_uart_irq_handler (void);
+static void rplidar_uart_isr (void);
 
 static bool parse_measurement_packet (const uint8_t *         p_packet,
                                       rplidar_measurement_t * p_measurement);
@@ -50,14 +50,14 @@ static void send_simple_command (uint8_t cmd);
 static void
 send_simple_command (uint8_t cmd)
 {
-    uint8_t packet[2] = { RPLIDAR_CMD_SYNC_BYTE, cmd };
+    uint8_t packet[2] = {RPLIDAR_CMD_SYNC_BYTE, cmd};
     uart_write_blocking(RPLIDAR_UART_ID, packet, 2);
     printf("[RPLIDAR] Sent: 0xA5 0x%02X\n", cmd);
 }
 
 // IRQ Handler - This runs automatically when data arrives
 static void
-rplidar_uart_irq_handler (void)
+rplidar_uart_isr (void)
 {
     while (uart_is_readable(RPLIDAR_UART_ID))
     {
@@ -174,7 +174,7 @@ rplidar_irq_init (void)
 
     // Clear any pending interrupts and enable RX interrupt
     uart_set_irq_enables(RPLIDAR_UART_ID, true, false);
-    irq_set_exclusive_handler(UART1_IRQ, rplidar_uart_irq_handler);
+    irq_set_exclusive_handler(UART1_IRQ, rplidar_uart_isr);
     irq_set_enabled(UART1_IRQ, true);
 
     printf("[RPLIDAR] IRQ system initialized\n");

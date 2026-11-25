@@ -3,13 +3,13 @@
  * @file uart_protocol.c
  * @brief Uart protocol firmware module.
  */
-#include "uart_protocol.h"
-#include "pico/stdlib.h"
-#include "hardware/uart.h"
 #include "hardware/irq.h"
 #include "hardware/sync.h"
-#include <string.h>
+#include "hardware/uart.h"
+#include "pico/stdlib.h"
+#include "uart_protocol.h"
 #include <stdio.h>
+#include <string.h>
 
 // Sync bytes for packet alignment
 #define PACKET_SYNC_BYTE1 0xAA
@@ -35,8 +35,7 @@ static uint32_t g_error_packets = 0;
 
 // Forward declarations
 
-static void uart_rx_interrupt_handler (void);
-
+static void uart_rx_isr (void);
 
 uint8_t
 calculate_packet_checksum (const sensor_packet_t * p_packet)
@@ -97,7 +96,7 @@ uart_receiver_init (uart_inst_t * p_uart_id, uint32_t baud_rate, int rx_pin,
 
     // Set up interrupt
     int uart_irq = (gp_uart_instance == uart0) ? UART0_IRQ : UART1_IRQ;
-    irq_set_exclusive_handler(uart_irq, uart_rx_interrupt_handler);
+    irq_set_exclusive_handler(uart_irq, uart_rx_isr);
     irq_set_enabled(uart_irq, true);
 
     // Enable RX interrupt
@@ -109,7 +108,7 @@ uart_receiver_init (uart_inst_t * p_uart_id, uint32_t baud_rate, int rx_pin,
 
 // UART RX interrupt handler - called when data arrives
 static void
-uart_rx_interrupt_handler (void)
+uart_rx_isr (void)
 {
     while (uart_is_readable(gp_uart_instance))
     {
@@ -117,74 +116,72 @@ uart_rx_interrupt_handler (void)
 
         switch (g_rx_state)
         {
-            case UART_SYNC1:
-                if (byte == PACKET_SYNC_BYTE1)
-                {
-                    g_rx_buffer[0] = byte;
-                    g_rx_index     = 1;
-                    g_rx_state     = UART_SYNC2;
-                }
-                break;
+        case UART_SYNC1:
+            if (byte == PACKET_SYNC_BYTE1)
+            {
+                g_rx_buffer[0] = byte;
+                g_rx_index     = 1;
+                g_rx_state     = UART_SYNC2;
+            }
+            break;
 
-            case UART_SYNC2:
-                if (byte == PACKET_SYNC_BYTE2)
+        case UART_SYNC2:
+            if (byte == PACKET_SYNC_BYTE2)
+            {
+                g_rx_buffer[1] = byte;
+                g_rx_index     = 2;
+                g_rx_state     = UART_DATA;
+            }
+            else
+            {
+                // Bad sync, restart
+                g_rx_state = UART_SYNC1;
+            }
+            break;
+
+        case UART_DATA:
+            g_rx_buffer[g_rx_index++] = byte;
+
+            // Check if we've received a complete packet
+            if (g_rx_index >= sizeof(sensor_packet_t))
+            {
+                g_total_packets++;
+
+                // Validate checksum
+
+                sensor_packet_t * p_packet = (sensor_packet_t *) g_rx_buffer;
+
+                if (validate_packet_checksum(p_packet))
                 {
-                    g_rx_buffer[1] = byte;
-                    g_rx_index     = 2;
-                    g_rx_state     = UART_DATA;
+                    if (gp_packet_callback != NULL)
+                    {
+                        gp_packet_callback(
+                            p_packet, to_ms_since_boot(get_absolute_time()));
+                    }
+                    // Copy to write buffer
+                    memcpy(&g_packet_buffer[g_write_buffer], p_packet,
+                           sizeof(sensor_packet_t));
+
+                    // Swap buffers
+                    g_read_buffer  = g_write_buffer;
+                    g_write_buffer = (g_write_buffer + 1) % 2;
+
+                    g_b_new_packet_available = true;
+                    g_valid_packets++;
                 }
                 else
                 {
-                    // Bad sync, restart
-                    g_rx_state = UART_SYNC1;
+                    g_error_packets++;
                 }
-                break;
 
-            case UART_DATA:
-                g_rx_buffer[g_rx_index++] = byte;
-
-                // Check if we've received a complete packet
-                if (g_rx_index >= sizeof(sensor_packet_t))
-                {
-                    g_total_packets++;
-
-                    // Validate checksum
-
-                    sensor_packet_t * p_packet =
-                        (sensor_packet_t *) g_rx_buffer;
-
-                    if (validate_packet_checksum(p_packet))
-                    {
-                        if (gp_packet_callback != NULL)
-                        {
-                            gp_packet_callback(
-                                p_packet,
-                                to_ms_since_boot(get_absolute_time()));
-                        }
-                        // Copy to write buffer
-                        memcpy(&g_packet_buffer[g_write_buffer], p_packet,
-                               sizeof(sensor_packet_t));
-
-                        // Swap buffers
-                        g_read_buffer  = g_write_buffer;
-                        g_write_buffer = (g_write_buffer + 1) % 2;
-
-                        g_b_new_packet_available = true;
-                        g_valid_packets++;
-                    }
-                    else
-                    {
-                        g_error_packets++;
-                    }
-
-                    // Reset state machine
-                    g_rx_state = UART_SYNC1;
-                    g_rx_index = 0;
-                }
-                break;
-            default:
-                /* All defined receiver states are handled above. */
-                break;
+                // Reset state machine
+                g_rx_state = UART_SYNC1;
+                g_rx_index = 0;
+            }
+            break;
+        default:
+            /* All defined receiver states are handled above. */
+            break;
         }
     }
 }

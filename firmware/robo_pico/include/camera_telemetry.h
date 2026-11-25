@@ -15,7 +15,6 @@ size_t camera_telemetry_format (char * p_out, size_t capacity,
                                 const camera_frame_t * p_frame,
                                 uint32_t received_ms, uint32_t now_ms);
 
-
 #endif
 
 /* End of file. */

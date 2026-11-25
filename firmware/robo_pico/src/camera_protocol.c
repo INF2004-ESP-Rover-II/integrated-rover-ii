@@ -129,16 +129,16 @@ camera_status_name (uint8_t status)
 {
     switch (status)
     {
-        case VISION_STATUS_OK:
-            return "OK";
-        case VISION_STATUS_NO_MARKER:
-            return "NO_MARKER";
-        case VISION_STATUS_STALLED:
-            return "STALLED";
-        case VISION_STATUS_CAMERA_LOST:
-            return "CAMERA_LOST";
-        default:
-            return "UNKNOWN";
+    case VISION_STATUS_OK:
+        return "OK";
+    case VISION_STATUS_NO_MARKER:
+        return "NO_MARKER";
+    case VISION_STATUS_STALLED:
+        return "STALLED";
+    case VISION_STATUS_CAMERA_LOST:
+        return "CAMERA_LOST";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -147,18 +147,18 @@ camera_quality_name (uint8_t quality)
 {
     switch (quality)
     {
-        case 0:
-            return "OK";
-        case 1:
-            return "POSE_FAILED";
-        case 2:
-            return "BAD_SHAPE";
-        case 3:
-            return "TOO_SMALL";
-        case 4:
-            return "TOO_FAR";
-        default:
-            return "UNKNOWN";
+    case 0:
+        return "OK";
+    case 1:
+        return "POSE_FAILED";
+    case 2:
+        return "BAD_SHAPE";
+    case 3:
+        return "TOO_SMALL";
+    case 4:
+        return "TOO_FAR";
+    default:
+        return "UNKNOWN";
     }
 }
 

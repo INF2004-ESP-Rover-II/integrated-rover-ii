@@ -2,11 +2,11 @@
  * @file onboard_drive.c
  * @brief Onboard drive firmware module.
  */
-#include <inttypes.h>
 #include "onboard_drive.h"
-#include "motor_driver.h"
-#include "motor_config.h"
 #include "../../common/obstacle_threshold.h"
+#include "motor_config.h"
+#include "motor_driver.h"
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -20,10 +20,10 @@ void
 onboard_drive_init (onboard_drive_t * p_drive)
 {
 
-    *p_drive = (onboard_drive_t) { .result       = "NOT_STARTED",
-                                   .input_reason = "NONE",
-                                   .reference_arrival_mm =
-                                       ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM };
+    *p_drive = (onboard_drive_t) {.result       = "NOT_STARTED",
+                                  .input_reason = "NONE",
+                                  .reference_arrival_mm =
+                                      ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM};
 }
 
 static const char *
@@ -284,8 +284,8 @@ plan_cell (const onboard_drive_t * p_drive, const rover_map_t * p_map,
     {
         return "GRID_DIRECTION_NOT_ALIGNED";
     }
-    static const int8_t delta_x[] = { 0, 1, 0, -1 };
-    static const int8_t delta_y[] = { 1, 0, -1, 0 };
+    static const int8_t delta_x[] = {0, 1, 0, -1};
+    static const int8_t delta_y[] = {1, 0, -1, 0};
     const map_node_t *  p_from = rover_map_find_id(p_map, p_map->current_node);
     int32_t             target_x = (int32_t) p_from->x + delta_x[cardinal];
     int32_t             target_y = (int32_t) p_from->y + delta_y[cardinal];
@@ -429,7 +429,6 @@ onboard_drive_start_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         return true;
     }
 
-
     p_context->p_problem = plan_cell(
         p_drive, p_map, p_mission->leg.next_target_node, p_inputs->heading_deg,
         &p_context->north, &p_context->direction, &p_context->x_coordinate,
@@ -440,7 +439,6 @@ onboard_drive_start_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         p_context->return_value = p_context->p_problem;
         return true;
     }
-
 
     p_context->prepared = (onboard_drive_t) {
         .active               = true,
@@ -453,8 +451,7 @@ onboard_drive_start_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         .north_heading_deg    = p_context->north,
         .last_tick_ms         = now,
         .input_reason         = "NONE",
-        .reference_arrival_mm = ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM
-    };
+        .reference_arrival_mm = ONBOARD_DRIVE_REFERENCE_ARRIVAL_MM};
 
     note_inputs(&p_context->prepared, p_selection, p_inputs, now);
     // Preserve the measured reference baseline while stationary alignment
@@ -477,7 +474,6 @@ onboard_drive_start_motion (onboard_drive_t * p_drive, mission_t * p_mission,
         p_context->return_value = p_context->p_problem;
         return true;
     }
-
 
     if (!p_context->prepared.b_departure_pending)
     {
@@ -527,7 +523,7 @@ onboard_drive_start (onboard_drive_t * p_drive, mission_t * p_mission,
                      rover_map_t * p_map, target_selector_t * p_selection,
                      const onboard_drive_inputs_t * p_inputs, uint32_t now)
 {
-    onboard_drive_start_context_t context = { 0 };
+    onboard_drive_start_context_t context = {0};
     if (onboard_drive_start_prepare(p_drive, p_mission, p_map, p_selection,
                                     p_inputs, now, &context))
     {
@@ -545,7 +541,6 @@ onboard_drive_start (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 void
 onboard_drive_stop (onboard_drive_t * p_drive, mission_t * p_mission,
@@ -771,11 +766,10 @@ recovery_landmark (const rover_map_t * p_map, const mission_t * p_mission,
         !input_problem(p_selection, p_inputs, now))
     {
 
-        *p_out =
-            (camera_marker_t) { .id       = p_selection->reference_marker,
-                                .range_mm = p_selection->reference_range_mm,
-                                .bearing_cdeg =
-                                    p_selection->reference_bearing_cdeg };
+        *p_out = (camera_marker_t) {.id       = p_selection->reference_marker,
+                                    .range_mm = p_selection->reference_range_mm,
+                                    .bearing_cdeg =
+                                        p_selection->reference_bearing_cdeg};
 
         return true;
     }
@@ -844,7 +838,6 @@ adopt_mapped_reference_prepare (onboard_drive_t *                  p_drive,
     }
     p_drive->mapped_recovery_generation = p_inputs->camera_generation;
 
-
     p_context->delta =
         (uint8_t) (p_inputs->camera_seq - p_drive->mapped_recovery_seq);
 
@@ -908,18 +901,16 @@ adopt_mapped_reference_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
             p_context->return_value = false;
             return true;
         }
-        static const int8_t delta_x[] = { 0, 1, 0, -1 };
-        static const int8_t delta_y[] = { 1, 0, -1, 0 };
+        static const int8_t delta_x[] = {0, 1, 0, -1};
+        static const int8_t delta_y[] = {1, 0, -1, 0};
         int32_t relative_x = (int32_t) x_coordinate - p_mission->leg.target_x;
         int32_t relative_y = (int32_t) y_coordinate - p_mission->leg.target_y;
 
         int32_t along = relative_x * delta_x[p_mission->leg.direction] +
                         relative_y * delta_y[p_mission->leg.direction];
 
-
         int32_t across = relative_x * delta_y[p_mission->leg.direction] -
                          relative_y * delta_x[p_mission->leg.direction];
-
 
         int bearing_delta =
             (int) p_marker->bearing_cdeg - p_selection->bearing_cdeg;
@@ -997,7 +988,7 @@ adopt_mapped_reference (onboard_drive_t * p_drive, mission_t * p_mission,
                         const onboard_drive_inputs_t * p_inputs,
                         const camera_marker_t * p_marker, uint32_t now)
 {
-    adopt_mapped_reference_context_t context = { 0 };
+    adopt_mapped_reference_context_t context = {0};
     if (adopt_mapped_reference_prepare(p_drive, p_inputs, &context))
     {
         return context.return_value;
@@ -1014,7 +1005,6 @@ adopt_mapped_reference (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 static void
 finish_backup (onboard_drive_t * p_drive, mission_t * p_mission,
@@ -1049,7 +1039,6 @@ recover_reference_prepare (target_selector_t *            p_selection,
                            recover_reference_context_t *  p_context)
 {
 
-
     p_context->p_problem = input_problem(p_selection, p_inputs, now);
     return false;
 }
@@ -1080,18 +1069,16 @@ recover_reference_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
 
             return true;
         }
-        camera_marker_t mk = { 0 };
+        camera_marker_t mk = {0};
 
         bool b_seen_now = recovery_landmark(p_map, p_mission, p_selection,
                                             p_inputs, now, &mk);
-
 
         uint32_t captured =
             mk.id == p_mission->leg.arrival_reference_node &&
                     !p_inputs->recovery_marker_count
                 ? p_selection->sample_received_ms - p_selection->sample_age_ms
                 : now - p_inputs->camera_image_age_ms;
-
 
         b_seen_now = b_seen_now &&
                      (int32_t) (captured - p_drive->backup_started_ms) >= 0;
@@ -1138,14 +1125,12 @@ recover_reference_motion (onboard_drive_t * p_drive, mission_t * p_mission,
                           recover_reference_context_t * p_context)
 {
 
-
     p_context->b_after_backup = p_mission->leg.phase == LEG_REACQUIRING;
     if (reference_absent(p_inputs) && !p_drive->reference_missing)
     {
         p_drive->reference_missing    = true;
         p_drive->reference_missing_ms = now;
     }
-
 
     p_context->settled =
         p_context->b_after_backup
@@ -1355,7 +1340,6 @@ recover_reference_arrival (onboard_drive_t *             p_drive,
                            recover_reference_context_t * p_context)
 {
 
-
     p_drive->result = p_context->b_after_backup ? "REACQUIRING_REFERENCE"
                                                 : "WAITING_FOR_REFERENCE";
 
@@ -1369,7 +1353,7 @@ recover_reference (onboard_drive_t * p_drive, mission_t * p_mission,
                    const onboard_drive_inputs_t * p_inputs, uint32_t now,
                    bool * p_resuming)
 {
-    recover_reference_context_t context = { 0 };
+    recover_reference_context_t context = {0};
     if (recover_reference_prepare(p_selection, p_inputs, now, &context))
     {
         return context.return_value;
@@ -1404,7 +1388,6 @@ recover_reference (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 bool
 onboard_drive_note_front_stop (onboard_drive_t * p_drive,
@@ -1669,7 +1652,6 @@ search_tick_motion (onboard_drive_t * p_drive, mission_t * p_mission,
     p_drive->input_reason =
         p_inputs->front_mm ? "NONE" : "FRONT_DISTANCE_UNKNOWN";
 
-
     p_drive->result = p_inputs->front_mm ? "SEARCHING_FOR_REFERENCE"
                                          : "SEARCHING_WITH_NO_FRONT_RETURN";
 
@@ -1703,7 +1685,7 @@ search_tick (onboard_drive_t * p_drive, mission_t * p_mission,
              const onboard_drive_inputs_t * p_inputs, uint32_t now,
              bool * p_reference_ready)
 {
-    search_tick_context_t context = { 0 };
+    search_tick_context_t context = {0};
     if (search_tick_prepare(p_drive, p_mission, p_inputs, now, &context))
     {
         return context.return_value;
@@ -1720,7 +1702,6 @@ search_tick (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 static void
 alignment_pose (onboard_drive_t *         p_drive,
@@ -1979,7 +1960,6 @@ alignment_tick_motion (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     p_drive->result = "WAITING_FOR_ALIGNMENT_IMAGE";
 
-
     p_context->image_ms =
         p_selection->sample_received_ms - p_selection->sample_age_ms;
 
@@ -2067,10 +2047,8 @@ alignment_tick_tracking (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     // Positive camera bearing is right; motor headings increase clockwise.
 
-
     p_context->goal = p_inputs->heading_deg - p_inputs->heading_offset_deg +
                       (float) p_context->correction / 100.0f;
-
 
     p_context->motor_heading =
         (int) lroundf(fmodf(p_context->goal + 360.0f, 360.0f)) % 360;
@@ -2098,7 +2076,7 @@ alignment_tick (onboard_drive_t * p_drive, mission_t * p_mission,
                 const onboard_drive_inputs_t * p_inputs, uint32_t now,
                 bool * p_resuming)
 {
-    alignment_tick_context_t context = { 0 };
+    alignment_tick_context_t context = {0};
     if (alignment_tick_prepare(p_drive, p_mission, p_selection, p_inputs, now,
                                &context))
     {
@@ -2123,7 +2101,6 @@ alignment_tick (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 static const char *
 camera_wait_problem (const target_selector_t *      p_selection,
@@ -2321,7 +2298,6 @@ wait_for_camera_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         p_drive->last_target_range_mm = p_selection->range_mm;
     }
 
-
     p_context->image_ms =
         p_inputs->camera_status == VISION_STATUS_NO_MARKER
             ? now - p_inputs->camera_image_age_ms
@@ -2422,7 +2398,7 @@ wait_for_camera (onboard_drive_t * p_drive, mission_t * p_mission,
                  const onboard_drive_inputs_t * p_inputs,
                  const char * p_age_problem, uint32_t now, bool * p_resuming)
 {
-    wait_for_camera_context_t context = { 0 };
+    wait_for_camera_context_t context = {0};
     if (wait_for_camera_prepare(p_drive, p_mission, p_selection, p_inputs, now,
                                 &context))
     {
@@ -2443,7 +2419,6 @@ wait_for_camera (onboard_drive_t * p_drive, mission_t * p_mission,
     }
     return context.return_value;
 }
-
 
 static void
 begin_correction (onboard_drive_t * p_drive, mission_t * p_mission,
@@ -2582,7 +2557,6 @@ onboard_drive_tick_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
                      // lease.
     }
 
-
     p_context->wall_limit =
         ONBOARD_DRIVE_MAX_WALL_MS +
         ((p_drive->reference_recovery || p_drive->backup_used)
@@ -2601,7 +2575,6 @@ onboard_drive_tick_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
     {
         p_context->p_problem = "LEG_TIME_LIMIT";
     }
-
 
     p_context->b_front_stop =
         p_context->p_problem &&
@@ -2951,7 +2924,6 @@ onboard_drive_tick_output (onboard_drive_t * p_drive, mission_t * p_mission,
                            onboard_drive_tick_context_t * p_context)
 {
 
-
     p_context->b_resuming = (p_context->b_camera_resuming &&
                              p_mission->leg.phase == LEG_APPROACHING) ||
                             p_context->b_alignment_resuming ||
@@ -3133,7 +3105,7 @@ onboard_drive_tick_stages (onboard_drive_t * p_drive, mission_t * p_mission,
                            const onboard_drive_inputs_t * p_inputs,
                            uint32_t                       now)
 {
-    onboard_drive_tick_context_t context = { 0 };
+    onboard_drive_tick_context_t context = {0};
     if (onboard_drive_tick_prepare(p_drive, p_mission, p_selection, p_inputs,
                                    now, &context))
     {
@@ -3221,7 +3193,6 @@ onboard_drive_tick (onboard_drive_t * p_drive, mission_t * p_mission,
         p_drive->camera_waited_ms                   = 0;
     }
 }
-
 
 size_t
 onboard_drive_format (const onboard_drive_t * p_drive,

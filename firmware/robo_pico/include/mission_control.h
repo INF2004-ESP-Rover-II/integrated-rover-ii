@@ -5,9 +5,9 @@
 #ifndef ROVER_MISSION_CONTROL_H
 #define ROVER_MISSION_CONTROL_H
 
+#include "travel_leg.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "travel_leg.h"
 
 typedef enum
 {
@@ -63,49 +63,36 @@ typedef struct
 
 void mission_init (mission_t * p_mission, uint32_t now_ms);
 
-
 void mission_clear_leg (mission_t * p_mission, uint32_t now_ms);
-
 
 bool mission_begin_drive (mission_t * p_mission, uint32_t now_ms);
 
-
 bool mission_motion_enabled (const mission_t * p_mission);
-
 
 bool mission_arrival_phase (mission_t * p_mission, leg_phase_t phase,
                             uint32_t now_ms);
 
-
 bool mission_complete_target (mission_t * p_mission, uint32_t now_ms);
-
 
 bool mission_camera_hold (mission_t * p_mission, bool b_holding,
                           uint32_t now_ms);
 
-
 bool mission_reference_phase (mission_t * p_mission, leg_phase_t phase,
                               uint32_t now_ms);
-
 
 bool mission_search_phase (mission_t * p_mission, leg_phase_t phase,
                            uint32_t now_ms);
 
-
 bool mission_alignment_phase (mission_t * p_mission, bool b_aligning,
                               uint32_t now_ms);
-
 
 bool mission_camera_wait_phase (mission_t * p_mission, leg_phase_t phase,
                                 uint32_t now_ms);
 
-
 bool mission_recovery_phase (mission_t * p_mission, leg_phase_t phase,
                              uint32_t now_ms);
 
-
 bool mission_start_dfs (mission_t * p_mission, uint32_t now_ms);
-
 
 bool mission_finish_dfs (mission_t * p_mission, uint32_t now_ms);
 
@@ -116,14 +103,11 @@ mission_result_t mission_test_event (mission_t *  p_mission,
                                      const char * p_event,
                                      bool b_safety_latched, uint32_t now_ms);
 
-
 void mission_pause (mission_t * p_mission, mission_reason_t reason,
                     uint32_t now_ms);
 
-
 void mission_fault (mission_t * p_mission, mission_reason_t reason,
                     uint32_t now_ms);
-
 
 void mission_tick (mission_t * p_mission, bool b_safety_latched, bool b_link_ok,
                    uint32_t now_ms);
@@ -133,15 +117,11 @@ void mission_tick (mission_t * p_mission, bool b_safety_latched, bool b_link_ok,
 bool mission_command_allowed (const mission_t * p_mission,
                               const char *      p_command);
 
-
 const char * mission_state_name (mission_state_t state);
-
 
 const char * mission_reason_name (mission_reason_t reason);
 
-
 const char * mission_result_name (mission_result_t result);
-
 
 #endif
 

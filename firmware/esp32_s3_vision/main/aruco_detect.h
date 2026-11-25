@@ -35,7 +35,6 @@ int aruco_detect (const uint8_t * p_img, int value_w, int heading, int stride,
                   int pixel_step, void * p_work, aruco_marker_t * p_out,
                   int max_out);
 
-
 #endif /* ARUCO_DETECT_H */
 
 /* End of file. */

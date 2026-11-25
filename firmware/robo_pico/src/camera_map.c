@@ -7,8 +7,8 @@
 #include <math.h>
 #include <string.h>
 
-static const int8_t g_delta_x[4] = { 0, 1, 0, -1 };
-static const int8_t g_delta_y[4] = { 1, 0, -1, 0 };
+static const int8_t g_delta_x[4] = {0, 1, 0, -1};
+static const int8_t g_delta_y[4] = {1, 0, -1, 0};
 static float
 wrap (float first)
 {
@@ -69,7 +69,6 @@ camera_map_tick_prepare (camera_map_t * p_projection, rover_map_t * p_map,
                          float north, uint32_t now,
                          camera_map_tick_context_t * p_context)
 {
-
 
     p_context->p_anchor = rover_map_find_id(p_map, p_map->current_node);
     if (!p_context->p_anchor || !p_context->p_anchor->visited || !b_stopped ||
@@ -137,7 +136,6 @@ camera_map_tick_inputs (camera_map_t *               p_projection,
         return true;
     }
 
-
     p_context->visible_count = 0;
     for (uint8_t index = 0; index < p_observation->frame.count; ++index)
     {
@@ -189,7 +187,6 @@ camera_map_tick_motion (camera_map_tick_context_t * p_context)
 
     memset(p_context->slots, 0, sizeof(p_context->slots));
 
-
     p_context->count = 0;
     return false;
 }
@@ -225,7 +222,6 @@ camera_map_tick_camera (camera_map_t * p_projection, rover_map_t * p_map,
                             (int32_t) (y_coordinate - p_context->p_anchor->y) *
                                 g_delta_y[dir];
 
-
             int32_t across = (int32_t) (x_coordinate - p_context->p_anchor->x) *
                                  g_delta_y[dir] -
                              (int32_t) (y_coordinate - p_context->p_anchor->y) *
@@ -243,7 +239,6 @@ camera_map_tick_camera (camera_map_t * p_projection, rover_map_t * p_map,
         int32_t target_x = (int32_t) p_context->p_anchor->x +
                            (int32_t) p_context->slots[dir] * g_delta_x[dir];
 
-
         int32_t target_y = (int32_t) p_context->p_anchor->y +
                            (int32_t) p_context->slots[dir] * g_delta_y[dir];
 
@@ -254,9 +249,9 @@ camera_map_tick_camera (camera_map_t * p_projection, rover_map_t * p_map,
         }
 
         p_context->candidates[p_context->count++] =
-            (map_observed_node_t) { .marker_id = p_context->sorted[index].id,
-                                    .x         = (int16_t) target_x,
-                                    .y         = (int16_t) target_y };
+            (map_observed_node_t) {.marker_id = p_context->sorted[index].id,
+                                   .x         = (int16_t) target_x,
+                                   .y         = (int16_t) target_y};
     }
 
     p_context->b_same = p_context->count == p_projection->count;
@@ -308,7 +303,7 @@ camera_map_tick (camera_map_t * p_projection, rover_map_t * p_map,
                  const camera_observation_t * p_observation, bool b_stopped,
                  bool b_heading_valid, float heading, float north, uint32_t now)
 {
-    camera_map_tick_context_t context = { 0 };
+    camera_map_tick_context_t context = {0};
     if (camera_map_tick_prepare(p_projection, p_map, p_observation, b_stopped,
                                 b_heading_valid, heading, north, now, &context))
     {

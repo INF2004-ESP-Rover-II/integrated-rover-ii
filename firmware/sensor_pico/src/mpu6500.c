@@ -4,12 +4,12 @@
  */
 #include "mpu6500.h"
 
-#include <math.h>
-#include <stddef.h>
-#include <stdio.h>
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
 #include "sensor_config.h"
+#include <math.h>
+#include <stddef.h>
+#include <stdio.h>
 
 /* Fixed dimensions and iteration limits used by this module. */
 #define IMU_AXIS_COUNT 3
@@ -44,7 +44,7 @@ mpu6500_device_id (void)
 static bool
 write_register (uint8_t reg, uint8_t value)
 {
-    const uint8_t bytes[] = { reg, value };
+    const uint8_t bytes[] = {reg, value};
 
     int result = i2c_write_timeout_us(IMU_I2C_PORT, MPU6500_ADDR, bytes, 2,
                                       false, I2C_TIMEOUT_US);
@@ -205,12 +205,12 @@ mpu6500_calibrate (void)
     sleep_ms(1000); // Allow startup handling to settle before sampling windows.
     for (unsigned attempt = 1; attempt <= CAL_ATTEMPTS; ++attempt)
     {
-        float mean[3]      = { 0 };
-        float m2[3]        = { 0 };
-        float gyro_min[3]  = { 0 };
-        float gyro_max[3]  = { 0 };
-        float accel_min[3] = { 0 };
-        float accel_max[3] = { 0 };
+        float mean[3]      = {0};
+        float m2[3]        = {0};
+        float gyro_min[3]  = {0};
+        float gyro_max[3]  = {0};
+        float accel_min[3] = {0};
+        float accel_max[3] = {0};
         float norm_min     = 100.0f;
         float norm_max     = 0.0f;
         for (unsigned sample = 0; sample < CAL_SAMPLES; ++sample)
@@ -274,7 +274,6 @@ mpu6500_calibrate (void)
 
             max_gyro_span =
                 fmaxf(max_gyro_span, gyro_max[axis] - gyro_min[axis]);
-
 
             max_accel_span =
                 fmaxf(max_accel_span, accel_max[axis] - accel_min[axis]);

@@ -6,15 +6,15 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 
-#include "hardware/i2c.h"
-#include "pico/stdlib.h"
-#include "sensor_config.h"
 #include "VL53L1X_api.h"
 #include "VL53L1X_platform.h"
 #include "VL53L1X_types.h"
+#include "hardware/i2c.h"
+#include "pico/stdlib.h"
+#include "sensor_config.h"
 
 // The bundled ToF platform initializes board-default I2C pins. Keep its bus
 // separate from the IMU and fail compilation if the configured pins diverge.
@@ -28,8 +28,7 @@
 #define TOF_TIMING_BUDGET_MS 50
 #define TOF_INTERMEASUREMENT_MS 60
 
-static const uint8_t g_sensor_addresses[TOF_SENSOR_COUNT] = { 0x30, 0x31,
-                                                              0x32 };
+static const uint8_t g_sensor_addresses[TOF_SENSOR_COUNT] = {0x30, 0x31, 0x32};
 static uint8_t       g_sensor_xshut_pins[TOF_SENSOR_COUNT];
 static uint8_t       g_online_mask;
 
@@ -50,7 +49,7 @@ report_diagnostic (int sensor, const char * p_stage, int status,
     }
     g_diagnostic_reported_mask |= (uint32_t) (bit);
     g_last_diagnostic_ms[sensor]         = now_ms;
-    const char * names[TOF_SENSOR_COUNT] = { "L", "F", "R" };
+    const char * names[TOF_SENSOR_COUNT] = {"L", "F", "R"};
     printf("[TOF DIAG %s] %s status=%d raw_mm=%u\n", names[sensor], p_stage,
            status, distance);
 }
@@ -246,7 +245,6 @@ tof_distance_set (uint32_t * p_packed, tof_sensor_t sensor,
 
     uint32_t code =
         distance_mm <= TOF_MAX_DISTANCE_MM ? distance_mm : TOF_NO_TARGET_MM;
-
 
     // Clear this sensor's field, then insert its new value.
     *p_packed = (*p_packed & ~(TOF_DISTANCE_MASK << shift)) | (code << shift);

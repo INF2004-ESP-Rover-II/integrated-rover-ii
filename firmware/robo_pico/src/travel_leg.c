@@ -2,8 +2,8 @@
  * @file travel_leg.c
  * @brief Travel leg firmware module.
  */
-#include <inttypes.h>
 #include "travel_leg.h"
+#include <inttypes.h>
 
 #include <stdio.h>
 
@@ -11,8 +11,8 @@ void
 travel_leg_init (travel_leg_t * p_leg)
 {
 
-    *p_leg = (travel_leg_t) { .direction = LEG_DIRECTION_UNKNOWN,
-                              .phase     = LEG_NONE };
+    *p_leg =
+        (travel_leg_t) {.direction = LEG_DIRECTION_UNKNOWN, .phase = LEG_NONE};
 }
 
 bool
@@ -36,46 +36,46 @@ travel_leg_phase_name (leg_phase_t phase)
 {
     switch (phase)
     {
-        case LEG_NONE:
-            return "NONE";
-        case LEG_SCANNING:
-            return "SCANNING";
-        case LEG_SELECTING:
-            return "SELECTING";
-        case LEG_CONFIGURED:
-            return "CONFIGURED";
-        case LEG_TURNING:
-            return "TURNING";
-        case LEG_APPROACHING:
-            return "APPROACHING";
-        case LEG_HOLDING:
-            return "HOLDING";
-        case LEG_BRAKING:
-            return "BRAKING";
-        case LEG_VERIFYING:
-            return "VERIFYING";
-        case LEG_BACKING_UP:
-            return "BACKING_UP";
-        case LEG_REACQUIRING:
-            return "REACQUIRING";
-        case LEG_SEARCHING_REFERENCE:
-            return "SEARCHING_REFERENCE";
-        case LEG_OBSTACLE_VERIFYING:
-            return "OBSTACLE_VERIFYING";
-        case LEG_ALIGNING:
-            return "ALIGNING";
-        case LEG_WAITING_CAMERA:
-            return "WAITING_CAMERA";
-        case LEG_WAITING_INPUT:
-            return "WAITING_INPUT";
-        case LEG_CORRECTING:
-            return "CORRECTING";
-        case LEG_COMPLETE:
-            return "COMPLETE";
-        case LEG_CANCELLED:
-            return "CANCELLED";
-        default:
-            return "UNKNOWN";
+    case LEG_NONE:
+        return "NONE";
+    case LEG_SCANNING:
+        return "SCANNING";
+    case LEG_SELECTING:
+        return "SELECTING";
+    case LEG_CONFIGURED:
+        return "CONFIGURED";
+    case LEG_TURNING:
+        return "TURNING";
+    case LEG_APPROACHING:
+        return "APPROACHING";
+    case LEG_HOLDING:
+        return "HOLDING";
+    case LEG_BRAKING:
+        return "BRAKING";
+    case LEG_VERIFYING:
+        return "VERIFYING";
+    case LEG_BACKING_UP:
+        return "BACKING_UP";
+    case LEG_REACQUIRING:
+        return "REACQUIRING";
+    case LEG_SEARCHING_REFERENCE:
+        return "SEARCHING_REFERENCE";
+    case LEG_OBSTACLE_VERIFYING:
+        return "OBSTACLE_VERIFYING";
+    case LEG_ALIGNING:
+        return "ALIGNING";
+    case LEG_WAITING_CAMERA:
+        return "WAITING_CAMERA";
+    case LEG_WAITING_INPUT:
+        return "WAITING_INPUT";
+    case LEG_CORRECTING:
+        return "CORRECTING";
+    case LEG_COMPLETE:
+        return "COMPLETE";
+    case LEG_CANCELLED:
+        return "CANCELLED";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -84,16 +84,16 @@ travel_leg_direction_name (leg_direction_t direction)
 {
     switch (direction)
     {
-        case LEG_NORTH:
-            return "NORTH";
-        case LEG_EAST:
-            return "EAST";
-        case LEG_SOUTH:
-            return "SOUTH";
-        case LEG_WEST:
-            return "WEST";
-        default:
-            return "UNKNOWN";
+    case LEG_NORTH:
+        return "NORTH";
+    case LEG_EAST:
+        return "EAST";
+    case LEG_SOUTH:
+        return "SOUTH";
+    case LEG_WEST:
+        return "WEST";
+    default:
+        return "UNKNOWN";
     }
 }
 

@@ -5,12 +5,12 @@
 #include <inttypes.h>
 // Standalone Sensor Pico diagnostic. Only I2C1 IMU + USB serial are used.
 // No calibration, heading, UART telemetry, motors, ToF, ultrasonic or SD setup.
+#include "hardware/i2c.h"
+#include "mpu6500.h"
+#include "pico/stdlib.h"
+#include "sensor_config.h"
 #include <math.h>
 #include <stdio.h>
-#include "hardware/i2c.h"
-#include "pico/stdlib.h"
-#include "mpu6500.h"
-#include "sensor_config.h"
 
 /* Fixed dimensions and iteration limits used by this module. */
 #define IMU_AXIS_COUNT 3
@@ -44,12 +44,12 @@ main (void)
     uint32_t window = 0;
     while (true)
     {
-        float    mean[3]      = { 0 };
-        float    m2[3]        = { 0 };
-        float    minimum[3]   = { 0 };
-        float    maximum[3]   = { 0 };
-        float    accel_min[3] = { 0 };
-        float    accel_max[3] = { 0 };
+        float    mean[3]      = {0};
+        float    m2[3]        = {0};
+        float    minimum[3]   = {0};
+        float    maximum[3]   = {0};
+        float    accel_min[3] = {0};
+        float    accel_max[3] = {0};
         float    norm_min     = 100.0f;
         float    norm_max     = 0.0f;
         unsigned accepted     = 0;

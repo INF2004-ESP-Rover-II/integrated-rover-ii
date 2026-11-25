@@ -92,7 +92,6 @@ imu_filter_update (imu_filter_t * p_state, const mpu6500_reading_t * p_reading,
     p_state->pitch_deg =
         wrap180(pitch + (1.0f - alpha) * wrap180(accel_pitch - pitch));
 
-
     p_state->roll_deg =
         wrap180(roll + (1.0f - alpha) * wrap180(accel_roll - roll));
 

@@ -8,8 +8,8 @@ INC      = -I../include
 .PHONY: check
 check: test_motor_control test_motor_front_stop
 
-test_motor_front_stop: test_motor_front_stop.c ../src/motor_driver.c ../src/motor_control.c ../src/safety_interlock.c
-	$(CC) $(CFLAGS) -DMC_ALLOW_MANUAL_WITHOUT_HEADING=1 -Istubs $(INC) -o $@ test_motor_front_stop.c ../src/motor_driver.c ../src/motor_control.c ../src/safety_interlock.c -lm
+test_motor_front_stop: test_motor_front_stop.c ../src/motor_driver.c ../src/motor_manual.c ../src/motor_auto.c ../src/motor_heading.c ../src/motor_safety.c ../src/motor_arm_claw.c ../src/motor_control.c ../src/safety_interlock.c
+	$(CC) $(CFLAGS) -DMC_ALLOW_MANUAL_WITHOUT_HEADING=1 -Istubs $(INC) -o $@ test_motor_front_stop.c ../src/motor_driver.c ../src/motor_manual.c ../src/motor_auto.c ../src/motor_heading.c ../src/motor_safety.c ../src/motor_arm_claw.c ../src/motor_control.c ../src/safety_interlock.c -lm
 	./$@
 
 test_motor_control: test_motor_control.c ../src/motor_control.c ../include/motor_control.h ../include/motor_types.h ../include/motor_config.h

@@ -18,7 +18,6 @@ typedef struct
 
 bool mpu6500_init (void);
 
-
 bool mpu6500_read (mpu6500_reading_t * p_reading);
 
 // Keep stationary: accept a stable 100-sample window, retry up to ten times.
@@ -31,9 +30,7 @@ bool mpu6500_calibrate (void);
 
 const char * mpu6500_last_error (void);
 
-
 uint8_t mpu6500_device_id (void);
-
 
 #endif
 

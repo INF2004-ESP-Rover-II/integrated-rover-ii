@@ -7,7 +7,7 @@
 void
 safety_interlock_init (safety_interlock_t * p_state)
 {
-    *p_state = (safety_interlock_t) { .latched = true, .stop_requested = true };
+    *p_state = (safety_interlock_t) {.latched = true, .stop_requested = true};
 }
 
 void

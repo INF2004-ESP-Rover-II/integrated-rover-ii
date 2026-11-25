@@ -29,7 +29,6 @@ void imu_sampler_start (void);
 
 void imu_sampler_get_snapshot (imu_snapshot_t * p_snapshot);
 
-
 #endif
 
 /* End of file. */

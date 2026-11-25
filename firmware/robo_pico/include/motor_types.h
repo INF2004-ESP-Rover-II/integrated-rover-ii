@@ -10,32 +10,32 @@
  *
  * Data representation table (Week 13 evidence):
  *
- *  Field                    Range                       Bits  Where
- *  -----------------------  --------------------------  ----
- * ------------------------ command type             7 types (1..7) 3     motor
- * command word command source           auto / manual               1     motor
- * command word command sequence         0..15                       4     motor
- * command word vx, vy, w (manual)       -100..+100 %                8 ea  motor
- * command word drive speed (auto)       -100..+100 %                8     motor
- * command word target heading           0..359 deg (1 deg)          9     motor
- * command word measured heading         0..359.9 deg (0.1 deg)      12 heading
- * word heading sequence         0..15                       4     heading word
- *  heading receive time     0..1023 ms (rolling)        10    heading word
- *  heading valid            yes / no                    1     heading word
- *  motor state              8 states                    3     telemetry /
- * private movement direction       front/back/left/right mask  4     direction
- * byte (UART) direction sequence       0..15                       4 direction
- * byte (UART) move result              4 results                   2     result
- * byte result sequence          0..15                       4     result byte
- *  fault flags              1 bit each                  1 ea  shared fault mask
+ *  Field                 Range                   Bits  Where
+ *  --------------------  ----------------------  ----  ---------------------
+ *  command type          7 types (1..7)          3     motor command word
+ *  command source        auto / manual           1     motor command word
+ *  command sequence      0..15                   4     motor command word
+ *  vx, vy, w (manual)    -100..+100 %            8 ea  motor command word
+ *  drive speed (auto)    -100..+100 %            8     motor command word
+ *  target heading        0..359 deg (1 deg)      9     motor command word
+ *  measured heading      0..359.9 deg (0.1 deg)  12    heading word
+ *  heading sequence      0..15                   4     heading word
+ *  heading receive time  0..1023 ms (rolling)    10    heading word
+ *  heading valid         yes / no                1     heading word
+ *  motor state           8 states                3     telemetry / private
+ *  movement direction    F/B/L/R side mask       4     direction byte (UART)
+ *  direction sequence    0..15                   4     direction byte (UART)
+ *  move result           4 results               2     result byte
+ *  result sequence       0..15                   4     result byte
+ *  fault flags           1 bit each              1 ea  shared fault mask
  *
  * Owner: Buddy 4 (Lim Zi Ying)
  */
 #ifndef MOTOR_TYPES_H
 #define MOTOR_TYPES_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /* ======================= Motor state (3 bits) ======================= */
 /* Matches the Section 6.6 motor statechart. */
@@ -95,75 +95,73 @@ typedef enum
 #define MC_HDG9_MASK 0x1FFu
 
 static inline uint32_t
-mc_pack_header (mc_type_t time_value, mc_src_t state, uint8_t seq)
+mc_pack_header (mc_type_t t, mc_src_t s, uint8_t seq)
 {
-    return ((uint32_t) time_value & MC_TYPE_MASK) |
-           (((uint32_t) state & 1u) << MC_SRC_SHIFT) |
+    return ((uint32_t) t & MC_TYPE_MASK) |
+           (((uint32_t) s & 1u) << MC_SRC_SHIFT) |
            (((uint32_t) seq & MC_SEQ_MASK) << MC_SEQ_SHIFT);
 }
 
 static inline uint32_t
-mc_pack_manual_drive (uint8_t seq, int8_t velocity_x, int8_t velocity_y,
-                      int8_t value_w)
+mc_pack_manual_drive (uint8_t seq, int8_t vx, int8_t vy, int8_t w)
 {
     return mc_pack_header(MC_MANUAL_DRIVE, MC_SRC_MANUAL, seq) |
-           ((uint32_t) (uint8_t) velocity_x << (uint32_t) (8)) |
-           ((uint32_t) (uint8_t) velocity_y << (uint32_t) (16)) |
-           ((uint32_t) (uint8_t) value_w << (uint32_t) (24));
+           ((uint32_t) (uint8_t) vx << 8) | ((uint32_t) (uint8_t) vy << 16) |
+           ((uint32_t) (uint8_t) w << 24);
 }
 
 static inline uint32_t
-mc_pack_manual_park (uint8_t seq, int8_t velocity_y)
+mc_pack_manual_park (uint8_t seq, int8_t vy)
 {
     return mc_pack_header(MC_MANUAL_PARK, MC_SRC_MANUAL, seq) |
-           ((uint32_t) (uint8_t) velocity_y << (uint32_t) (16));
+           ((uint32_t) (uint8_t) vy << 16);
 }
 
 static inline uint32_t
 mc_pack_auto_rotate (uint8_t seq, uint16_t heading_deg)
 {
     return mc_pack_header(MC_AUTO_ROTATE, MC_SRC_AUTO, seq) |
-           (((uint32_t) heading_deg & MC_HDG9_MASK) << (uint32_t) (8));
+           (((uint32_t) heading_deg & MC_HDG9_MASK) << 8);
 }
 
 static inline uint32_t
 mc_pack_auto_drive (uint8_t seq, int8_t speed, uint16_t heading_deg)
 {
     return mc_pack_header(MC_AUTO_DRIVE, MC_SRC_AUTO, seq) |
-           ((uint32_t) (uint8_t) speed << (uint32_t) (8)) |
-           (((uint32_t) heading_deg & MC_HDG9_MASK) << (uint32_t) (16));
+           ((uint32_t) (uint8_t) speed << 8) |
+           (((uint32_t) heading_deg & MC_HDG9_MASK) << 16);
 }
 
 static inline uint32_t
-mc_pack_simple (mc_type_t time_value, mc_src_t state, uint8_t seq)
+mc_pack_simple (mc_type_t t, mc_src_t s, uint8_t seq)
 {
-    return mc_pack_header(time_value, state, seq);
+    return mc_pack_header(t, s, seq);
 }
 
 static inline mc_type_t
-mc_type (uint32_t value_w)
+mc_type (uint32_t w)
 {
-    return (mc_type_t) (value_w & MC_TYPE_MASK);
+    return (mc_type_t) (w & MC_TYPE_MASK);
 }
 static inline mc_src_t
-mc_src (uint32_t value_w)
+mc_src (uint32_t w)
 {
-    return (mc_src_t) ((value_w >> MC_SRC_SHIFT) & 1u);
+    return (mc_src_t) ((w >> MC_SRC_SHIFT) & 1u);
 }
 static inline uint8_t
-mc_seq (uint32_t value_w)
+mc_seq (uint32_t w)
 {
-    return (uint8_t) ((value_w >> MC_SEQ_SHIFT) & MC_SEQ_MASK);
+    return (uint8_t) ((w >> MC_SEQ_SHIFT) & MC_SEQ_MASK);
 }
 static inline int8_t
-mc_s8 (uint32_t value_w, unsigned shift)
+mc_s8 (uint32_t w, uint32_t shift)
 {
-    return (int8_t) (uint8_t) (value_w >> shift);
+    return (int8_t) (uint8_t) (w >> shift);
 }
 static inline uint16_t
-mc_hdg9 (uint32_t value_w, unsigned shift)
+mc_hdg9 (uint32_t w, uint32_t shift)
 {
-    return (uint16_t) ((value_w >> shift) & MC_HDG9_MASK);
+    return (uint16_t) ((w >> shift) & MC_HDG9_MASK);
 }
 
 /* ===================== Heading word (32 bits, shared) =====================
@@ -195,32 +193,33 @@ heading_word_pack (uint16_t tenths, uint8_t seq, uint32_t now_ms)
            ((now_ms & HW_TIME_MASK) << HW_TIME_SHIFT) | HW_VALID_BIT;
 }
 static inline uint16_t
-heading_word_tenths (uint32_t value_w)
+heading_word_tenths (uint32_t w)
 {
-    return (uint16_t) (value_w & HW_HDG_MASK);
+    return (uint16_t) (w & HW_HDG_MASK);
 }
 static inline uint8_t
-heading_word_seq (uint32_t value_w)
+heading_word_seq (uint32_t w)
 {
-    return (uint8_t) ((value_w >> HW_SEQ_SHIFT) & HW_SEQ_MASK);
+    return (uint8_t) ((w >> HW_SEQ_SHIFT) & HW_SEQ_MASK);
 }
 static inline uint16_t
-heading_word_time (uint32_t value_w)
+heading_word_time (uint32_t w)
 {
-    return (uint16_t) ((value_w >> HW_TIME_SHIFT) & HW_TIME_MASK);
+    return (uint16_t) ((w >> HW_TIME_SHIFT) & HW_TIME_MASK);
 }
 static inline bool
-heading_word_valid (uint32_t value_w)
+heading_word_valid (uint32_t w)
 {
-    return (value_w & HW_VALID_BIT) != 0u;
+    return (w & HW_VALID_BIT) != 0u;
 }
 
-/* ============== Movement direction byte (Robo Pico -> Sensor Pico)
- * ============== Sent on the return UART line (Robo GP12 TX -> Sensor GP17 RX)
- * so Collision Detection knows which sensors to watch. One bit per side the
- * rover is moving TOWARD. Rotating sets all four. Stopped = 0. bits 0..3 mask,
- * bits 4..7 sequence. If no byte arrives for ~300 ms, Collision Detection
- * should watch ALL sensors. */
+/* ---------------- Movement direction byte (Robo Pico -> Sensor Pico) --
+ * Sent on the return UART line (Robo GP12 TX -> Sensor GP17 RX) so Collision
+ * Detection knows which sensors to watch. One bit per side the rover is
+ * moving TOWARD. Rotating sets all four. Stopped = 0.
+ *  bits 0..3 mask, bits 4..7 sequence.
+ * If no byte arrives for ~300 ms, Collision Detection should watch ALL
+ * sensors. */
 #define DIR_FRONT 0x1u
 #define DIR_BACK 0x2u
 #define DIR_LEFT 0x4u
@@ -230,7 +229,7 @@ heading_word_valid (uint32_t value_w)
 static inline uint8_t
 dir_byte_pack (uint8_t mask, uint8_t seq)
 {
-    return (uint8_t) ((mask & 0xFu) | ((seq & 0xFu) << (uint32_t) (4)));
+    return (uint8_t) ((mask & 0xFu) | ((seq & 0xFu) << 4));
 }
 
 /* ================= Move result (to the Exploration Task) ================= */
@@ -242,13 +241,12 @@ typedef enum
     MR_REJECTED = 3  /* command refused (FR-40 rules, range, state)      */
 } move_result_t;
 
-/* result byte: bits 0..1 result, bits 2..5 sequence of the command it answers
- */
+/* result byte: bits 0..1 result, bits 2..5 sequence of the command it
+ * answers */
 static inline uint8_t
-result_byte_pack (move_result_t result, uint8_t seq)
+result_byte_pack (move_result_t r, uint8_t seq)
 {
-    return (uint8_t) (((uint8_t) result & 0x3u) |
-                      ((seq & 0xFu) << (uint32_t) (2)));
+    return (uint8_t) (((uint8_t) r & 0x3u) | ((seq & 0xFu) << 2));
 }
 
 /* ================= Shared fault mask (one bit each) =================
@@ -256,16 +254,15 @@ result_byte_pack (move_result_t result, uint8_t seq)
  * Only TASKS write it. The STOP interrupt never writes it directly: it only
  * notifies the Motor Control task, which stops the motors and then sets
  * FAULT_ESTOP. Bit numbers must be agreed team-wide (Buddy 5 owns the list). */
-#define FAULT_ESTOP (1u << 0) /* set by Motor Control after a UART STOP  */
-#define FAULT_CMD_TIMEOUT                                                      \
-    (1u << 1) /* set by Motor Control (FR-42)            */
-#define FAULT_HEADING_STALE                                                    \
-    (1u << 2)                     /* set by Motor Control                    */
-#define FAULT_IMU (1u << 3)       /* set by IMU side (Sensor Pico report)    */
-#define FAULT_LINK_LOST (1u << 4) /* set by Robo Comms (FR-08) */
+#define FAULT_ESTOP (1u << 0)       /* set by Motor Control after a UART STOP */
+#define FAULT_CMD_TIMEOUT (1u << 1) /* set by Motor Control (FR-42) */
+#define FAULT_HEADING_STALE (1u << 2) /* set by Motor Control */
+#define FAULT_IMU (1u << 3)           /* set by IMU side (Sensor Pico report) */
+#define FAULT_LINK_LOST (1u << 4)     /* set by Robo Comms (FR-08) */
 #define FAULT_MOTOR_STALL                                                      \
-    (1u << 5)                   /* RESERVED: no current sensing to detect  */
-#define FAULT_ENCODER (1u << 6) /* RESERVED: rover has no wheel encoders   */
+    (1u << 5)                   /* RESERVED: no current sensing to detect      \
+                                 */
+#define FAULT_ENCODER (1u << 6) /* RESERVED: rover has no wheel encoders */
 #define FAULT_MOTOR_OWNED                                                      \
     (FAULT_ESTOP | FAULT_CMD_TIMEOUT | FAULT_HEADING_STALE)
 

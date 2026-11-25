@@ -53,7 +53,7 @@ undistort (float pixel_x, float pixel_y, float * p_x_coordinate,
 aruco_pose_t
 aruco_pose (const float corners[4][2], float marker_mm)
 {
-    aruco_pose_t pose = { 0 };
+    aruco_pose_t pose = {0};
     float        value_q[4][2];
     for (int index = 0; index < MARKER_CORNER_COUNT; index++)
     {

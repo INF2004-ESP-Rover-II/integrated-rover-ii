@@ -2,8 +2,8 @@
  * @file camera_telemetry.c
  * @brief Camera telemetry firmware module.
  */
-#include <inttypes.h>
 #include "camera_telemetry.h"
+#include <inttypes.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -50,7 +50,6 @@ camera_telemetry_format (char * p_out, size_t capacity,
 
     const char * p_status =
         b_expired ? "UART_TIMEOUT" : camera_status_name(p_frame->status);
-
 
     uint8_t count =
         !b_expired && p_frame->status == VISION_STATUS_OK ? p_frame->count : 0;

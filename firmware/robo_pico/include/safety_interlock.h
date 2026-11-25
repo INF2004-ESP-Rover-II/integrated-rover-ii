@@ -23,16 +23,12 @@ typedef struct
 
 void safety_interlock_init (safety_interlock_t * p_state);
 
-
 void safety_interlock_receive (safety_interlock_t * p_state,
                                bool b_stop_requested, uint32_t now_ms);
 
-
 void safety_interlock_poll (safety_interlock_t * p_state, uint32_t now_ms);
 
-
 bool safety_interlock_reset (safety_interlock_t * p_state, uint32_t now_ms);
-
 
 #endif
 

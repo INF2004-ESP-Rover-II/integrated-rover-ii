@@ -36,11 +36,9 @@ typedef struct
     int16_t y;
 } pt_t;
 
-static const int8_t g_dx[8] = {
-    1, 1, 0, -1, -1, -1, 0, 1
-}; // clockwise on screen, y down
-static const int8_t g_dy[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
-
+static const int8_t g_dx[8] = {1,  1,  0, -1,
+                               -1, -1, 0, 1}; // clockwise on screen, y down
+static const int8_t g_dy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 
 // map[i]: 0 background, 1 dark, 2 dark and already on a traced contour.
 static void
@@ -92,7 +90,6 @@ threshold (const uint8_t * p_img, int width, int height, int stride,
         const int origin_y =
             y_coordinate - result < 0 ? 0 : y_coordinate - result;
 
-
         const int y1 = y_coordinate + result >= height ? height - 1
                                                        : y_coordinate + result;
 
@@ -122,7 +119,6 @@ threshold (const uint8_t * p_img, int width, int height, int stride,
 
             const int origin_x =
                 x_coordinate - result < 0 ? 0 : x_coordinate - result;
-
 
             const int x1 = x_coordinate + result >= width
                                ? width - 1
@@ -317,7 +313,7 @@ fit_line (const pt_t * p_pts, int count, int index, int inner_index,
 static uint8_t
 otsu (const uint8_t * p_value, int count)
 {
-    int hist[256] = { 0 };
+    int hist[256] = {0};
     for (int index = 0; index < count; index++)
     {
         hist[p_value[index]]++;
@@ -371,7 +367,7 @@ read_bits (const uint8_t * p_img, int width, int height, int stride,
         SAMPLES  = CELLS * CELLS * PER_CELL * PER_CELL
     };
 
-    static const float sample_offsets[PER_CELL] = { 0.3f, 0.5f, 0.7f };
+    static const float sample_offsets[PER_CELL] = {0.3f, 0.5f, 0.7f};
     const float        dx1                      = value_q[1][0] - value_q[2][0];
     const float        dx2                      = value_q[3][0] - value_q[2][0];
 
@@ -420,21 +416,17 @@ read_bits (const uint8_t * p_img, int width, int height, int stride,
                     const float coordinate_u =
                         (col + sample_offsets[inner_index]) / CELLS;
 
-
                     const float time_value =
                         (result + sample_offsets[index]) / CELLS;
 
-
                     const float z_coordinate =
                         value_g * coordinate_u + item_index * time_value + 1.0f;
-
 
                     const int x_coordinate =
                         (int) ((first * coordinate_u + second * time_value +
                                 value_c) /
                                    z_coordinate +
                                0.5f);
-
 
                     const int y_coordinate =
                         (int) ((data * coordinate_u + error_value * time_value +
@@ -545,7 +537,6 @@ try_quad (const uint8_t * p_img, int width, int height, int stride,
         const float * p_second =
             value_q[(uint32_t) ((index + 1)) & (uint32_t) (3)];
 
-
         const float * p_value_c =
             value_q[(uint32_t) ((index + 2)) & (uint32_t) (3)];
 
@@ -585,7 +576,6 @@ try_quad (const uint8_t * p_img, int width, int height, int stride,
 
         const float x_coordinate =
             (p_l0[2] * p_l1[1] - p_l1[2] * p_l0[1]) / det;
-
 
         const float y_coordinate =
             (p_l0[0] * p_l1[2] - p_l1[0] * p_l0[2]) / det;
@@ -639,7 +629,6 @@ try_quad (const uint8_t * p_img, int width, int height, int stride,
 
         p_value_m->corners[index][0] =
             value_q[(uint32_t) ((index + best_rot)) & (uint32_t) (3)][0];
-
 
         p_value_m->corners[index][1] =
             value_q[(uint32_t) ((index + best_rot)) & (uint32_t) (3)][1];

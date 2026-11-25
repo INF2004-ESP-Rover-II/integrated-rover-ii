@@ -69,8 +69,7 @@ static spi_t g_spis[] = { // One for each SPI.
         .baud_rate = 1000 * 1000
         //.baud_rate = 12500 * 1000
         // .baud_rate = 25 * 1000 * 1000 // Actual frequency: 20833333.
-    }
-};
+    }};
 
 // Hardware Configuration of the SD Card "objects"
 static sd_card_t g_sd_cards[] = { // One for each SD card
@@ -82,8 +81,7 @@ static sd_card_t g_sd_cards[] = { // One for each SD card
         .card_detect_gpio = 22, // Card detect
         .card_detected_true = 1 // What the GPIO read returns when a card is
                                 // present.
-    }
-};
+    }};
 
 /* ********************************************************************** */
 size_t

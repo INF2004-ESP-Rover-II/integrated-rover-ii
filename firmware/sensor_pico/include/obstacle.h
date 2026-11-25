@@ -5,9 +5,9 @@
 #ifndef OBSTACLE_H
 #define OBSTACLE_H
 
+#include "tof.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "tof.h"
 
 // Masks use the tof_sensor_t indices: bit 0 = left, 1 = front, 2 = right.
 #define OBSTACLE_ALL_MASK ((uint8_t) ((1u << TOF_SENSOR_COUNT) - 1u))
@@ -33,7 +33,6 @@ typedef struct
 
 void obstacle_init (obstacle_state_t * p_state, uint32_t now_ms);
 
-
 // Call on every loop to expire old ranges, even when tof_poll() has no new
 // results. readings timestamps and now_ms must use the same Sensor Pico clock.
 // Fault bits clear on any fresh completed result while online. Rejected ranges
@@ -42,7 +41,6 @@ void obstacle_init (obstacle_state_t * p_state, uint32_t now_ms);
 void obstacle_update (obstacle_state_t *     p_state,
                       const tof_readings_t * p_readings, uint8_t online_mask,
                       uint32_t now_ms);
-
 
 #endif
 

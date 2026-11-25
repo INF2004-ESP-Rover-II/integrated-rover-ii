@@ -74,14 +74,12 @@ typedef struct
     uint32_t revision;
 } rover_map_t;
 
-
 void rover_map_init (rover_map_t * p_map, uint64_t boot_id);
 
 // Clear all localisation and map data without starting a new boot/revision
 // epoch.
 
 void rover_map_clear (rover_map_t * p_map);
-
 
 map_result_t rover_map_start (rover_map_t * p_map, uint8_t marker_id);
 
@@ -99,28 +97,21 @@ map_result_t rover_map_add (rover_map_t * p_map, uint8_t marker_id,
 map_result_t rover_map_observe (rover_map_t * p_map, uint8_t marker_id,
                                 int16_t x_coordinate, int16_t y_coordinate);
 
-
 const map_node_t * rover_map_find_id (const rover_map_t * p_map,
                                       uint8_t             marker_id);
-
 
 const map_node_t * rover_map_find_cell (const rover_map_t * p_map,
                                         int16_t             x_coordinate,
                                         int16_t             y_coordinate);
 
-
 map_result_t rover_map_arrive (rover_map_t * p_map, uint8_t marker_id);
 
-
 void rover_map_depart (rover_map_t * p_map);
-
 
 map_result_t rover_map_set_exit (rover_map_t * p_map, uint8_t marker_id,
                                  map_direction_t direction, map_exit_t exit);
 
-
 uint32_t rover_map_columns (const rover_map_t * p_map);
-
 
 uint32_t rover_map_rows (const rover_map_t * p_map);
 
@@ -129,9 +120,7 @@ uint32_t rover_map_rows (const rover_map_t * p_map);
 size_t rover_map_format (const rover_map_t * p_map, const char * p_last_request,
                          char * p_out, size_t capacity);
 
-
 const char * rover_map_result_name (map_result_t result);
-
 
 #endif
 

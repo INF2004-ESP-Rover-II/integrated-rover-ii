@@ -6,16 +6,16 @@
 #define CAMERA_UART_PRINT_FRAMES 0
 #endif
 
-#include <inttypes.h>
 #include "camera_uart.h"
 #include "camera_protocol.h"
+#include <inttypes.h>
 
-#include <stdio.h>
-#include "pico/stdlib.h"
 #include "hardware/irq.h"
 #include "hardware/regs/uart.h"
 #include "hardware/sync.h"
 #include "hardware/uart.h"
+#include "pico/stdlib.h"
+#include <stdio.h>
 
 #define CAMERA_UART uart1
 #define CAMERA_RX_PIN 21u
@@ -43,7 +43,7 @@ static camera_observation_t g_latest_observation;
 static bool                 g_b_have_observation;
 
 static void
-camera_uart_irq (void)
+camera_uart_isr (void)
 {
     // Only buffer bytes in the ISR. In particular, never printf here.
     while (uart_is_readable(CAMERA_UART))
@@ -89,7 +89,7 @@ camera_uart_init (void)
     uart_set_format(CAMERA_UART, 8, 1, UART_PARITY_NONE);
     uart_set_hw_flow(CAMERA_UART, false, false);
     uart_set_fifo_enabled(CAMERA_UART, true);
-    irq_set_exclusive_handler(UART1_IRQ, camera_uart_irq);
+    irq_set_exclusive_handler(UART1_IRQ, camera_uart_isr);
     irq_set_enabled(UART1_IRQ, true);
     uart_set_irq_enables(CAMERA_UART, true, false);
     printf("[CAMERA] UART1 RX=GP%u, %u baud 8N1; ESP32 GPIO17 -> GP21, common "

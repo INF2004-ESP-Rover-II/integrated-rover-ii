@@ -42,7 +42,6 @@ typedef struct
     publish_slot_t slots[PUBLISH_COUNT];
 } mqtt_publish_policy_t;
 
-
 void mqtt_publish_policy_init (mqtt_publish_policy_t * p_policy);
 
 // Reserve before calling lwIP. On immediate failure or completion, release it.
@@ -53,9 +52,7 @@ bool mqtt_publish_policy_begin (mqtt_publish_policy_t * p_policy,
                                 size_t wire_bytes, size_t free_bytes,
                                 unsigned free_requests, bool b_replies_waiting);
 
-
 void mqtt_publish_policy_release (publish_slot_t * p_slot);
-
 
 #endif
 

@@ -26,7 +26,6 @@ typedef struct
     map_observed_node_t candidates[VISION_MAX_MARKERS];
 } camera_map_t;
 
-
 void camera_map_init (camera_map_t * p_mapper);
 
 // Raw heading and north use the same fixed IMU frame as the onboard leg

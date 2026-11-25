@@ -145,7 +145,6 @@ typedef struct
     uint32_t     correction_started_ms;
 } onboard_drive_t;
 
-
 void onboard_drive_init (onboard_drive_t * p_drive);
 
 // Bounded target leg: reference at the configured 600 mm arrival range, or
@@ -158,7 +157,6 @@ const char * onboard_drive_start (onboard_drive_t * p_drive,
                                   const onboard_drive_inputs_t * p_inputs,
                                   uint32_t                       now);
 
-
 void onboard_drive_tick (onboard_drive_t * p_drive, mission_t * p_mission,
                          rover_map_t * p_map, target_selector_t * p_selection,
                          const onboard_drive_inputs_t * p_inputs, uint32_t now);
@@ -169,11 +167,9 @@ void onboard_drive_tick (onboard_drive_t * p_drive, mission_t * p_mission,
 bool onboard_drive_note_front_stop (onboard_drive_t * p_drive,
                                     const mission_t * p_mission);
 
-
 void onboard_drive_stop (onboard_drive_t * p_drive, mission_t * p_mission,
                          mission_reason_t reason, const char * p_result,
                          uint32_t now);
-
 
 size_t onboard_drive_format (const onboard_drive_t * p_drive,
                              const mission_t * p_mission, char * p_out,

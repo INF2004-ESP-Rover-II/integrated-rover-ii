@@ -7,7 +7,7 @@
 void
 mqtt_publish_policy_init (mqtt_publish_policy_t * p_policy)
 {
-    *p_policy = (mqtt_publish_policy_t) { 0 };
+    *p_policy = (mqtt_publish_policy_t) {0};
     for (unsigned index = 0; index < PUBLISH_COUNT; ++index)
     {
         p_policy->slots[index].kind = (publish_kind_t) index;

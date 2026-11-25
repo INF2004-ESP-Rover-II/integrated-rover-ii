@@ -92,7 +92,6 @@ vision_frame_build (uint8_t * p_out, uint8_t seq, uint8_t status,
             p_pointer,
             (uint16_t) round_capped(p_markers[index].range_mm, 0, 65535));
 
-
         p_pointer =
             put_u16(p_pointer,
                     (uint16_t) (int16_t) round_capped(

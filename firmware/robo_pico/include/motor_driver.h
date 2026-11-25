@@ -8,8 +8,8 @@
 #ifndef MOTOR_DRIVER_H
 #define MOTOR_DRIVER_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef enum
 {
@@ -17,9 +17,8 @@ typedef enum
     MOTOR_ERR_INIT   = -1,
     MOTOR_ERR_PIN    = -2, /* bad direction or speed */
     MOTOR_ERR_SAFETY = -5, /* refused: safety lock, SAFE STOP, or wrong state */
-    MOTOR_ERR_NO_HEADING =
-        -7, /* auto move refused: no fresh heading from the IMU */
-    MOTOR_ERR_FRONT_BLOCKED = -6 /* front proximity blocks FORWARD only */
+    MOTOR_ERR_FRONT_BLOCKED = -6, /* front proximity blocks FORWARD only */
+    MOTOR_ERR_NO_HEADING    = -7  /* auto move refused: no fresh IMU heading */
 } motor_error_t;
 
 typedef enum
@@ -51,71 +50,51 @@ typedef enum
 } claw_direction_t;
 
 /** Set up pins, PWM and the 20 ms Motion Control update. Call once. */
-
 motor_error_t motor_init (void);
-
 
 /** Start or keep a move. Calling again with the same move and speed
  *  keeps it going; stop with motor_emergency_stop().
  *  @param speed_percent 0..100 */
-
 motor_error_t motor_set_direction (motor_direction_t direction,
-                                   int               speed_percent);
-
+                                   int32_t           speed_percent);
 
 /** Speed for a dashboard key, from motor_config.h (MC_DASH_*_PCT). */
-
-int motor_move_speed (motor_direction_t direction);
-
+int32_t motor_move_speed (motor_direction_t direction);
 
 /** Parallel park: strafe for a fixed time, then stop by itself.
  *  @param direction -1 = left, +1 = right
  *  @param power_percent 10..100, or 0 for the default (MC_PARK_PCT) */
+motor_error_t motor_parallel_park (int32_t direction, int32_t power_percent);
 
-motor_error_t motor_parallel_park (int direction, int power_percent);
-
-
-/* ---------------- Autonomous moves (for the mapping / Exploration side)
- * ---------------- One call starts the move and it KEEPS GOING until
- * motor_auto_stop(), an operator STOP (motor_emergency_stop) or a safety stop
- * (Collision Detection, link lost). No need to resend. Heading hold keeps it
- * straight (FR-41). Needs a fresh heading from the Sensor Pico, else
- * MOTOR_ERR_NO_HEADING. Manual dashboard moves are refused while an auto move
- * runs (FR-40). */
+/* ---------------- Autonomous moves (mapping / Exploration side) ---------
+ * One call starts the move and it KEEPS GOING until motor_auto_stop(), an
+ * operator STOP (motor_emergency_stop), a front-obstacle stop on a forward
+ * move, a manual E-STOP or a Motion Control safety stop. No need to resend.
+ * Heading hold keeps it straight (FR-41). Needs a fresh heading from the
+ * Sensor Pico, else MOTOR_ERR_NO_HEADING. Manual dashboard moves are only
+ * accepted while Mission Control is READY (FR-40); the onboard executor uses
+ * the leased calls below. */
 
 /** Drive straight, holding the current heading. speed: +1..100 forward,
  *  -1..-100 backward (0 = motor_auto_stop). */
-
-motor_error_t motor_auto_drive (int speed_percent);
-
+motor_error_t motor_auto_drive (int32_t speed_percent);
 /** Onboard executor only: signed speed as above, nonzero; lease 1..500 ms.
  * Renew for continuous travel; a recovery pulse deliberately does not renew.
  * The independent 20 ms motor timer brakes when the lease expires. */
-
-motor_error_t motor_auto_drive_leased (int speed_percent, uint16_t lease_ms);
-
-
-bool motor_auto_renew_lease (void);
-
+motor_error_t motor_auto_drive_leased (int32_t  speed_percent,
+                                       uint16_t lease_ms);
+bool          motor_auto_renew_lease (void);
 
 /** Rotate on the spot to an absolute heading 0..359 (shortest way).
  *  Stops by itself within +/-3 deg; status becomes HEADING_REACHED. */
-
-motor_error_t motor_auto_rotate_to (int heading_deg);
-
-
-motor_error_t motor_auto_rotate_leased (int heading_deg, uint16_t lease_ms);
-
+motor_error_t motor_auto_rotate_to (int32_t heading_deg);
+motor_error_t motor_auto_rotate_leased (int32_t heading_deg, uint16_t lease_ms);
 
 /** Rotate on the spot by an angle: +90 = turn right 90, -90 = left 90. */
-
-motor_error_t motor_auto_rotate_by (int delta_deg);
-
+motor_error_t motor_auto_rotate_by (int32_t delta_deg);
 
 /** Normal stop of the auto move: ramps down, status becomes DONE. */
-
 motor_error_t motor_auto_stop (void);
-
 
 typedef enum
 {
@@ -129,85 +108,47 @@ typedef enum
 
 /** How the last auto move is doing / how it ended. Poll it, or watch the
  *  "AUTO_RESULT:" status the rover publishes. */
-
 motor_auto_status_t motor_auto_status (void);
-
-
-const char * motor_auto_status_name (motor_auto_status_t state);
-
+const char *        motor_auto_status_name (motor_auto_status_t s);
 
 /** Arm and claw: on/off. */
-
 motor_error_t arm_set_direction (arm_direction_t direction);
-
-
 motor_error_t claw_set_direction (claw_direction_t direction);
 
-
-/** Stop now: PWM 0 + active brake, then idle (dashboard STOP, end of a turn).
- */
-
+/** Stop now: PWM 0 + active brake, then idle (dashboard STOP, end of a
+ *  turn). */
 motor_error_t motor_emergency_stop (void);
-
 
 /** Front proximity stops once and inhibits FORWARD without latching a lock.
  *  Sensor faults and packet loss never latch a safety lock.
  *  Called from the UART interrupt. */
-
-void motor_safety_receive (bool b_stop_requested, uint32_t receive_ms);
-
+void motor_safety_receive (bool front_blocked, uint32_t receive_ms);
 /** Latch a safety lock only for the explicit dashboard ESTOP command. */
-
 void motor_manual_estop (void);
-
 /** Consume a front-stop event for reporting outside the UART interrupt. */
-
 bool motor_take_front_stop (void);
-
-
 void motor_safety_poll (void);
-
-
 bool motor_safety_is_latched (void);
-
-
 bool motor_safety_reset (void);
-
 
 /** Latest heading from the Sensor Pico, once per packet (safe from the
  *  UART interrupt). valid = false if the IMU reported an error. */
-
-void motor_heading_update (float heading_deg, bool b_valid);
-
+void motor_heading_update (float heading_deg, bool valid);
 /** Stop and make the latest fresh raw IMU heading the new zero reference. */
-
 motor_error_t motor_zero_heading (void);
-
-
-float motor_heading_relative (float raw_heading_deg);
-
-
-float motor_heading_offset (void);
-
-
-uint32_t motor_heading_epoch (void);
-
-
-bool motor_heading_sample_since (uint32_t since_ms);
-
+float         motor_heading_relative (float raw_heading_deg);
+float         motor_heading_offset (void);
+uint32_t      motor_heading_epoch (void);
+bool          motor_heading_sample_since (uint32_t since_ms);
 
 /** Motion Control state (motor_state_t in motor_types.h), for telemetry.
  *  0 ZERO_GYRO, 1 IDLE, 3 MANUAL, 4 AUTO_ROTATE, 5 AUTO_DRIVE, 6 RAMP_DOWN,
  *  7 SAFE_STOP (moves refused until Reset Safety). */
-
-int motor_motion_state (void);
-
+int32_t motor_motion_state (void);
 #define MOTOR_STATE_SAFE_STOP 7
 
 /** Laptop link lost: stop without latching a safety lock. */
-
 void motor_link_lost (void);
-
 
 /** Why the rover is in SAFE STOP, as short text for the dashboard. */
 typedef enum
@@ -218,9 +159,7 @@ typedef enum
     MOTOR_SAFE_MANUAL_ESTOP, /* Explicit manual dashboard E-STOP */
     MOTOR_SAFE_HEADING_STALE /* heading too old (auto moves)               */
 } motor_safe_reason_t;
-
 const char * motor_safe_stop_reason (void);
-
 
 #endif /* MOTOR_DRIVER_H */
 

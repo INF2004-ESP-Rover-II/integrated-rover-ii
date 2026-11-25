@@ -18,12 +18,12 @@
 #ifndef MOTOR_TASK_H
 #define MOTOR_TASK_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "FreeRTOS.h"
-#include "task.h"
 #include "event_groups.h"
 #include "motor_types.h"
+#include "task.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 /** Called from the Motor Control task with each move result byte
  *  (bits 0..1 move_result_t, bits 2..5 command sequence). Keep it short,
@@ -45,13 +45,13 @@ void motor_task_operator_stop (void);  /* from a task                  */
 void motor_task_link_lost (void);      /* from a task                  */
 
 /** Mission Control state gate: manual moves only while READY (FR-40). */
-void motor_task_set_system_ready (bool b_ready);
+void motor_task_set_system_ready (bool ready);
 
 /** Store the latest heading (tenths of a degree, 0..3599) and its frame
  *  sequence number. One 32-bit store: safe from a task or an ISR. */
 void motor_heading_publish (uint16_t heading_tenths, uint8_t seq);
 
-void motor_task_set_result_cb (motor_result_cb_t p_callback);
+void motor_task_set_result_cb (motor_result_cb_t cb);
 
 /** Telemetry / evidence. */
 motor_state_t      motor_task_state (void);   /* 3-bit state, single writer */

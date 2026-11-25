@@ -20,7 +20,6 @@
 size_t mjpeg_with_dht (const uint8_t * p_src, size_t len, uint8_t * p_dst,
                        size_t dst_cap, bool * p_had_dht);
 
-
 #endif /* MJPEG_DHT_H */
 
 /* End of file. */

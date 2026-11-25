@@ -2,31 +2,31 @@
  * @file main.c
  * @brief Main firmware module.
  */
+#include "../../common/obstacle_threshold.h"
+#include "camera_map.h"
+#include "camera_telemetry.h"
+#include "camera_uart.h"
+#include "config.h"
+#include "hardware/pwm.h"
+#include "lwip/apps/mqtt.h"
+#include "lwip/timeouts.h"
+#include "mission_control.h"
+#include "motor_driver.h"
+#include "mqtt_publish_policy.h"
+#include "onboard_dfs.h"
+#include "onboard_drive.h"
+#include "pico/cyw43_arch.h"
+#include "pico/rand.h"
+#include "pico/stdlib.h"
+#include "rover_map.h"
+#include "target_selector.h"
+#include "uart_protocol.h"
+#include "wifi_mqtt.h"
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "pico/stdlib.h"
-#include "pico/rand.h"
-#include "pico/cyw43_arch.h"
-#include "hardware/pwm.h"
-#include "config.h"
-#include "motor_driver.h"
-#include "../../common/obstacle_threshold.h"
-#include "wifi_mqtt.h"
-#include "mqtt_publish_policy.h"
-#include "uart_protocol.h"
-#include "camera_uart.h"
-#include "camera_telemetry.h"
-#include "camera_map.h"
-#include "mission_control.h"
-#include "rover_map.h"
-#include "target_selector.h"
-#include "onboard_drive.h"
-#include "onboard_dfs.h"
-#include "lwip/timeouts.h"
-#include "lwip/apps/mqtt.h"
 
 /* Fixed dimensions and iteration limits used by this module. */
 #define TOF_SCAN_COUNT 3
@@ -136,11 +136,10 @@ map_note_translation (const char * p_command, motor_error_t result)
         return;
     }
 
-    const char * translations[] = { "FORWARD",      "BACKWARD",
-                                    "LEFT",         "RIGHT",
-                                    "FRONT_LEFT",   "FRONT_RIGHT",
-                                    "BACK_LEFT",    "BACK_RIGHT",
-                                    "MOVE_FORWARD", "MOVE_BACKWARD" };
+    const char * translations[] = {"FORWARD",      "BACKWARD",   "LEFT",
+                                   "RIGHT",        "FRONT_LEFT", "FRONT_RIGHT",
+                                   "BACK_LEFT",    "BACK_RIGHT", "MOVE_FORWARD",
+                                   "MOVE_BACKWARD"};
 
     for (size_t index = 0;
          index < sizeof(translations) / sizeof(translations[0]); ++index)
@@ -366,8 +365,7 @@ drive_inputs (uint32_t now)
             motor_heading_sample_since(now - ONBOARD_DRIVE_SENSOR_MAX_AGE_MS),
         .front_mm    = (uint16_t) ((g_latest_sensors.tof_bits >> 10u) & 0x3ffu),
         .front_fault = (g_latest_sensors.obstacle_flags & (2u << 6u)) != 0,
-        .front_urgent = (g_latest_sensors.obstacle_flags & (2u << 3u)) != 0
-    };
+        .front_urgent = (g_latest_sensors.obstacle_flags & (2u << 3u)) != 0};
 
     camera_observation_t observation;
     if (camera_uart_latest(&observation))
@@ -387,7 +385,6 @@ drive_inputs (uint32_t now)
 
         input.camera_image_age_ms =
             input.camera_packet_age_ms + observation.frame.age_ms;
-
 
         input.camera_fresh =
             observation.frame.status == VISION_STATUS_OK &&
@@ -505,8 +502,7 @@ dfs_inputs (uint32_t now)
     onboard_dfs_inputs_t inputs = {
         .drive      = drive_inputs(now),
         .fault_mask = (uint8_t) ((g_latest_sensors.obstacle_flags >> 6u) & 7u),
-        .heading_offset_deg = motor_heading_offset()
-    };
+        .heading_offset_deg = motor_heading_offset()};
 
     for (unsigned index = 0; index < TOF_SCAN_COUNT; ++index)
     {
@@ -727,7 +723,6 @@ handle_mission_command (const char * p_command)
             &g_onboard_dfs, &g_mission, &g_rover_map, &g_onboard_drive,
             &g_target_selector, &inputs, now);
 
-
         bool b_is_valid = strcmp(p_result, "STARTED") == 0 ||
                           strcmp(p_result, "ALREADY_RUNNING") == 0;
 
@@ -766,7 +761,6 @@ handle_mission_command (const char * p_command)
     {
         return false;
     }
-
 
     mission_result_t p_result =
         mission_test_event(&g_mission, p_event, motor_safety_is_latched(),
@@ -835,7 +829,7 @@ on_sensor_packet (const sensor_packet_t * p_packet, uint32_t receive_ms)
 }
 
 static bool
-safety_watchdog_tick (struct repeating_timer * p_timer)
+safety_watchdog_isr (struct repeating_timer * p_timer)
 {
     (void) p_timer;
     motor_safety_poll();
@@ -1264,7 +1258,7 @@ process_command (const char * p_command)
         printf("[CMD] Unknown command: %s\n", cmd_buffer);
         return;
     }
-    printf("[CMD] %s -> result %d (motion state %d)\n", cmd_buffer,
+    printf("[CMD] %s -> result %d (motion state %" PRId32 ")\n", cmd_buffer,
            (int) result, motor_motion_state());
     map_note_translation(cmd_buffer, result);
 
@@ -1390,7 +1384,7 @@ main (void)
     }
 
     struct repeating_timer safety_timer;
-    if (!add_repeating_timer_ms(-10, safety_watchdog_tick, NULL, &safety_timer))
+    if (!add_repeating_timer_ms(-10, safety_watchdog_isr, NULL, &safety_timer))
     {
         printf("[ERROR] Cannot start safety watchdog; motors remain locked\n");
         return -1;
@@ -1495,7 +1489,6 @@ main (void)
         bool b_mission_link_ok =
             mission_last_rx != 0 &&
             (uint32_t) (now - mission_last_rx) <= LINK_TIMEOUT_MS;
-
 
         if (now - last_timeout_check >= 100)
         {
@@ -1641,7 +1634,6 @@ main (void)
 
             bool b_link_ok = (last_rx != 0) &&
                              ((int32_t) (now - last_rx) <= LINK_TIMEOUT_MS);
-
 
             if (!b_link_ok && !g_b_link_lost)
             {

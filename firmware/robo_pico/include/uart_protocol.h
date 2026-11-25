@@ -7,9 +7,9 @@
 #define PACKET_SYNC_BYTE1 0xAA
 #define PACKET_SYNC_BYTE2 0x55
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "hardware/uart.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 // Sensor data packet structure (must match Sensor Pico!)
 typedef struct
@@ -91,7 +91,6 @@ typedef void (*uart_packet_callback_t)(const sensor_packet_t * p_packet,
 
 void uart_set_packet_callback (uart_packet_callback_t p_callback);
 
-
 /**
  * @brief Initialize UART receiver
  * @param uart_id UART instance (uart0 or uart1)
@@ -103,14 +102,12 @@ void uart_set_packet_callback (uart_packet_callback_t p_callback);
 void uart_receiver_init (uart_inst_t * p_uart_id, uint32_t baud_rate,
                          int rx_pin, int tx_pin);
 
-
 /**
  * @brief Check if new sensor packet is available
  * @return true if valid packet received, false otherwise
  */
 
 bool uart_packet_available (void);
-
 
 /**
  * @brief Get latest sensor packet
@@ -120,7 +117,6 @@ bool uart_packet_available (void);
 
 bool uart_get_packet (sensor_packet_t * p_packet);
 
-
 /**
  * @brief Calculate checksum for sensor packet
  * @param packet Pointer to packet (checksum field will be ignored)
@@ -129,7 +125,6 @@ bool uart_get_packet (sensor_packet_t * p_packet);
 
 uint8_t calculate_packet_checksum (const sensor_packet_t * p_packet);
 
-
 /**
  * @brief Validate packet checksum
  * @param packet Pointer to received packet
@@ -137,7 +132,6 @@ uint8_t calculate_packet_checksum (const sensor_packet_t * p_packet);
  */
 
 bool validate_packet_checksum (const sensor_packet_t * p_packet);
-
 
 /**
  * @brief Get packet reception statistics
@@ -148,7 +142,6 @@ bool validate_packet_checksum (const sensor_packet_t * p_packet);
 
 void uart_get_stats (uint32_t * p_total_received, uint32_t * p_valid_packets,
                      uint32_t * p_error_packets);
-
 
 #endif // UART_PROTOCOL_H
 

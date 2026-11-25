@@ -5,13 +5,11 @@
 #ifndef WIFI_MQTT_H
 #define WIFI_MQTT_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "lwip/apps/mqtt.h" // <--- ADD THIS LINE
-
+#include <stdbool.h>
+#include <stdint.h>
 
 uint32_t mqtt_last_link_rx_ms (void);
-
 
 #ifndef ROVER_MQTT_DIAGNOSTICS
 #define ROVER_MQTT_DIAGNOSTICS 0
@@ -47,7 +45,6 @@ typedef void (*mqtt_command_callback_t)(const char * p_command);
 
 wifi_mqtt_error_t wifi_init (void);
 
-
 /**
  * @brief Connect to WiFi network
  */
@@ -55,20 +52,17 @@ wifi_mqtt_error_t wifi_init (void);
 wifi_mqtt_error_t wifi_connect (const char * p_ssid, const char * p_password,
                                 uint32_t timeout_ms);
 
-
 /**
  * @brief Check WiFi connection status
  */
 
 bool wifi_is_connected (void);
 
-
 /**
  * @brief Get IP address
  */
 
 const char * wifi_get_ip_address (void);
-
 
 /**
  * @brief Initialize MQTT client
@@ -77,20 +71,17 @@ const char * wifi_get_ip_address (void);
 wifi_mqtt_error_t mqtt_init (const char * p_broker_ip, uint16_t broker_port,
                              const char * p_client_id);
 
-
 /**
  * @brief Connect to MQTT broker
  */
 
 wifi_mqtt_error_t mqtt_connect (void);
 
-
 /**
  * @brief Subscribe to command topic
  */
 
 wifi_mqtt_error_t mqtt_subscribe_commands (mqtt_command_callback_t p_callback);
-
 
 /**
  * @brief Publish a command reply/event, or accept it into a bounded FIFO.
@@ -119,7 +110,6 @@ wifi_mqtt_error_t mqtt_publish_report (mqtt_report_t report,
 
 void mqtt_service_status_queue (void);
 
-
 /**
  * @brief Publish the latest telemetry, or return MQTT_ERR_BUSY without queueing
  * it. At most one telemetry publish is awaiting completion; poll the network
@@ -136,20 +126,17 @@ wifi_mqtt_error_t mqtt_publish_camera (const char * p_data);
 
 wifi_mqtt_error_t mqtt_publish_map (const char * p_data);
 
-
 /**
  * @brief Check MQTT connection status
  */
 
 bool mqtt_is_connected (void);
 
-
 /**
  * @brief Poll WiFi/MQTT (call in main loop)
  */
 
 void wifi_mqtt_poll (void);
-
 
 /**
  * @brief Get MQTT client pointer for direct publishing
@@ -165,7 +152,6 @@ mqtt_client_t * get_mqtt_client (void);
  */
 
 uint32_t mqtt_last_link_rx_ms (void);
-
 
 #endif // WIFI_MQTT_H
 

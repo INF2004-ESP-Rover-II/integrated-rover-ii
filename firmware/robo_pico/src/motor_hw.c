@@ -31,11 +31,11 @@
 #include "motor_hw.h"
 #include "motor_pins.h"
 
-#include "pico/stdlib.h"
-#include "hardware/pwm.h"
-#include "hardware/gpio.h"
-#include "hardware/uart.h"
 #include "hardware/clocks.h"
+#include "hardware/gpio.h"
+#include "hardware/pwm.h"
+#include "hardware/uart.h"
+#include "pico/stdlib.h"
 
 #define DIR_UART uart0
 #define DIR_UART_TX_PIN 12u
@@ -43,19 +43,17 @@
 
 typedef struct
 {
-    uint8_t en;
-    uint8_t in_a;
-    uint8_t in_b;
+    uint8_t en, in_a, in_b;
 } wheel_pins_t;
 
-static const wheel_pins_t g_k_wheel[MC_WHEELS] = {
-    { F_ENA_PIN, F_IN1_PIN, F_IN2_PIN }, /* front-left  */
-    { F_ENB_PIN, F_IN3_PIN, F_IN4_PIN }, /* front-right */
-    { B_ENA_PIN, B_IN1_PIN, B_IN2_PIN }, /* back-left   */
-    { B_ENB_PIN, B_IN3_PIN, B_IN4_PIN }, /* back-right  */
+static const wheel_pins_t k_wheel[MC_WHEELS] = {
+    {F_ENA_PIN, F_IN1_PIN, F_IN2_PIN}, /* front-left  */
+    {F_ENB_PIN, F_IN3_PIN, F_IN4_PIN}, /* front-right */
+    {B_ENA_PIN, B_IN1_PIN, B_IN2_PIN}, /* back-left   */
+    {B_ENB_PIN, B_IN3_PIN, B_IN4_PIN}, /* back-right  */
 };
 
-static uint16_t g_s_wrap = 0;
+static volatile uint16_t s_wrap = 0;
 
 static void
 out_low (uint pin)
@@ -74,15 +72,15 @@ motor_hw_safe_boot (void)
     out_low(CLAW_M1B_PIN);
     out_low(ARM_M1A_PIN);
     out_low(ARM_M1B_PIN);
-    for (int index = 0; index < MC_WHEELS; index++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        out_low(g_k_wheel[index].en); /* coast until PWM is set up */
-        out_low(g_k_wheel[index].in_a);
-        out_low(g_k_wheel[index].in_b);
+        out_low(k_wheel[i].en); /* coast until PWM is set up */
+        out_low(k_wheel[i].in_a);
+        out_low(k_wheel[i].in_b);
     }
 }
 
-static uint32_t g_s_freq_hz = PWM_FREQ_HZ;
+static volatile uint32_t s_freq_hz = PWM_FREQ_HZ;
 
 static void
 pwm_setup (void)
@@ -90,21 +88,21 @@ pwm_setup (void)
     /* clkdiv keeps wrap <= 65535 at low frequencies (e.g. 1 kHz -> div 2) */
     uint32_t sys_hz = clock_get_hz(clk_sys);
     uint32_t div    = 1u;
-    while (sys_hz / (div * g_s_freq_hz) > 65536u && div < 255u)
+    while (sys_hz / (div * s_freq_hz) > 65536u && div < 255u)
     {
         div++;
     }
-    g_s_wrap = (uint16_t) (sys_hz / (div * g_s_freq_hz) - 1u);
+    s_wrap = (uint16_t) (sys_hz / (div * s_freq_hz) - 1u);
 
-    for (int index = 0; index < MC_WHEELS; index++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        uint       slice = pwm_gpio_to_slice_num(g_k_wheel[index].en);
+        uint       slice = pwm_gpio_to_slice_num(k_wheel[i].en);
         pwm_config cfg   = pwm_get_default_config();
         pwm_config_set_clkdiv_int(&cfg, div);
-        pwm_config_set_wrap(&cfg, g_s_wrap);
+        pwm_config_set_wrap(&cfg, s_wrap);
         pwm_init(slice, &cfg, false);
-        pwm_set_gpio_level(g_k_wheel[index].en, 0);
-        gpio_set_function(g_k_wheel[index].en, GPIO_FUNC_PWM);
+        pwm_set_gpio_level(k_wheel[i].en, 0);
+        gpio_set_function(k_wheel[i].en, GPIO_FUNC_PWM);
         pwm_set_enabled(slice, true);
     }
 }
@@ -126,31 +124,30 @@ motor_hw_set_pwm_freq (uint32_t hz)
     {
         hz = 20000u;
     }
-    g_s_freq_hz = hz;
+    s_freq_hz = hz;
     pwm_setup(); /* wheels stop (level 0) until the next update */
 }
 
 uint32_t
 motor_hw_pwm_freq (void)
 {
-    return g_s_freq_hz;
+    return s_freq_hz;
 }
 
 static void
-wheel_set (int index, int duty, bool b_brake)
+wheel_set (int32_t i, int32_t duty, bool brake)
 {
-    const wheel_pins_t * p_pointer = &g_k_wheel[index];
-    if (b_brake)
+    const wheel_pins_t * p = &k_wheel[i];
+    if (brake)
     {
-        gpio_put(p_pointer->in_a, 0);
-        gpio_put(p_pointer->in_b, 0);
-        pwm_set_gpio_level(p_pointer->en,
-                           g_s_wrap); /* EN fully on -> short brake */
+        gpio_put(p->in_a, 0);
+        gpio_put(p->in_b, 0);
+        pwm_set_gpio_level(p->en, s_wrap); /* EN fully on -> short brake */
         return;
     }
     if (duty == 0)
     {
-        pwm_set_gpio_level(p_pointer->en, 0); /* coast */
+        pwm_set_gpio_level(p->en, 0); /* coast */
         return;
     }
     uint32_t mag = (uint32_t) (duty < 0 ? -duty : duty);
@@ -159,32 +156,30 @@ wheel_set (int index, int duty, bool b_brake)
         mag = 100u;
     }
     /* set direction first, then speed */
-    gpio_put(p_pointer->in_a, duty > 0);
-    gpio_put(p_pointer->in_b, duty < 0);
-    pwm_set_gpio_level(p_pointer->en,
-                       (uint16_t) ((uint32_t) g_s_wrap * mag / 100u));
+    gpio_put(p->in_a, duty > 0);
+    gpio_put(p->in_b, duty < 0);
+    pwm_set_gpio_level(p->en, (uint16_t) ((uint32_t) s_wrap * mag / 100u));
 }
 
 void
-motor_hw_apply (const mc_out_t * p_out)
+motor_hw_apply (const mc_out_t * out)
 {
-    if (!p_out->outputs_valid)
+    if (!out->outputs_valid)
     {
         return;
     }
-    for (int index = 0; index < MC_WHEELS; index++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        wheel_set(index, p_out->wheel[index],
-                  p_out->brake && p_out->wheel[index] == 0);
+        wheel_set(i, out->wheel[i], out->brake && out->wheel[i] == 0);
     }
 }
 
 void
 motor_hw_all_off (void)
 {
-    for (int index = 0; index < MC_WHEELS; index++)
+    for (int32_t i = 0; i < MC_WHEELS; i++)
     {
-        pwm_set_gpio_level(g_k_wheel[index].en, 0);
+        pwm_set_gpio_level(k_wheel[i].en, 0);
     }
 }
 
@@ -210,21 +205,22 @@ motor_hw_send_dir (uint8_t dir_byte)
 }
 
 static void
-pair_set (uint pin_fwd, uint pin_rev, mh_dir_t data)
+pair_set (uint pin_fwd, uint pin_rev, mh_dir_t d)
 {
-    gpio_put(pin_fwd, data == MH_FWD);
-    gpio_put(pin_rev, data == MH_REV);
+    gpio_put(pin_fwd, d == MH_FWD);
+    gpio_put(pin_rev, d == MH_REV);
 }
 
 void
-motor_hw_claw (mh_dir_t data)
+motor_hw_claw (mh_dir_t d)
 {
-    pair_set(CLAW_M1A_PIN, CLAW_M1B_PIN, data);
+    pair_set(CLAW_M1A_PIN, CLAW_M1B_PIN, d);
 }
+
 void
-motor_hw_arm (mh_dir_t data)
+motor_hw_arm (mh_dir_t d)
 {
-    pair_set(ARM_M1A_PIN, ARM_M1B_PIN, data);
+    pair_set(ARM_M1A_PIN, ARM_M1B_PIN, d);
 }
 
 /* End of file. */

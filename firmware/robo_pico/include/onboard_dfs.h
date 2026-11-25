@@ -73,9 +73,7 @@ typedef struct
     uint32_t        input_wait_started_ms;
 } onboard_dfs_t;
 
-
 void onboard_dfs_init (onboard_dfs_t * p_dfs);
-
 
 const char * onboard_dfs_start (onboard_dfs_t * p_dfs, mission_t * p_mission,
                                 const rover_map_t *          p_map,
@@ -84,30 +82,24 @@ const char * onboard_dfs_start (onboard_dfs_t * p_dfs, mission_t * p_mission,
                                 const onboard_dfs_inputs_t * p_inputs,
                                 uint32_t                     now);
 
-
 void onboard_dfs_tick (onboard_dfs_t * p_dfs, mission_t * p_mission,
                        rover_map_t * p_map, onboard_drive_t * p_drive,
                        target_selector_t *          p_selection,
                        const onboard_dfs_inputs_t * p_inputs,
                        const camera_observation_t * p_camera, uint32_t now);
 
-
 void onboard_dfs_stop (onboard_dfs_t * p_dfs, mission_t * p_mission,
                        const char * p_detail, uint32_t now);
 
-
 bool onboard_dfs_selecting (const onboard_dfs_t * p_dfs, uint32_t now);
-
 
 dfs_choice_t onboard_dfs_choose (const onboard_dfs_t * p_dfs,
                                  const rover_map_t *   p_map,
                                  map_direction_t       facing,
                                  bool b_forward_camera_candidate);
 
-
 bool onboard_dfs_note_arrival (onboard_dfs_t *     p_dfs,
                                const rover_map_t * p_map);
-
 
 size_t onboard_dfs_format (const onboard_dfs_t * p_dfs,
                            const rover_map_t * p_map, char * p_out,

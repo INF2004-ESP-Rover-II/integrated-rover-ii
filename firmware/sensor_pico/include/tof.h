@@ -52,14 +52,12 @@ typedef struct
 
 uint8_t tof_init (const uint8_t xshut_pins[TOF_SENSOR_COUNT]);
 
-
 uint8_t tof_online_mask (void);
 
 // Interpret status before packing. Successful ranges >1 m become 1023;
 // every warning/error status (including 2/4) is unavailable/unknown (0).
 
 uint16_t tof_result_code (uint8_t range_status, uint16_t distance_mm);
-
 
 uint16_t tof_distance_get (uint32_t packed, tof_sensor_t sensor);
 
@@ -69,12 +67,10 @@ uint16_t tof_distance_get (uint32_t packed, tof_sensor_t sensor);
 void tof_distance_set (uint32_t * p_packed, tof_sensor_t sensor,
                        uint16_t distance_mm);
 
-
 // Poll once without waiting for a measurement. Output is cleared on every call,
 // so an old distance can never be mistaken for a fresh reading.
 
 void tof_poll (tof_readings_t * p_readings);
-
 
 #endif // TOF_H
 

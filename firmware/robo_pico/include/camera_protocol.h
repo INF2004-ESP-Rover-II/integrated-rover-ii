@@ -5,11 +5,11 @@
 #ifndef ROVER_CAMERA_PROTOCOL_H
 #define ROVER_CAMERA_PROTOCOL_H
 
+#include "../../common/marker_limits.h"
+#include "vision_frame.h" // Existing ESP32 wire contract; do not duplicate it.
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "vision_frame.h" // Existing ESP32 wire contract; do not duplicate it.
-#include "../../common/marker_limits.h"
 
 #define CAMERA_BYTE_GAP_MS 50u
 
@@ -42,7 +42,6 @@ typedef struct
     uint32_t gap_resets;
 } camera_parser_t;
 
-
 void camera_parser_init (camera_parser_t * p_parser);
 
 // Discard partial input after UART data loss; preserve diagnostic counters.
@@ -54,12 +53,9 @@ void camera_parser_reset (camera_parser_t * p_parser);
 bool camera_parser_feed (camera_parser_t * p_parser, uint8_t byte,
                          uint32_t receive_ms, camera_frame_t * p_frame);
 
-
 const char * camera_status_name (uint8_t status);
 
-
 const char * camera_quality_name (uint8_t quality);
-
 
 #endif
 

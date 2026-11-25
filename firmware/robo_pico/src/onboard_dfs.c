@@ -13,8 +13,8 @@
 #define GRID_DIRECTION_COUNT 4
 #define TOF_SCAN_COUNT 3
 
-static const int8_t g_delta_x[4] = { 0, 1, 0, -1 };
-static const int8_t g_delta_y[4] = { 1, 0, -1, 0 };
+static const int8_t g_delta_x[4] = {0, 1, 0, -1};
+static const int8_t g_delta_y[4] = {1, 0, -1, 0};
 static bool
 seen (const onboard_dfs_t * p_dfs, uint8_t identifier)
 {
@@ -96,12 +96,12 @@ onboard_dfs_choose (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
     if (!p_dfs->depth || !p_node ||
         p_dfs->stack[p_dfs->depth - 1u] != p_node->marker_id)
     {
-        return (dfs_choice_t) { .kind = DFS_CHOOSE_ERROR };
+        return (dfs_choice_t) {.kind = DFS_CHOOSE_ERROR};
     }
 
-    unsigned order[4] = { (unsigned) facing, ((unsigned) facing + 1u) % 4u,
-                          ((unsigned) facing + 3u) % 4u,
-                          ((unsigned) facing + 2u) % 4u };
+    unsigned order[4] = {(unsigned) facing, ((unsigned) facing + 1u) % 4u,
+                         ((unsigned) facing + 3u) % 4u,
+                         ((unsigned) facing + 2u) % 4u};
 
     for (unsigned index = 0; index < GRID_DIRECTION_COUNT; ++index)
     {
@@ -111,17 +111,16 @@ onboard_dfs_choose (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
         bool b_open = p_node->exits[dir] == MAP_EXIT_OPEN ||
                       p_node->exits[dir] == MAP_EXIT_TRAVERSED;
 
-
         bool b_provisional = index == 0 && b_camera_hint &&
                              p_node->exits[dir] != MAP_EXIT_BLOCKED;
 
         if ((b_open || b_provisional) &&
             (!p_next || !seen(p_dfs, p_next->marker_id)))
         {
-            return (dfs_choice_t) { .kind      = DFS_CHOOSE_EXPLORE,
-                                    .direction = (map_direction_t) dir,
-                                    .expected_id =
-                                        p_next ? p_next->marker_id : 0 };
+            return (dfs_choice_t) {.kind      = DFS_CHOOSE_EXPLORE,
+                                   .direction = (map_direction_t) dir,
+                                   .expected_id =
+                                       p_next ? p_next->marker_id : 0};
         }
     }
     bool b_unknown = false;
@@ -137,13 +136,13 @@ onboard_dfs_choose (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
         // direction is not required merely to re-confirm that known result.
         if (!(p_dfs->scanned[p_dfs->depth - 1u] & (1u << dir)))
         {
-            return (dfs_choice_t) { .kind      = DFS_CHOOSE_SCAN,
-                                    .direction = (map_direction_t) dir };
+            return (dfs_choice_t) {.kind      = DFS_CHOOSE_SCAN,
+                                   .direction = (map_direction_t) dir};
         }
     }
     if (b_unknown)
     {
-        return (dfs_choice_t) { .kind = DFS_CHOOSE_UNRESOLVED };
+        return (dfs_choice_t) {.kind = DFS_CHOOSE_UNRESOLVED};
     }
     if (p_dfs->depth > 1u)
     {
@@ -157,16 +156,16 @@ onboard_dfs_choose (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
             if (p_next && p_next->marker_id == p_parent->marker_id &&
                 p_node->exits[dir] != MAP_EXIT_BLOCKED)
             {
-                return (dfs_choice_t) { .kind        = DFS_CHOOSE_BACKTRACK,
-                                        .direction   = (map_direction_t) dir,
-                                        .expected_id = p_parent->marker_id };
+                return (dfs_choice_t) {.kind        = DFS_CHOOSE_BACKTRACK,
+                                       .direction   = (map_direction_t) dir,
+                                       .expected_id = p_parent->marker_id};
             }
         }
-        return (dfs_choice_t) { .kind = DFS_CHOOSE_ERROR };
+        return (dfs_choice_t) {.kind = DFS_CHOOSE_ERROR};
     }
-    return (dfs_choice_t) { .kind = whole_map_resolved(p_dfs, p_map)
-                                        ? DFS_CHOOSE_COMPLETE
-                                        : DFS_CHOOSE_UNRESOLVED };
+    return (dfs_choice_t) {.kind = whole_map_resolved(p_dfs, p_map)
+                                       ? DFS_CHOOSE_COMPLETE
+                                       : DFS_CHOOSE_UNRESOLVED};
 }
 
 bool
@@ -209,9 +208,9 @@ void
 onboard_dfs_init (onboard_dfs_t * p_dfs)
 {
 
-    *p_dfs = (onboard_dfs_t) { .stage            = DFS_IDLE,
-                               .detail           = "NOT_STARTED",
-                               .open_distance_mm = DFS_OPEN_DISTANCE_MM };
+    *p_dfs = (onboard_dfs_t) {.stage            = DFS_IDLE,
+                              .detail           = "NOT_STARTED",
+                              .open_distance_mm = DFS_OPEN_DISTANCE_MM};
 }
 static void
 phase (mission_t * p_mission, leg_phase_t value, uint32_t now)
@@ -328,12 +327,11 @@ onboard_dfs_start (onboard_dfs_t * p_dfs, mission_t * p_mission,
     uint16_t opening = p_dfs->open_distance_mm ? p_dfs->open_distance_mm
                                                : DFS_OPEN_DISTANCE_MM;
 
-
-    *p_dfs = (onboard_dfs_t) { .active           = true,
-                               .stage            = DFS_AT_NODE,
-                               .depth            = 1,
-                               .detail           = "READING_NODE_EXITS",
-                               .open_distance_mm = opening };
+    *p_dfs = (onboard_dfs_t) {.active           = true,
+                              .stage            = DFS_AT_NODE,
+                              .depth            = 1,
+                              .detail           = "READING_NODE_EXITS",
+                              .open_distance_mm = opening};
 
     p_dfs->stack[0] = p_map->current_node;
     mark_seen(p_dfs, p_map->current_node);
@@ -562,7 +560,6 @@ onboard_dfs_tick_prepare (onboard_dfs_t * p_dfs, mission_t * p_mission,
         onboard_dfs_stop(p_dfs, p_mission, "SAFETY_LOCKED", now);
         return true;
     }
-
 
     p_context->p_missing =
         !p_inputs->drive.link_ok ? "LINK_LOST"
@@ -878,7 +875,6 @@ onboard_dfs_tick_arrival (onboard_dfs_t * p_dfs, mission_t * p_mission,
     p_dfs->scanned[p_dfs->depth - 1u] |=
         (uint32_t) ((uint8_t) (1u << (unsigned) p_dfs->direction));
 
-
     p_context->choice = onboard_dfs_choose(
         p_dfs, p_map, p_dfs->direction,
         camera_hint(p_camera, p_map, p_dfs->direction, p_dfs->ready_ms, now));
@@ -913,7 +909,6 @@ onboard_dfs_tick_arrival (onboard_dfs_t * p_dfs, mission_t * p_mission,
         return true;
     }
 
-
     return false;
 }
 
@@ -938,12 +933,12 @@ onboard_dfs_tick_recovery (onboard_dfs_t * p_dfs, mission_t * p_mission,
     mission_clear_leg(p_mission, now);
     target_selector_set_route(
         p_selection,
-        (target_route_t) { .enabled     = true,
-                           .expected_id = p_context->choice.expected_id,
-                           .x           = p_context->x_coordinate,
-                           .y           = p_context->y_coordinate,
-                           .direction =
-                               (leg_direction_t) p_context->choice.direction });
+        (target_route_t) {.enabled     = true,
+                          .expected_id = p_context->choice.expected_id,
+                          .x           = p_context->x_coordinate,
+                          .y           = p_context->y_coordinate,
+                          .direction =
+                              (leg_direction_t) p_context->choice.direction});
     if (!aim(p_dfs, p_mission, p_drive, p_inputs, DFS_WAIT_TARGET, now))
     {
         onboard_dfs_stop(p_dfs, p_mission, "DFS_TURN_REFUSED", now);
@@ -964,7 +959,7 @@ onboard_dfs_tick (onboard_dfs_t * p_dfs, mission_t * p_mission,
                   const onboard_dfs_inputs_t * p_inputs,
                   const camera_observation_t * p_camera, uint32_t now)
 {
-    onboard_dfs_tick_context_t context = { 0 };
+    onboard_dfs_tick_context_t context = {0};
     if (onboard_dfs_tick_prepare(p_dfs, p_mission, p_drive, p_inputs, now,
                                  &context))
     {
@@ -1005,7 +1000,6 @@ onboard_dfs_tick (onboard_dfs_t * p_dfs, mission_t * p_mission,
     }
 }
 
-
 size_t
 onboard_dfs_format (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
                     char * p_out, size_t cap)
@@ -1015,10 +1009,9 @@ onboard_dfs_format (const onboard_dfs_t * p_dfs, const rover_map_t * p_map,
         return 0;
     }
 
-    static const char * names[] = { "IDLE",     "AT_NODE",     "TURNING",
-                                    "SCANNING", "WAIT_TARGET", "TRAVELLING",
-                                    "COMPLETE", "STOPPED" };
-
+    static const char * names[] = {"IDLE",     "AT_NODE",     "TURNING",
+                                   "SCANNING", "WAIT_TARGET", "TRAVELLING",
+                                   "COMPLETE", "STOPPED"};
 
     int count = snprintf(
         p_out, cap,

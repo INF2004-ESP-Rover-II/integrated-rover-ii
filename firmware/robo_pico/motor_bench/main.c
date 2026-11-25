@@ -1,4 +1,3 @@
-#include <inttypes.h>
 /**
  * @file main.c
  * @brief Motor bench app: runs ONLY the Motor Control task on the Robo Pico,
@@ -38,43 +37,44 @@
  * the rover a heading: e.g. 'r 90' starts rotating, 'h 89' finishes it.
  */
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "pico/stdlib.h"
 #include "FreeRTOS.h"
-#include "task.h"
 #include "event_groups.h"
+#include "pico/stdlib.h"
+#include "task.h"
 
-#include "motor_task.h"
-#include "motor_hw.h"
-#include "motor_control.h"
 #include "motor_config.h"
+#include "motor_control.h"
+#include "motor_hw.h"
+#include "motor_task.h"
 
-static volatile int     g_s_last_result = -1;
-static volatile uint8_t g_s_last_result_seq;
+static volatile int     s_last_result = -1;
+static volatile uint8_t s_last_result_seq;
 
 static void
-on_result (uint8_t second)
+on_result (uint8_t b)
 { /* runs in the motor task: keep short */
-    g_s_last_result     = second & 0x3;
-    g_s_last_result_seq = (uint8_t) ((second >> 2) & 0xF);
+    s_last_result     = b & 0x3;
+    s_last_result_seq = (uint8_t) ((b >> 2) & 0xF);
 }
 
 static const char *
-state_name (motor_state_t state)
+state_name (motor_state_t s)
 {
-    static const char * count[] = { "ZERO_GYRO", "IDLE",        "VALIDATE",
-                                    "MANUAL",    "AUTO_ROTATE", "AUTO_DRIVE",
-                                    "RAMP_DOWN", "SAFE_STOP" };
-    return count[state & 7];
+    static const char * n[] = {"ZERO_GYRO", "IDLE",        "VALIDATE",
+                               "MANUAL",    "AUTO_ROTATE", "AUTO_DRIVE",
+                               "RAMP_DOWN", "SAFE_STOP"};
+    return n[s & 7];
 }
 static const char *
-result_name (int result)
+result_name (int r)
 {
-    static const char * count[] = { "DONE", "HEADING_REACHED", "STOPPED",
-                                    "REJECTED" };
-    return (result >= 0 && result < 4) ? count[result] : "-";
+    static const char * n[] = {"DONE", "HEADING_REACHED", "STOPPED",
+                               "REJECTED"};
+    return (r >= 0 && r < 4) ? n[r] : "-";
 }
 
 static void
@@ -82,10 +82,10 @@ print_status (int heading_tenths)
 {
     EventBits_t f = xEventGroupGetBits(motor_task_faults());
     printf("[motor] state=%s faults=0x%02" PRIx32
-           " last_result=%s(seq %u) loop=%" PRIu32 "us wcet=%" PRIu32
-           "us heading=%s",
+           " last_result=%s(seq %u) loop=%" PRIu32 "us "
+           "wcet=%" PRIu32 "us heading=%s",
            state_name(motor_task_state()), (uint32_t) f,
-           result_name(g_s_last_result), g_s_last_result_seq,
+           result_name(s_last_result), s_last_result_seq,
            (uint32_t) motor_task_last_us(), (uint32_t) motor_task_wcet_us(),
            heading_tenths >= 0 ? "" : "off");
     if (heading_tenths >= 0)
@@ -93,13 +93,15 @@ print_status (int heading_tenths)
         printf("%d.%d", heading_tenths / 10, heading_tenths % 10);
     }
     printf(" pwm=%" PRIu32 "Hz minpower=%d/%d/%d/%d%% kick=%d%%/%dms",
-           (uint32_t) motor_hw_pwm_freq(), mc_get_deadband(0),
-           mc_get_deadband(1), mc_get_deadband(2), mc_get_deadband(3),
-           mc_get_kick_pct(), mc_get_kick_ms());
-    printf(" trim fwd=%d/%d/%d/%d rev=%d/%d/%d/%d", mc_get_trim_fwd(0),
-           mc_get_trim_fwd(1), mc_get_trim_fwd(2), mc_get_trim_fwd(3),
-           mc_get_trim_rev(0), mc_get_trim_rev(1), mc_get_trim_rev(2),
-           mc_get_trim_rev(3));
+           (uint32_t) motor_hw_pwm_freq(), (int) mc_get_deadband(0),
+           (int) mc_get_deadband(1), (int) mc_get_deadband(2),
+           (int) mc_get_deadband(3), (int) mc_get_kick_pct(),
+           (int) mc_get_kick_ms());
+    printf(" trim fwd=%d/%d/%d/%d rev=%d/%d/%d/%d", (int) mc_get_trim_fwd(0),
+           (int) mc_get_trim_fwd(1), (int) mc_get_trim_fwd(2),
+           (int) mc_get_trim_fwd(3), (int) mc_get_trim_rev(0),
+           (int) mc_get_trim_rev(1), (int) mc_get_trim_rev(2),
+           (int) mc_get_trim_rev(3));
     printf(" stack_free=%" PRIu32 " words\n",
            (uint32_t) uxTaskGetStackHighWaterMark(motor_task_handle()));
 }
@@ -107,20 +109,20 @@ print_status (int heading_tenths)
 static void
 wheel_test (int duty)
 {
-    static const char * names[4] = { "front-left", "front-right", "back-left",
-                                     "back-right" };
+    static const char * names[4] = {"front-left", "front-right", "back-left",
+                                    "back-right"};
     motor_task_operator_stop();
     vTaskDelay(pdMS_TO_TICKS(400));
     vTaskSuspend(motor_task_handle()); /* single writer while testing */
     mc_out_t o;
-    for (int value_w = 0; value_w < 4; value_w++)
+    for (int w = 0; w < 4; w++)
     {
         for (int dir = 1; dir >= -1; dir -= 2)
         {
             memset(&o, 0, sizeof o);
-            o.outputs_valid  = 1;
-            o.wheel[value_w] = (int8_t) (duty * dir);
-            printf("[test] %s %s %d%%: check it turns %s\n", names[value_w],
+            o.outputs_valid = 1;
+            o.wheel[w]      = (int8_t) (duty * dir);
+            printf("[test] %s %s %d%%: check it turns %s\n", names[w],
                    dir > 0 ? "forward" : "backward", duty,
                    dir > 0 ? "FORWARD" : "BACKWARD");
             motor_hw_apply(&o);
@@ -135,9 +137,9 @@ wheel_test (int duty)
 }
 
 static void
-bench_task (void * p_arg)
+bench_task (void * arg)
 {
-    (void) p_arg;
+    (void) arg;
     char       line[48];
     int        len = 0;
     uint8_t    seq = 0, hseq = 0;
@@ -148,19 +150,19 @@ bench_task (void * p_arg)
     printf("\n[bench] Motor Control bench ready. Type 'q' for status.\n");
     for (;;)
     {
-        int value_c = getchar_timeout_us(0);
+        int c = getchar_timeout_us(0);
         /* Serial monitors set to "no line ending" never send Enter:
          * treat a 150 ms pause after typing as the end of the command. */
         static TickType_t last_char = 0;
-        if (value_c == PICO_ERROR_TIMEOUT && len > 0 &&
+        if (c == PICO_ERROR_TIMEOUT && len > 0 &&
             xTaskGetTickCount() - last_char >= pdMS_TO_TICKS(150))
         {
-            value_c = '\n';
+            c = '\n';
         }
-        if (value_c != PICO_ERROR_TIMEOUT)
+        if (c != PICO_ERROR_TIMEOUT)
         {
             last_char = xTaskGetTickCount();
-            if (value_c == '\r' || value_c == '\n')
+            if (c == '\r' || c == '\n')
             {
                 line[len] = 0;
                 len       = 0;
@@ -169,51 +171,49 @@ bench_task (void * p_arg)
                     continue;
                 }
                 printf("[bench] > %s\n", line); /* echo: command received */
-                seq            = (uint8_t) ((seq + 1) & 0xF);
-                int      first = 0, second = 0, data = 0;
-                uint32_t value_w = 0;
-                if (sscanf(line, "ready %d", &first) == 1)
+                seq        = (uint8_t) ((seq + 1) & 0xF);
+                int      a = 0, b = 0, d = 0;
+                uint32_t w = 0;
+                if (sscanf(line, "ready %d", &a) == 1)
                 {
-                    motor_task_set_system_ready(first != 0);
-                    printf("[bench] ready=%d\n", first != 0);
+                    motor_task_set_system_ready(a != 0);
+                    printf("[bench] ready=%d\n", a != 0);
                 }
-                else if (sscanf(line, "m %d %d %d", &first, &second, &data) ==
-                         3)
+                else if (sscanf(line, "m %d %d %d", &a, &b, &d) == 3)
                 {
-                    value_w = mc_pack_manual_drive(
-                        seq, (int8_t) first, (int8_t) second, (int8_t) data);
+                    w = mc_pack_manual_drive(seq, (int8_t) a, (int8_t) b,
+                                             (int8_t) d);
                 }
-                else if (sscanf(line, "park %d %d", &first, &second) == 2)
+                else if (sscanf(line, "park %d %d", &a, &b) == 2)
                 {
-                    second  = second < 10 ? 10 : (second > 100 ? 100 : second);
-                    value_w = mc_pack_manual_park(
-                        seq, (int8_t) (first < 0 ? -second : second));
+                    b = b < 10 ? 10 : (b > 100 ? 100 : b);
+                    w = mc_pack_manual_park(seq, (int8_t) (a < 0 ? -b : b));
                 }
-                else if (sscanf(line, "park %d", &first) == 1)
+                else if (sscanf(line, "park %d", &a) == 1)
                 {
-                    value_w = mc_pack_manual_park(
-                        seq, (int8_t) (first < 0 ? -MC_PARK_PCT : MC_PARK_PCT));
+                    w = mc_pack_manual_park(
+                        seq, (int8_t) (a < 0 ? -MC_PARK_PCT : MC_PARK_PCT));
                 }
-                else if (sscanf(line, "zz %d", &first) == 1)
+                else if (sscanf(line, "zz %d", &a) == 1)
                 {
-                    mc_set_zigzag(first);
-                    printf("[bench] zigzag strafe = %d ms%s\n", mc_get_zigzag(),
-                           mc_get_zigzag() ? "" : " (off)");
+                    mc_set_zigzag(a);
+                    printf("[bench] zigzag strafe = %d ms%s\n",
+                           (int) mc_get_zigzag(),
+                           (int) mc_get_zigzag() ? "" : " (off)");
                 }
-                else if (sscanf(line, "kick %d %d", &first, &second) == 2)
+                else if (sscanf(line, "kick %d %d", &a, &b) == 2)
                 {
-                    mc_set_kick(first, second);
+                    mc_set_kick(a, b);
                     printf("[bench] start boost = %d%% for %d ms\n",
-                           mc_get_kick_pct(), mc_get_kick_ms());
+                           (int) mc_get_kick_pct(), (int) mc_get_kick_ms());
                 }
-                else if (sscanf(line, "r %d", &first) == 1)
+                else if (sscanf(line, "r %d", &a) == 1)
                 {
-                    value_w = mc_pack_auto_rotate(seq, (uint16_t) first);
+                    w = mc_pack_auto_rotate(seq, (uint16_t) a);
                 }
-                else if (sscanf(line, "d %d %d", &first, &second) == 2)
+                else if (sscanf(line, "d %d %d", &a, &b) == 2)
                 {
-                    value_w = mc_pack_auto_drive(seq, (int8_t) first,
-                                                 (uint16_t) second);
+                    w = mc_pack_auto_drive(seq, (int8_t) a, (uint16_t) b);
                 }
                 else if (!strcmp(line, "s"))
                 {
@@ -247,16 +247,16 @@ bench_task (void * p_arg)
                     heading_tenths = -1;
                     printf("[bench] heading publishing OFF\n");
                 }
-                else if (sscanf(line, "h %d", &first) == 1)
+                else if (sscanf(line, "h %d", &a) == 1)
                 {
-                    heading_tenths = (first % 360 + 360) % 360 * 10;
+                    heading_tenths = (a % 360 + 360) % 360 * 10;
                 }
                 else if (line[0] == 't' && (line[1] == 0 || line[1] == ' '))
                 {
                     int duty = 60;
-                    if (sscanf(line, "t %d", &first) == 1)
+                    if (sscanf(line, "t %d", &a) == 1)
                     {
-                        duty = first < 10 ? 10 : (first > 100 ? 100 : first);
+                        duty = a < 10 ? 10 : (a > 100 ? 100 : a);
                     }
                     held = 0;
                     wheel_test(duty);
@@ -265,40 +265,39 @@ bench_task (void * p_arg)
                 {
                     print_status(heading_tenths);
                 }
-                else if (sscanf(line, "trim %d %d %d", &first, &second,
-                                &data) == 3)
+                else if (sscanf(line, "trim %d %d %d", &a, &b, &d) == 3)
                 {
-                    mc_set_trim(first, second, data);
+                    mc_set_trim(a, b, d);
                     printf(
                         "[bench] wheel %d trim: forward %d%%, backward %d%%\n",
-                        first, mc_get_trim_fwd(first < 0 ? 0 : first),
-                        mc_get_trim_rev(first < 0 ? 0 : first));
+                        a, (int) mc_get_trim_fwd(a < 0 ? 0 : a),
+                        (int) mc_get_trim_rev(a < 0 ? 0 : a));
                 }
-                else if (sscanf(line, "db %d %d", &first, &second) == 2)
+                else if (sscanf(line, "db %d %d", &a, &b) == 2)
                 {
                     held = 0;
                     motor_task_operator_stop();
                     vTaskDelay(pdMS_TO_TICKS(50));
-                    mc_set_deadband(first, second);
-                    printf("[bench] wheel %d min power = %d%%\n", first,
-                           mc_get_deadband(first));
+                    mc_set_deadband(a, b);
+                    printf("[bench] wheel %d min power = %d%%\n", a,
+                           (int) mc_get_deadband(a));
                 }
-                else if (sscanf(line, "db %d", &first) == 1)
+                else if (sscanf(line, "db %d", &a) == 1)
                 {
                     held = 0;
                     motor_task_operator_stop();
                     vTaskDelay(pdMS_TO_TICKS(50));
-                    mc_set_deadband(-1, first);
+                    mc_set_deadband(-1, a);
                     printf("[bench] all wheels min power = %d%%\n",
-                           mc_get_deadband(0));
+                           (int) mc_get_deadband(0));
                 }
-                else if (sscanf(line, "pwm %d", &first) == 1)
+                else if (sscanf(line, "pwm %d", &a) == 1)
                 {
                     /* Changing PWM at run time crashed the Pico on the rover,
                      * so the frequency is fixed per firmware build instead. */
                     printf("[bench] PWM is fixed at %" PRIu32
-                           " Hz in this firmware. Flash motor_bench_1k.uf2 or "
-                           "motor_bench_10k.uf2 to "
+                           " Hz in this firmware. "
+                           "Flash motor_bench_1k.uf2 or motor_bench_10k.uf2 to "
                            "change it.\n",
                            (uint32_t) motor_hw_pwm_freq());
                 }
@@ -307,11 +306,11 @@ bench_task (void * p_arg)
                     printf("[bench] unknown: %s\n", line);
                 }
 
-                if (value_w)
+                if (w)
                 {
-                    held = value_w; /* refreshed until it ends; late refreshes
-                                       are ignored */
-                    if (!motor_task_send_cmd(value_w))
+                    held = w; /* refreshed until it ends; late refreshes are
+                                 ignored */
+                    if (!motor_task_send_cmd(w))
                     {
                         printf("[bench] queue full\n");
                     }
@@ -319,7 +318,7 @@ bench_task (void * p_arg)
             }
             else if (len < (int) sizeof line - 1)
             {
-                line[len++] = (char) value_c;
+                line[len++] = (char) c;
             }
         }
 
@@ -342,13 +341,12 @@ bench_task (void * p_arg)
             last_status = now;
         }
         if (held &&
-            (g_s_last_result == MR_STOPPED || g_s_last_result == MR_REJECTED ||
-             g_s_last_result == MR_HEADING_REACHED ||
-             g_s_last_result == MR_DONE) &&
-            g_s_last_result_seq == mc_seq(held))
+            (s_last_result == MR_STOPPED || s_last_result == MR_REJECTED ||
+             s_last_result == MR_HEADING_REACHED || s_last_result == MR_DONE) &&
+            s_last_result_seq == mc_seq(held))
         {
             printf("[bench] move %u ended: %s\n", mc_seq(held),
-                   result_name(g_s_last_result));
+                   result_name(s_last_result));
             held = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -378,10 +376,10 @@ vApplicationMallocFailedHook (void)
     panic("malloc failed");
 }
 void
-vApplicationStackOverflowHook (TaskHandle_t time_value, char * p_name)
+vApplicationStackOverflowHook (TaskHandle_t t, char * name)
 {
-    (void) time_value;
-    panic("stack overflow: %s", p_name);
+    (void) t;
+    panic("stack overflow: %s", name);
 }
 
 /* End of file. */

@@ -2,20 +2,20 @@
  * @file main.c
  * @brief Main firmware module.
  */
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
-#include <math.h>
-#include "pico/stdlib.h"
 #include "hardware/uart.h"
+#include "imu_sampler.h"
+#include "mpu6500.h"
+#include "obstacle.h"
+#include "pico/stdlib.h"
+#include "sd_card.h"
 #include "sensor_config.h"
+#include "tof.h"
 #include "uart_protocol.h"
 #include "ultrasonic.h"
-#include "mpu6500.h"
-#include "imu_sampler.h"
-#include "sd_card.h"
-#include "tof.h"
-#include "obstacle.h"
+#include <inttypes.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 /* Fixed dimensions and iteration limits used by this module. */
 #define TOF_SCAN_COUNT 3
@@ -64,7 +64,6 @@ tof_test_observe (tof_test_stats_t * p_stats, const tof_readings_t * p_readings)
             continue;
         }
 
-
         uint32_t gap_ms =
             p_readings->timestamp_ms[index] - p_stats->last_fresh_ms[index];
 
@@ -76,10 +75,8 @@ tof_test_observe (tof_test_stats_t * p_stats, const tof_readings_t * p_readings)
 
         p_stats->fresh[index]++;
 
-
         uint16_t distance =
             tof_distance_get(p_readings->distance_bits, (tof_sensor_t) index);
-
 
         if (((uint32_t) (p_readings->valid_mask) & (uint32_t) (bit)) &&
             distance == TOF_NO_TARGET_MM)
@@ -127,7 +124,7 @@ tof_test_report (tof_test_stats_t * p_stats, uint32_t now_ms)
            (uint32_t) (now_ms - p_stats->started_ms),
            (uint32_t) p_stats->total_cycles);
 
-    const char * names[TOF_SENSOR_COUNT] = { "L", "F", "R" };
+    const char * names[TOF_SENSOR_COUNT] = {"L", "F", "R"};
     for (int index = 0; index < TOF_SENSOR_COUNT; ++index)
     {
         // Include an ongoing outage, even if no new result ever finishes it.
@@ -191,7 +188,6 @@ read_ultrasonic_safe (uint32_t trig_pin, uint32_t echo_pin)
     ultrasonic_status_t status =
         ultrasonic_get_cm(trig_pin, echo_pin, &distance_cm);
 
-
     if (status == ULTRASONIC_OK)
     {
         if (distance_cm < 2.0f)
@@ -215,7 +211,6 @@ read_ultrasonic_safe (uint32_t trig_pin, uint32_t echo_pin)
         return 400; // Normal max range
     }
 }
-
 
 int
 main (void)
@@ -266,11 +261,8 @@ main (void)
         blink_error();
     }
 
-
-    const uint8_t tof_xshut_pins[TOF_SENSOR_COUNT] = { TOF_LEFT_XSHUT_PIN,
-                                                       TOF_FRONT_XSHUT_PIN,
-                                                       TOF_RIGHT_XSHUT_PIN };
-
+    const uint8_t tof_xshut_pins[TOF_SENSOR_COUNT] = {
+        TOF_LEFT_XSHUT_PIN, TOF_FRONT_XSHUT_PIN, TOF_RIGHT_XSHUT_PIN};
 
     uint8_t tof_online = tof_init(tof_xshut_pins);
     printf("[TOF] Initialized sensors (L/F/R mask: 0x%02X)\n", tof_online);
@@ -322,7 +314,7 @@ main (void)
     imu_snapshot_t imu_baseline;
     imu_sampler_get_snapshot(&imu_baseline);
     uint32_t         last_imu_diag_samples       = imu_baseline.samples;
-    const char *     tof_names[TOF_SENSOR_COUNT] = { "L", "F", "R" };
+    const char *     tof_names[TOF_SENSOR_COUNT] = {"L", "F", "R"};
     obstacle_state_t obstacles;
     obstacle_init(&obstacles, to_ms_since_boot(get_absolute_time()));
     const uint32_t update_interval_ms = 1000 / SENSOR_UPDATE_RATE_HZ;
@@ -361,7 +353,6 @@ main (void)
                 uint16_t distance = tof_distance_get(obstacles.distance_bits,
                                                      (tof_sensor_t) index);
 
-
                 if (((uint32_t) (obstacles.valid_mask) & (uint32_t) (bit)) == 0)
                 {
                     printf("%s=-- ", tof_names[index]);
@@ -395,7 +386,6 @@ main (void)
 
             packet.ultrasonic_status = 0;
 
-
             packet.ultrasonic_front = read_ultrasonic_safe(
                 ULTRA_FRONT_TRIG_PIN, ULTRA_FRONT_ECHO_PIN);
 
@@ -406,7 +396,6 @@ main (void)
             }
 
             sleep_ms(15);
-
 
             packet.ultrasonic_back =
                 read_ultrasonic_safe(ULTRA_BACK_TRIG_PIN, ULTRA_BACK_ECHO_PIN);
@@ -434,7 +423,6 @@ main (void)
             }
 
             sleep_ms(15);
-
 
             packet.ultrasonic_right = read_ultrasonic_safe(
                 ULTRA_RIGHT_TRIG_PIN, ULTRA_RIGHT_ECHO_PIN);
@@ -511,7 +499,6 @@ main (void)
                             (((uint16_t) obstacles.urgent_mask & 0x07u) << 3u) |
                             (((uint16_t) obstacles.fault_mask & 0x07u) << 6u) |
                             ((obstacles.stop_required ? 1u : 0u) << 9u));
-
 
             packet.checksum = calculate_packet_checksum(&packet);
 

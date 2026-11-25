@@ -2,8 +2,8 @@
  * @file target_selector.c
  * @brief Target selector firmware module.
  */
-#include <inttypes.h>
 #include "target_selector.h"
+#include <inttypes.h>
 
 #include <stdio.h>
 
@@ -11,9 +11,8 @@ void
 target_selector_init (target_selector_t * p_selection)
 {
 
-    *p_selection =
-        (target_selector_t) { .state  = TARGET_NONE,
-                              .detail = "NEED_STOPPED_CONFIRMED_NODE" };
+    *p_selection = (target_selector_t) {
+        .state = TARGET_NONE, .detail = "NEED_STOPPED_CONFIRMED_NODE"};
 }
 
 void
@@ -222,8 +221,8 @@ nearest_reference (const camera_frame_t * p_frame, const rover_map_t * p_map,
         if (b_late && !p_target && p_known && p_leg->target_cell_valid &&
             p_leg->direction != LEG_DIRECTION_UNKNOWN)
         {
-            static const int8_t delta_x[] = { 0, 1, 0, -1 };
-            static const int8_t delta_y[] = { 1, 0, -1, 0 };
+            static const int8_t delta_x[] = {0, 1, 0, -1};
+            static const int8_t delta_y[] = {1, 0, -1, 0};
             int32_t relative_x = (int32_t) p_known->x - p_leg->target_x;
             int32_t relative_y = (int32_t) p_known->y - p_leg->target_y;
             if (relative_x * delta_y[p_leg->direction] !=
@@ -287,20 +286,18 @@ arm (target_selector_t * p_selection, mission_t * p_mission,
         .last_generation        = p_observation ? p_observation->generation : 0,
         .last_seq               = p_observation ? p_observation->frame.seq : 0,
         .have_seq               = p_observation != NULL,
-        .last_image_received_ms = now
-    };
-
+        .last_image_received_ms = now};
 
     leg_direction_t direction =
         route.enabled ? route.direction : LEG_DIRECTION_UNKNOWN;
 
-    p_mission->leg = (travel_leg_t) { .leg_id            = leg_id,
-                                      .departure_node    = p_map->current_node,
-                                      .direction         = direction,
-                                      .phase             = LEG_SELECTING,
-                                      .target_cell_valid = route.enabled,
-                                      .target_x          = route.x,
-                                      .target_y          = route.y };
+    p_mission->leg = (travel_leg_t) {.leg_id            = leg_id,
+                                     .departure_node    = p_map->current_node,
+                                     .direction         = direction,
+                                     .phase             = LEG_SELECTING,
+                                     .target_cell_valid = route.enabled,
+                                     .target_x          = route.x,
+                                     .target_y          = route.y};
 
     p_mission->revision++;
     p_mission->changed_ms = now;
@@ -337,7 +334,6 @@ target_selector_tick_prepare (target_selector_t * p_selection,
         p_selection->detail = "TARGET_ARRIVAL_CONFIRMED";
         return true;
     }
-
 
     p_context->b_approaching =
         !p_mission->test_mode && p_mission->state == MISSION_EXPLORING &&
@@ -451,10 +447,8 @@ target_selector_tick_motion (target_selector_t *              p_selection,
     }
     p_selection->last_generation = p_observation->generation;
 
-
     p_context->delta =
         (uint8_t) (p_observation->frame.seq - p_selection->last_seq);
-
 
     p_context->b_discontinuity =
         p_selection->have_seq &&
@@ -468,7 +462,6 @@ target_selector_tick_motion (target_selector_t *              p_selection,
     p_selection->last_seq               = p_observation->frame.seq;
     p_selection->have_seq               = true;
     p_selection->last_image_received_ms = now;
-
 
     p_context->image_age = (uint32_t) p_observation->frame.age_ms +
                            (now - p_observation->received_ms);
@@ -495,7 +488,6 @@ target_selector_tick_camera (target_selector_t * p_selection,
     p_selection->sample_generation  = p_observation->generation;
     p_selection->sample_received_ms = p_observation->received_ms;
     p_selection->sample_age_ms      = p_observation->frame.age_ms;
-
 
     int tracking_bearing = p_mission->leg.phase == LEG_ALIGNING ||
                                    p_mission->leg.phase == LEG_REACQUIRING
@@ -581,7 +573,6 @@ target_selector_tick_reference (target_selector_t *              p_selection,
                                 uint32_t                         now,
                                 target_selector_tick_context_t * p_context)
 {
-
 
     if (p_mission->leg.arrival_reference_node)
     {
@@ -669,7 +660,7 @@ target_selector_tick (target_selector_t * p_selection, mission_t * p_mission,
                       const camera_observation_t * p_observation, bool b_safe,
                       uint32_t now)
 {
-    target_selector_tick_context_t context = { 0 };
+    target_selector_tick_context_t context = {0};
     if (target_selector_tick_prepare(p_selection, p_mission, p_map, b_safe, now,
                                      &context))
     {
@@ -705,7 +696,6 @@ target_selector_tick (target_selector_t * p_selection, mission_t * p_mission,
     }
 }
 
-
 size_t
 target_selector_format (const target_selector_t * p_selection, char * p_out,
                         size_t capacity)
@@ -714,7 +704,7 @@ target_selector_format (const target_selector_t * p_selection, char * p_out,
     {
         return 0;
     }
-    static const char * states[] = { "NONE", "WAITING", "LOCKED", "CANCELLED" };
+    static const char * states[] = {"NONE", "WAITING", "LOCKED", "CANCELLED"};
     char                marker[8];
     char                ref[8];
     if (p_selection->marker)

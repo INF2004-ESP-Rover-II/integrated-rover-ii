@@ -26,9 +26,9 @@ void
 mission_init (mission_t * p_mission, uint32_t now_ms)
 {
 
-    *p_mission = (mission_t) { .state      = MISSION_IDLE,
-                               .reason     = MISSION_REASON_BOOT,
-                               .changed_ms = now_ms };
+    *p_mission = (mission_t) {.state      = MISSION_IDLE,
+                              .reason     = MISSION_REASON_BOOT,
+                              .changed_ms = now_ms};
 
     travel_leg_init(&p_mission->leg);
 }
@@ -431,20 +431,20 @@ mission_state_name (mission_state_t state)
 {
     switch (state)
     {
-        case MISSION_IDLE:
-            return "IDLE";
-        case MISSION_READY:
-            return "READY";
-        case MISSION_EXPLORING:
-            return "EXPLORING";
-        case MISSION_PAUSED:
-            return "PAUSED";
-        case MISSION_COMPLETE:
-            return "COMPLETE";
-        case MISSION_FAULT:
-            return "FAULT";
-        default:
-            return "UNKNOWN";
+    case MISSION_IDLE:
+        return "IDLE";
+    case MISSION_READY:
+        return "READY";
+    case MISSION_EXPLORING:
+        return "EXPLORING";
+    case MISSION_PAUSED:
+        return "PAUSED";
+    case MISSION_COMPLETE:
+        return "COMPLETE";
+    case MISSION_FAULT:
+        return "FAULT";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -453,42 +453,42 @@ mission_reason_name (mission_reason_t reason)
 {
     switch (reason)
     {
-        case MISSION_REASON_BOOT:
-            return "BOOT";
-        case MISSION_REASON_TEST_READY:
-            return "TEST_READY";
-        case MISSION_REASON_TEST_START:
-            return "TEST_START";
-        case MISSION_REASON_OPERATOR_STOP:
-            return "OPERATOR_STOP";
-        case MISSION_REASON_TEST_COMPLETE:
-            return "TEST_COMPLETE";
-        case MISSION_REASON_TEST_FAULT:
-            return "TEST_FAULT";
-        case MISSION_REASON_ESTOP:
-            return "ESTOP";
-        case MISSION_REASON_FRONT_STOP:
-            return "FRONT_STOP";
-        case MISSION_REASON_LINK_LOST:
-            return "LINK_LOST";
-        case MISSION_REASON_RESET:
-            return "RESET";
-        case MISSION_REASON_START_DFS:
-            return "START_DFS";
-        case MISSION_REASON_INPUT_LOST:
-            return "INPUT_LOST";
-        case MISSION_REASON_APPROACH_LIMIT:
-            return "APPROACH_LIMIT";
-        case MISSION_REASON_DRIVE_TIMEOUT:
-            return "DRIVE_TIMEOUT";
-        case MISSION_REASON_MOTOR_STOPPED:
-            return "MOTOR_STOPPED";
-        case MISSION_REASON_TARGET_ARRIVED:
-            return "TARGET_ARRIVED";
-        case MISSION_REASON_DFS_COMPLETE:
-            return "DFS_COMPLETE";
-        default:
-            return "UNKNOWN";
+    case MISSION_REASON_BOOT:
+        return "BOOT";
+    case MISSION_REASON_TEST_READY:
+        return "TEST_READY";
+    case MISSION_REASON_TEST_START:
+        return "TEST_START";
+    case MISSION_REASON_OPERATOR_STOP:
+        return "OPERATOR_STOP";
+    case MISSION_REASON_TEST_COMPLETE:
+        return "TEST_COMPLETE";
+    case MISSION_REASON_TEST_FAULT:
+        return "TEST_FAULT";
+    case MISSION_REASON_ESTOP:
+        return "ESTOP";
+    case MISSION_REASON_FRONT_STOP:
+        return "FRONT_STOP";
+    case MISSION_REASON_LINK_LOST:
+        return "LINK_LOST";
+    case MISSION_REASON_RESET:
+        return "RESET";
+    case MISSION_REASON_START_DFS:
+        return "START_DFS";
+    case MISSION_REASON_INPUT_LOST:
+        return "INPUT_LOST";
+    case MISSION_REASON_APPROACH_LIMIT:
+        return "APPROACH_LIMIT";
+    case MISSION_REASON_DRIVE_TIMEOUT:
+        return "DRIVE_TIMEOUT";
+    case MISSION_REASON_MOTOR_STOPPED:
+        return "MOTOR_STOPPED";
+    case MISSION_REASON_TARGET_ARRIVED:
+        return "TARGET_ARRIVED";
+    case MISSION_REASON_DFS_COMPLETE:
+        return "DFS_COMPLETE";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -497,16 +497,16 @@ mission_result_name (mission_result_t result)
 {
     switch (result)
     {
-        case MISSION_ACCEPTED:
-            return "ACCEPTED";
-        case MISSION_REJECTED_COMMAND:
-            return "UNKNOWN_EVENT";
-        case MISSION_REJECTED_STATE:
-            return "WRONG_STATE";
-        case MISSION_REJECTED_SAFETY:
-            return "SAFETY_LOCKED";
-        default:
-            return "UNKNOWN";
+    case MISSION_ACCEPTED:
+        return "ACCEPTED";
+    case MISSION_REJECTED_COMMAND:
+        return "UNKNOWN_EVENT";
+    case MISSION_REJECTED_STATE:
+        return "WRONG_STATE";
+    case MISSION_REJECTED_SAFETY:
+        return "SAFETY_LOCKED";
+    default:
+        return "UNKNOWN";
     }
 }
 

@@ -47,7 +47,6 @@ typedef struct
 size_t mqtt_pack_telemetry (const mqtt_telemetry_t * p_time_value,
                             uint8_t                  out[MQTT_TELEMETRY_BYTES]);
 
-
 typedef enum
 {
     MQTT_CMD_INVALID = 0,
@@ -95,7 +94,6 @@ mqtt_is_binary_command (size_t len)
 bool mqtt_decode_command (const uint8_t * p_payload, size_t len,
                           mqtt_command_t * p_out);
 
-
 /*
  * Writes the old text form ("FORWARD", "TURN_TO:90") so the existing
  * process_command() can be reused unchanged. Returns false if it does not fit.
@@ -103,7 +101,6 @@ bool mqtt_decode_command (const uint8_t * p_payload, size_t len,
 
 bool mqtt_command_text (const mqtt_command_t * p_cmd, char * p_buf,
                         size_t size);
-
 
 #endif /* MQTT_BINARY_H */
 

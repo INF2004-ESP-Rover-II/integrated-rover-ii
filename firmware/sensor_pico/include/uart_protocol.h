@@ -7,8 +7,8 @@
 #define PACKET_SYNC_BYTE1 0xAA
 #define PACKET_SYNC_BYTE2 0x55
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 // Sensor data packet structure (sent from Sensor Pico to Robo Pico)
 typedef struct
@@ -82,7 +82,6 @@ typedef struct
 
 uint8_t calculate_packet_checksum (const sensor_packet_t * p_packet);
 
-
 /**
  * @brief Validate packet checksum
  * @param packet Pointer to received packet
@@ -91,14 +90,12 @@ uint8_t calculate_packet_checksum (const sensor_packet_t * p_packet);
 
 bool validate_packet_checksum (const sensor_packet_t * p_packet);
 
-
 /**
  * @brief Send sensor packet via UART
  * @param packet Pointer to packet to send
  */
 
 void send_sensor_packet (const sensor_packet_t * p_packet);
-
 
 #endif // UART_PROTOCOL_H
 

@@ -28,7 +28,6 @@ bool imu_filter_update (imu_filter_t *            p_state,
                         const mpu6500_reading_t * p_reading, uint64_t now_us,
                         float yaw_sign);
 
-
 #endif
 
 /* End of file. */

@@ -31,27 +31,27 @@
  * Build/flash with VS Code's ESP-IDF extension, target esp32s3.
  */
 
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
-#include "esp_log.h"
-#include "esp_err.h"
-#include "esp_event.h"
-#include "esp_netif.h"
-#include "esp_wifi.h"
-#include "esp_http_server.h"
-#include "nvs_flash.h"
-#include "usb_stream.h"
-#include "esp_jpeg_dec.h"
-#include "esp_psram.h"
-#include "esp_timer.h"
-#include "driver/uart.h"
-#include "mjpeg_dht.h"
+#include "../../common/marker_limits.h"
 #include "aruco_detect.h"
 #include "aruco_pose.h"
+#include "driver/uart.h"
+#include "esp_err.h"
+#include "esp_event.h"
+#include "esp_http_server.h"
+#include "esp_jpeg_dec.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_psram.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "mjpeg_dht.h"
+#include "nvs_flash.h"
+#include "usb_stream.h"
 #include "vision_frame.h"
-#include "../../common/marker_limits.h"
+#include <string.h>
 // WIFI_SSID, WIFI_PASSWORD: copy wifi_secrets.example.h
 #include "wifi_secrets.h"
 
@@ -172,9 +172,9 @@ set_static_ip (esp_netif_t * p_netif)
         return;
     }
     esp_netif_ip_info_t ip = {
-        .ip      = { .addr = STATIC_IP },
-        .gw      = { .addr = STATIC_GW },
-        .netmask = { .addr = STATIC_NETMASK },
+        .ip      = {.addr = STATIC_IP},
+        .gw      = {.addr = STATIC_GW},
+        .netmask = {.addr = STATIC_NETMASK},
     };
     ESP_ERROR_CHECK(esp_netif_set_ip_info(p_netif, &ip));
 }
@@ -569,7 +569,7 @@ vision_task (void * p_arg)
     int64_t max_detect = 0, min_detect = INT64_MAX;
     size_t  sum_bytes      = 0;
     int frames_with_marker = 0, last_id = -1, last_quality = ARUCO_POSE_FAILED;
-    aruco_pose_t   last_pose = { 0 };
+    aruco_pose_t   last_pose = {0};
     int64_t        sum_pose  = 0;
     aruco_marker_t markers[4];
     bool           b_had_dht    = false;
@@ -625,11 +625,10 @@ vision_task (void * p_arg)
             continue;
         }
 
-        jpeg_dec_handle_t      dec  = NULL;
-        jpeg_dec_io_t          io   = { .inbuf     = p_input,
-                                        .inbuf_len = (int) in_len,
-                                        .outbuf    = p_out };
-        jpeg_dec_header_info_t info = { 0 };
+        jpeg_dec_handle_t dec = NULL;
+        jpeg_dec_io_t     io  = {
+                 .inbuf = p_input, .inbuf_len = (int) in_len, .outbuf = p_out};
+        jpeg_dec_header_info_t info = {0};
         jpeg_error_t           err  = jpeg_dec_open(&config, &dec);
         if (JPEG_ERR_OK == err)
         {

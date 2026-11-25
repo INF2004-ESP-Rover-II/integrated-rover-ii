@@ -4,12 +4,12 @@
  */
 #include "imu_sampler.h"
 
-#include <math.h>
-#include <string.h>
 #include "pico/critical_section.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "sensor_config.h"
+#include <math.h>
+#include <string.h>
 
 /* Fixed dimensions and iteration limits used by this module. */
 #define IMU_AXIS_COUNT 3
@@ -23,7 +23,7 @@ static bool               g_b_started;
 static void
 imu_core1 (void)
 {
-    imu_snapshot_t current     = { 0 };
+    imu_snapshot_t current     = {0};
     uint64_t       next_us     = time_us_64();
     uint64_t       previous_us = 0;
     while (true)

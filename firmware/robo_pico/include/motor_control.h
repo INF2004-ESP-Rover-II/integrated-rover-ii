@@ -3,13 +3,17 @@
  * @brief Motor Control logic for Subsystem 6 (FR-38 to FR-42).
  *
  * This file has NO hardware and NO FreeRTOS calls, so it can be unit-tested
- * on a laptop (see test/test_motor_control.c). motor_task.c runs it on the
- * Robo Pico every MC_PERIOD_MS and motor_hw.c turns the output into PWM.
+ * on a laptop (see test/test_motor_control.c). In the main rover build the
+ * 20 ms timer in motor_driver.c runs it every MC_PERIOD_MS; motor_task.c
+ * does the same under FreeRTOS in motor_bench/. motor_hw.c turns the output
+ * into PWM.
  *
  * Statechart (Week 6 Section 6.6):
  *   ZERO GYRO -> IDLE -> VALIDATE -> MANUAL MODE | AUTO ROTATE | AUTO DRIVE
  *   -> RAMP DOWN -> IDLE
- *   e-stop / command timeout / stale heading / link lost -> SAFE STOP
+ *   e-stop while moving -> SAFE STOP
+ *   command timeout / stale heading -> IDLE with a fault flag (PWM 0,
+ *   active brake); link lost is handled in Robo Comms (operator stop)
  *   SAFE STOP -> (fault cleared + operator reset) -> IDLE
  *   operator stop -> IDLE with PWM 0 at once
  *
@@ -18,9 +22,9 @@
 #ifndef MOTOR_CONTROL_H
 #define MOTOR_CONTROL_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "motor_types.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 #define MC_WHEELS 4
 
@@ -42,11 +46,9 @@ typedef struct
     unsigned heading : 12;     /* last heading, tenths of a degree        */
     unsigned hold_target : 12; /* heading to hold, tenths                 */
     unsigned rot_target : 12;  /* rotation target, tenths                 */
-    int8_t   tvx;
-    int8_t   tvy;
-    int8_t   tw;              /* requested efforts, -100..100 %          */
-    int8_t   duty[MC_WHEELS]; /* ramped wheel efforts, -100..100 %       */
-    int16_t  hold_integ;      /* heading-hold integral, tenths x ticks   */
+    int8_t   tvx, tvy, tw;     /* requested efforts, -100..100 %          */
+    int8_t   duty[MC_WHEELS];  /* ramped wheel efforts, -100..100 %       */
+    int16_t  hold_integ;       /* heading-hold integral, tenths x ticks   */
     uint32_t kick_until_ms[MC_WHEELS]; /* start boost end time per wheel  */
     uint32_t last_cmd_word; /* for refresh detection                    */
     uint32_t done_word;     /* last finished move (late refreshes ignored) */
@@ -59,8 +61,8 @@ typedef struct
 /** What the task must do after each call. Clear with mc_out_clear(). */
 typedef struct
 {
-    int8_t wheel[MC_WHEELS];   /* final signed duty -100..100 (deadband, trim,
-                                  invert applied) */
+    /* Final signed duty -100..100 (deadband, trim, invert applied). */
+    int8_t   wheel[MC_WHEELS];
     uint8_t  dir_byte;         /* movement direction byte for the Sensor Pico */
     uint8_t  result_byte;      /* move result for the Exploration Task        */
     uint8_t  fault_set;        /* bits to SET in the shared fault mask        */
@@ -74,98 +76,65 @@ typedef struct
 
 typedef enum
 {
-    MC_STOP_ESTOP     = 0, /* Collision Detection STOP over UART -> SAFE STOP */
-    MC_STOP_OPERATOR  = 1, /* dashboard STOP button          -> IDLE          */
-    MC_STOP_LINK_LOST = 2  /* Robo Comms link timeout (FR-08) -> SAFE STOP    */
+    MC_STOP_ESTOP    = 0, /* manual dashboard E-STOP   -> SAFE STOP if moving */
+    MC_STOP_OPERATOR = 1, /* dashboard STOP, lease end -> IDLE                */
+    /* Used by motor_task.c only (motor_bench). The main build handles link
+     * loss in Robo Comms and calls motor_emergency_stop(), which is
+     * MC_STOP_OPERATOR. mc_immediate_stop() treats this kind like it. */
+    MC_STOP_LINK_LOST = 2
 } mc_stop_kind_t;
 
-
-void mc_init (mc_t * p_value_m);
-
-
-void mc_out_clear (mc_out_t * p_o);
-
+void mc_init (volatile mc_t * m);
+void mc_out_clear (mc_out_t * o);
 
 /** Mission Control state gate for FR-40 (manual only in READY). */
-
-void mc_set_system_ready (mc_t * p_value_m, bool b_ready);
-
+void mc_set_system_ready (volatile mc_t * m, bool ready);
 
 /** VALIDATE COMMAND: check one packed command word and start the move,
  *  refresh it, or reject it (result MR_REJECTED). */
-
-void mc_command (mc_t * p_value_m, uint32_t cmd_word, uint32_t now_ms,
-                 uint32_t heading_word, mc_out_t * p_out);
-
+void mc_command (volatile mc_t * m, uint32_t cmd_word, uint32_t now_ms,
+                 uint32_t heading_word, mc_out_t * out);
 
 /** Immediate stop: PWM to 0 at once, no ramp (FR-42, NFR-03). */
-
-void mc_immediate_stop (mc_t * p_value_m, mc_stop_kind_t kind, uint32_t now_ms,
-                        mc_out_t * p_out);
-
+void mc_immediate_stop (volatile mc_t * m, mc_stop_kind_t kind, uint32_t now_ms,
+                        mc_out_t * out);
 
 /** Periodic update, call every MC_PERIOD_MS. */
-
-void mc_step (mc_t * p_value_m, uint32_t now_ms, uint32_t heading_word,
-              mc_out_t * p_out);
-
+void mc_step (volatile mc_t * m, uint32_t now_ms, uint32_t heading_word,
+              mc_out_t * out);
 
 /** Minimum starting power per wheel (wheel -1 = all). Bench tuning only:
  *  call it while the rover is stopped. */
-
-void mc_set_deadband (int wheel, int pct);
-
-
-int mc_get_deadband (int wheel);
-
+void    mc_set_deadband (int32_t wheel, int32_t pct);
+int32_t mc_get_deadband (int32_t wheel);
 
 /** Per-wheel trim 0..100 %, separately for forward and backward spin
  *  (wheel -1 = all). Bench tuning: call while the rover is stopped. */
-
-void mc_set_trim (int wheel, int fwd_pct, int rev_pct);
-
-
-int mc_get_trim_fwd (int wheel);
-
-
-int mc_get_trim_rev (int wheel);
-
+void    mc_set_trim (int32_t wheel, int32_t fwd_pct, int32_t rev_pct);
+int32_t mc_get_trim_fwd (int32_t wheel);
+int32_t mc_get_trim_rev (int32_t wheel);
 
 /** Start boost: pct of power for ms when a wheel starts or reverses (0 = off).
  */
-
-void mc_set_kick (int pct, int milliseconds);
-
-
-int mc_get_kick_pct (void);
-
-
-int mc_get_kick_ms (void);
-
+void    mc_set_kick (int32_t pct, int32_t ms);
+int32_t mc_get_kick_pct (void);
+int32_t mc_get_kick_ms (void);
 
 /** Zigzag strafe: switch diagonal every ms (0 = normal 4-wheel strafe). */
-
-void mc_set_zigzag (int milliseconds);
-
-
-int mc_get_zigzag (void);
-
+void    mc_set_zigzag (int32_t ms);
+int32_t mc_get_zigzag (void);
 
 /* ---- helpers, exposed for unit tests ---- */
-
-int16_t mc_heading_error (uint16_t target_tenths, uint16_t current_tenths);
-/* -1800..1799 */
-
-void mc_mix (int velocity_x, int velocity_y, int value_w, int out[MC_WHEELS]);
-/* inverse kinematics */
-
-uint8_t mc_dir_mask (int velocity_x, int velocity_y, int value_w);
-
+int16_t mc_heading_error (uint16_t target_tenths,
+                          uint16_t current_tenths); /* -1800..1799 */
+void    mc_mix (int32_t vx, int32_t vy, int32_t w,
+                int32_t out[MC_WHEELS]); /* inverse kinematics */
+uint8_t mc_dir_mask (int32_t vx, int32_t vy, int32_t w);
 
 static inline motor_state_t
-mc_state (const mc_t * p_value_m)
+mc_state (const volatile mc_t * m)
 {
-    return (motor_state_t) p_value_m->state;
+    return (motor_state_t) m->state;
 }
 
 #endif /* MOTOR_CONTROL_H */

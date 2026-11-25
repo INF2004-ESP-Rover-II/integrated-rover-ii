@@ -66,9 +66,7 @@ typedef struct
     int16_t                  reference_bearing_cdeg;
 } target_selector_t;
 
-
 void target_selector_init (target_selector_t * p_selector);
-
 
 void target_selector_set_route (target_selector_t * p_selector,
                                 target_route_t      route);
@@ -82,10 +80,8 @@ void target_selector_tick (target_selector_t * p_selector,
                            const camera_observation_t * p_latest,
                            bool b_stopped_and_safe, uint32_t now_ms);
 
-
 size_t target_selector_format (const target_selector_t * p_selector,
                                char * p_out, size_t capacity);
-
 
 #endif
 

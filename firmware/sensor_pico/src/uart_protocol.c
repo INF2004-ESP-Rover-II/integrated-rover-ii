@@ -3,9 +3,9 @@
  * @brief Uart protocol firmware module.
  */
 #include "uart_protocol.h"
-#include "sensor_config.h"
-#include "pico/stdlib.h"
 #include "hardware/uart.h"
+#include "pico/stdlib.h"
+#include "sensor_config.h"
 #include <string.h>
 
 uint8_t

@@ -37,15 +37,12 @@ obstacle_update (obstacle_state_t * p_state, const tof_readings_t * p_readings,
         const uint16_t incoming =
             tof_distance_get(p_readings->distance_bits, sensor);
 
-
         const bool b_online =
             ((uint32_t) (online_mask) & (uint32_t) (bit)) != 0;
-
 
         const bool b_accepted =
             (incoming > 0 && incoming <= TOF_MAX_DISTANCE_MM) ||
             incoming == TOF_NO_TARGET_MM;
-
 
         // A completed result proves the device is responding, even when its
         // range status rejects the distance (e.g. weak return with no target).
@@ -95,7 +92,6 @@ obstacle_update (obstacle_state_t * p_state, const tof_readings_t * p_readings,
 
         const uint16_t distance =
             tof_distance_get(p_state->distance_bits, sensor);
-
 
         // A successful beyond-1-m result is healthy but has no numerical
         // distance. Clear old proximity flags rather than retaining an earlier

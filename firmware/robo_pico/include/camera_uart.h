@@ -27,7 +27,6 @@ void camera_uart_poll (void);
 
 bool camera_uart_latest (camera_observation_t * p_observation);
 
-
 #endif
 
 /* End of file. */

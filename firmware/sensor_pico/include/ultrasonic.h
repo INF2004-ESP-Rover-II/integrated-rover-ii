@@ -30,7 +30,6 @@ extern "C"
 
     void ultrasonic_init (uint32_t trig_pin, uint32_t echo_pin);
 
-
     /**
      * @brief Emit trigger and measure echo HIGH pulse width.
      * @param trig_pin Trigger pin.
@@ -44,7 +43,6 @@ extern "C"
                                               uint32_t   echo_pin,
                                               uint32_t * p_pulse_us);
 
-
     /**
      * @brief Get distance (cm). Applies distance = c * t / 2 with c ≈ 34300
      * cm/s.
@@ -57,7 +55,6 @@ extern "C"
 
     ultrasonic_status_t ultrasonic_get_cm (uint32_t trig_pin, uint32_t echo_pin,
                                            float * p_distance_cm);
-
 
 /* -------- Optional: lightweight compatibility shim --------
    If you have legacy callers that expect a float and no status,

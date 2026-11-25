@@ -2,18 +2,18 @@
  * @file wifi_mqtt.c
  * @brief Wifi mqtt firmware module.
  */
-#include <inttypes.h>
 #include "wifi_mqtt.h"
 #include "config.h"
-#include <stdio.h>
-#include <string.h>
-#include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/dns.h"
 #include "lwip/ip4_addr.h"
 #include "mqtt_binary.h"
 #include "mqtt_publish_policy.h"
+#include "pico/cyw43_arch.h"
+#include "pico/stdlib.h"
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
 // Read-only adapter to this SDK's MQTT ring/request lists. Admission must
 // include subscription requests and actual ring occupancy, not only application
 // counts.
@@ -214,40 +214,39 @@ mqtt_incoming_data_cb (void * p_arg, const u8_t * p_data, u16_t len, u8_t flags)
         uint32_t time_value = to_ms_since_boot(get_absolute_time());
         switch (g_current_in_topic)
         {
-            case IN_TOPIC_COMMAND:
-                g_last_link_rx_ms = time_value;
-                if (gp_command_callback != NULL)
+        case IN_TOPIC_COMMAND:
+            g_last_link_rx_ms = time_value;
+            if (gp_command_callback != NULL)
+            {
+                char           text[24];
+                const char *   p_command = message_buffer;
+                mqtt_command_t binary;
+                if (mqtt_is_binary_command(buffer_pos))
                 {
-                    char           text[24];
-                    const char *   p_command = message_buffer;
-                    mqtt_command_t binary;
-                    if (mqtt_is_binary_command(buffer_pos))
+                    if (mqtt_decode_command((const uint8_t *) message_buffer,
+                                            buffer_pos, &binary) &&
+                        mqtt_command_text(&binary, text, sizeof text))
                     {
-                        if (mqtt_decode_command(
-                                (const uint8_t *) message_buffer, buffer_pos,
-                                &binary) &&
-                            mqtt_command_text(&binary, text, sizeof text))
-                        {
-                            p_command = text;
-                        }
-                        else
-                        {
-                            printf("[MQTT] Ignored unknown binary command (%u "
-                                   "bytes)\n",
-                                   (unsigned) buffer_pos);
-                            break;
-                        }
+                        p_command = text;
                     }
-                    printf("[MQTT] Received command: %s\n", p_command);
-                    gp_command_callback(p_command);
+                    else
+                    {
+                        printf("[MQTT] Ignored unknown binary command (%u "
+                               "bytes)\n",
+                               (unsigned) buffer_pos);
+                        break;
+                    }
                 }
-                break;
-            case IN_TOPIC_HEARTBEAT:
-                g_last_link_rx_ms =
-                    time_value; // heartbeat only proves the link is alive
-                break;
-            default:
-                break; // not ours, ignore
+                printf("[MQTT] Received command: %s\n", p_command);
+                gp_command_callback(p_command);
+            }
+            break;
+        case IN_TOPIC_HEARTBEAT:
+            g_last_link_rx_ms =
+                time_value; // heartbeat only proves the link is alive
+            break;
+        default:
+            break; // not ours, ignore
         }
 
         // Reset buffer
@@ -395,7 +394,6 @@ publish_message_prepare (const char * p_topic, const char * p_data,
                          publish_message_context_t * p_context)
 {
 
-
     p_context->b_telemetry = kind == PUBLISH_SENSOR;
 
     p_context->b_camera = kind == PUBLISH_CAMERA;
@@ -408,7 +406,6 @@ publish_message_prepare (const char * p_topic, const char * p_data,
         p_context->return_value = MQTT_ERR_CONNECT_FAILED;
         return true;
     }
-
 
     p_context->length = strlen(p_data);
     // Conservative QoS 0 wire size: topic prefix and up to five fixed-header
@@ -479,7 +476,6 @@ publish_message_inputs (const char * p_topic, const char * p_data,
         g_b_telemetry_in_flight = true;
         g_telemetry_queued_ms   = to_ms_since_boot(get_absolute_time());
     }
-
 
     p_context->err =
         mqtt_publish(gp_mqtt_client, p_topic, p_data, (u16_t) p_context->length,
@@ -565,7 +561,7 @@ publish_message_camera (const char * p_topic, publish_kind_t kind,
 static wifi_mqtt_error_t
 publish_message (const char * p_topic, const char * p_data, publish_kind_t kind)
 {
-    publish_message_context_t context = { 0 };
+    publish_message_context_t context = {0};
     if (publish_message_prepare(p_topic, p_data, kind, &context))
     {
         return context.return_value;
@@ -584,7 +580,6 @@ publish_message (const char * p_topic, const char * p_data, publish_kind_t kind)
     }
     return context.return_value;
 }
-
 
 #if ROVER_MQTT_DIAGNOSTICS
 void
@@ -659,10 +654,9 @@ mqtt_diagnostics_report (uint32_t sensor_age_ms)
            gp_mqtt_client ? mqtt_free_requests() : 0u,
            gp_mqtt_client ? (unsigned) mqtt_free_output_bytes() : 0u,
            g_reply_count, MQTT_REPLY_QUEUE_CAPACITY, g_reply_dropped);
-    static const char * names[] = {
-        "REPLIES", "TELEMETRY", "CAMERA",   "MAP",
-        "MISSION", "DFS",       "TRACKING", "TARGET"
-    };
+    static const char * names[] = {"REPLIES",  "TELEMETRY", "CAMERA",
+                                   "MAP",      "MISSION",   "DFS",
+                                   "TRACKING", "TARGET"};
     for (unsigned i = 0; i < PUBLISH_COUNT; ++i)
     {
         const publish_diagnostics_t * s = &g_publication_stats[i];
@@ -712,10 +706,8 @@ wifi_connect (const char * p_ssid, const char * p_password, uint32_t timeout_ms)
 
     printf("[WIFI] Connecting to '%s'...\n", p_ssid);
 
-
     int result = cyw43_arch_wifi_connect_timeout_ms(
         p_ssid, p_password, CYW43_AUTH_WPA2_AES_PSK, timeout_ms);
-
 
     if (result != 0)
     {
@@ -822,11 +814,9 @@ mqtt_connect (void)
     printf("[MQTT] Client pointer: %p\n", (void *) gp_mqtt_client);
     printf("[MQTT] Calling mqtt_client_connect()...\n");
 
-
     err_t err =
         mqtt_client_connect(gp_mqtt_client, &g_mqtt_broker_ip, MQTT_BROKER_PORT,
                             mqtt_connection_cb, NULL, &ci);
-
 
     printf("[MQTT] mqtt_client_connect() returned: %d\n", (int) err);
 
@@ -873,7 +863,6 @@ mqtt_subscribe_commands (mqtt_command_callback_t p_callback)
     err_t err = mqtt_subscribe(gp_mqtt_client, MQTT_TOPIC_COMMAND,
                                0, // QoS 0
                                mqtt_subscribe_cb, NULL);
-
 
     // FR-08: also listen for the dashboard heartbeat
 
