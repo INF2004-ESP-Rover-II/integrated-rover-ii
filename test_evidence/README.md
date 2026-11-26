@@ -8,8 +8,8 @@ Each test shows the code that does the test, how to run it, and the output. The 
 |---|---|---|---|---|---|---|
 | M8 | FR-40 | Zi Ying | Pass | 2026-11-26 | `99da84f` (main) | `M8_M14_host_tests_main.txt` |
 | M14 | FR-42 | Zi Ying | Pass | 2026-11-26 | `99da84f` (main) | `M8_M14_host_tests_main.txt` |
-| M11 | FR-41, FR-42 | Zi Ying | Not run | | | serial log to add |
-| M12 | FR-42 | Zi Ying | Not run | | | serial log to add |
+| M11 | FR-41, FR-42 | Zi Ying | Pass | 2026-11-26 | `633a942` (main) | `M11_stale_heading.txt`, `M11b_manual_no_heading.txt` |
+| M12 | FR-42 | Zi Ying | Pass | 2026-11-26 | `633a942` (main) | `M12_timeout.txt` |
 | P1 (dry run) | FR-27, FR-29 | Jes | Pass (host tests) | 2026-11-26 | `7e16df7` (feature/goto-on-pico) | `P1_goto_host_tests.txt` |
 | V3 | FR-33 | Jeremy | Pass | 2026-11-24 | `02ef2fa` (loopback build) | `V3_uart_loopback/` |
 | V4 | FR-36 | Jeremy | Pass | 2026-11-06 | `6b2bcbb` (ESP32-LogiCam-Test) | `V4_camera_health/` |
@@ -47,7 +47,12 @@ Front range, timeout and manual E-STOP tests passed
 - **M11(a):** `ready 1`, `h 0`, `d 30 0`, wait 2 s, then `h off`. The rover should stop within about 0.6 s and flag a stale heading (`faults=0x04`).
 - **M12:** `ready 1`, `m 20 0 0`, then `nr` (stops the bench refreshing the command, like a silent dashboard). The rover should go to IDLE within about 0.3 to 0.5 s (`faults=0x02`).
 
-**Evidence:** the serial log showing the state change and the fault flag. The host test output above also has `FR-42 command timeout -> IDLE` and `stale heading -> IDLE`. M11(b), manual driving with no heading, shows the rover moving, so it goes in video 2.
+**Result (26 Nov 2026, motor bench on the Robo Pico, wheels off the ground, logs timestamped by `tools/bench_logger.py`):**
+- **M11(a), `M11_stale_heading.txt`:** `d 30 0` ran in AUTO_DRIVE. After `h off` the move ended `STOPPED` and the state went to IDLE with `faults=0x04` (stale heading) 666 ms after `h off` (about 0.6 s, includes about 40 ms serial delay).
+- **M11(b), `M11b_manual_no_heading.txt`:** with `h off`, `m 15 0 0` was accepted and the state stayed MANUAL (wheels driving) until `s`.
+- **M12, `M12_timeout.txt`:** after `m 20 0 0` and `nr` (no more refreshes), the move ended `STOPPED` about 0.3 s later and the state went to IDLE with `faults=0x02` (command timeout).
+
+The host test output above also has `FR-42 command timeout -> IDLE` and `stale heading -> IDLE`. M11(b) with the dashboard (hold W with the Sensor Pico heading missing) is also in video 2.
 
 ## P1: go-to route planning, dry run (FR-27, FR-29)
 
