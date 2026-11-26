@@ -14,6 +14,14 @@ Each test shows the code that does the test, how to run it, and the output. The 
 | V3 | FR-33 | Jeremy | Pass | 2026-11-24 | `02ef2fa` (loopback build) | `V3_uart_loopback/` |
 | V4 | FR-36 | Jeremy | Pass | 2026-11-06 | `6b2bcbb` (ESP32-LogiCam-Test) | `V4_camera_health/` |
 | V5 | FR-32 | Jeremy | Not run | | | S3 serial log to add |
+| C2 | FR-06, FR-08 | Jia Hui | Partial (rover) | 2026-10-30 | `1e57d7c` (JiaHui) | `C2_link_loss.txt` |
+| C3 | FR-07 | Jia Hui | Partial (fake rover) | 2026-11-27 | `031c901` (main) | `C3_dashboard_log.txt` |
+| C4 | FR-12 | Jia Hui | Pass | 2026-11-27 | `031c901` (main) | `C4_binary_host_tests.txt` |
+| C5 | FR-12 | Jia Hui | Pass (fake rover) | 2026-11-27 | `031c901` (main) | `C5_binary_capture_off.txt`, `C5_binary_capture_on.txt` |
+| C6 | FR-10 | Jia Hui | Pass (fake rover) | 2026-11-27 | `031c901` (main) | `C6_dashboard_log.txt` |
+| C7 | FR-13 | Jia Hui | Pass (rover) | 2026-10-30 | `1e57d7c` (JiaHui) | `C7_uart_packets.txt` |
+| C8 | FR-15 | Jia Hui | Pass | 2026-11-27 | `031c901` (main) | `C8_dashboard_log.txt` |
+| C9 | FR-11 | Jia Hui | Pass (fake rover) | 2026-11-27 | `031c901` (main) | `C9_stale_data.png`, `C9_dashboard_log.txt` |
 
 ---
 
@@ -128,3 +136,160 @@ The rover version is in video 7.
 **Expected:** the marker is reported as TOO_FAR or BAD_SHAPE, not OK, and is never used as a target.
 
 **Evidence:** the S3 serial log with the quality codes.
+
+## C2: link loss (FR-06, FR-08)
+
+**Test code:** `LINK_TIMEOUT_MS` (1500 ms) in `firmware/robo_pico/include/config.h` and the link check in `firmware/robo_pico/src/main.c`; the dashboard sends a heartbeat every 500 ms.
+
+**How it was run:** real rover, router. The link was cut (laptop WiFi off, dashboard closed or killed) while the rover was connected; the time is from the rover's serial log, t(LINK LOST) minus t(last laptop message).
+
+**Expected:** the rover stops by itself within about 1.5 s of the last laptop message, and the mission goes to PAUSED.
+
+**Result (29 to 30 Oct, real rover):** 13 link-lost stops, all between 1501 and 1510 ms, each logged as `[LINK] LOST ... MOTORS STOPPED`:
+```
+[LINK] LOST at t=97559 ms (last laptop msg at t=96051 ms), MOTORS STOPPED
+[LINK] LOST at t=120730 ms (last laptop msg at t=119222 ms), MOTORS STOPPED
+...
+Stop times (ms): 1508, 1507, 1507, 1508, 1510, 1510, 1510, 1503, 1503, 1509, 1509, 1508, 1501
+```
+Not yet checked: the mission going to PAUSED, because mission states were added after this run. Rerun on main.
+
+**Output:** `C2_link_loss.txt`.
+
+## C3: E-STOP stays locked until Reset Safety (FR-07)
+
+**Test code:** `trigger_estop()`, `on_key_press()` and `handle_safety_status()` in `dashboard/robot_dashboard.py`. The E-STOP lock is cleared only when the rover confirms `SAFETY_READY` after the operator presses Reset Safety; there is no timer (the old automatic Reset Safety after 3 s was removed, Tribunal 2 row #33).
+
+**How to run:** fake rover and dashboard. Press E-STOP, wait 10 s, press W; then press Reset Safety and press W again.
+
+**Expected:** W is still refused after 10 s and no RESET_SAFETY is sent by itself; movement works only after Reset Safety. (Mission FAULT needs the real rover; the fake rover has no mission states.)
+
+**Result (27 Nov, fake rover):**
+```
+06:39:07.335  [06:39:07] → ESTOP
+06:39:07.343  ⚠ E-STOP ACTIVATED at 06:39:07 - movement locked until Reset Safety
+06:39:17.823  Movement blocked - E-STOP active. Press Reset Safety first.
+06:39:20.305  [06:39:20] → RESET_SAFETY
+06:39:20.314  Manual E-Stop released. Press a movement key to drive.
+06:39:20.955  [06:39:20] → FORWARD
+```
+
+**Output:** `C3_dashboard_log.txt`.
+
+## C4: binary message format (FR-12)
+
+**Test code:** `tests/test_mqtt_binary.py`. It tests `dashboard/mqtt_binary.py`, the same format the Robo Pico decodes in `firmware/robo_pico/src/mqtt_binary.c`.
+
+**How to run:** from the repository root, run `python tests/test_mqtt_binary.py -v`.
+
+**Expected:** every command encodes to 1 byte (TURN_TO 2 bytes) and decodes back; invalid bytes (0x00, unknown codes, wrong lengths) are rejected; the heartbeat is 1 byte. At the end: `Ran 22 tests` and `OK`.
+
+**Output (excerpt):**
+```
+test_bad_commands_rejected ... ok
+test_every_plain_command_is_one_byte_and_round_trips ... ok
+test_heartbeat_one_byte ... ok
+test_text_commands_are_never_mistaken_for_binary ... ok
+test_turn_to_all_headings ... ok
+...
+Ran 22 tests in 0.031s
+OK
+```
+
+## C5: commands on the wire, text vs binary (FR-12)
+
+**Test code:** `send_command()` and `link_heartbeat_tick()` in `dashboard/robot_dashboard.py`, switched by `BINARY_COMMANDS`.
+
+**How to run:** start Mosquitto, `python dashboard/fake_rover.py` and the dashboard, then in another window run `mosquitto_sub -h localhost -t "robot/command" -t "robot/heartbeat" -F "%t  %l bytes  %x"`. Press W, S, D, E-STOP and Reset Safety, once with `BINARY_COMMANDS = False` and once with `True`.
+
+**Expected:** off: each command is sent as text (4 to 12 bytes). On: each command and heartbeat is 1 byte, commands with no binary code (`MAP_GET`) stay text, and the fake rover receives every command correctly.
+
+**Output (excerpt, off, 27 Nov):**
+```
+robot/command  7 bytes  464f5257415244            (FORWARD)
+robot/command  8 bytes  4241434b57415244          (BACKWARD)
+robot/command  12 bytes  524f544154455f5249474854  (ROTATE_RIGHT)
+robot/command  4 bytes  53544f50                  (STOP)
+robot/command  5 bytes  4553544f50                (ESTOP)
+robot/command  12 bytes  52455345545f534146455459  (RESET_SAFETY)
+robot/heartbeat  2 bytes  3135                    ("15")
+```
+
+**Output (excerpt, on, 27 Nov):**
+```
+robot/command  1 bytes  04      (FORWARD)
+robot/command  1 bytes  09      (ROTATE_RIGHT)
+robot/command  1 bytes  05      (BACKWARD)
+robot/command  1 bytes  08      (ROTATE_LEFT)
+robot/command  1 bytes  01      (STOP)
+robot/command  1 bytes  02      (ESTOP)
+robot/command  1 bytes  03      (RESET_SAFETY)
+robot/heartbeat  1 bytes  0d
+robot/command  7 bytes  4d41505f474554   (MAP_GET, still text)
+```
+
+**Output:** `C5_binary_capture_off.txt` and `C5_binary_capture_on.txt`.
+
+## C6: front obstacle disables only W (FR-10)
+
+**Test code:** the W lock in `navigation_tick()` in `dashboard/robot_dashboard.py`. `FRONT_CLEAR_MARGIN_MM = 50` keeps W locked until the front reading is 50 mm past the stop line, so it can't flicker.
+
+**How to run:** fake rover and dashboard. Hold W until the front obstacle stops the rover, then hold S to back away.
+
+**Expected:** one `Front obstacle: W disabled` message at 150 mm while other keys still drive; one `Front clear: W enabled` message once past 200 mm, with no on/off messages in between.
+
+**Result (27 Nov, fake rover):**
+```
+06:44:30.781  Front obstacle: W disabled; other keys remain available.
+06:44:31.992  [06:44:31] → BACKWARD
+06:44:32.610  Front clear: W enabled. Press W again to drive forward.
+```
+One disable and one enable message, no flicker in between, and BACKWARD still drove while W was disabled.
+
+**Output:** `C6_dashboard_log.txt`.
+
+## C7: Sensor Pico to Robo Pico UART (FR-13)
+
+**Test code:** the packet layout in `uart_protocol.h` (59-byte `sensor_packet_t`, the same on both Picos); the Robo Pico counts total, valid and error packets and prints them as `[STATS]`.
+
+**How it was run:** Robo Pico serial monitor while the Sensor Pico streams packets.
+
+**Expected:** 0 checksum or sync errors.
+
+**Result (real rover):** before the two Picos used the same layout (the Robo Pico expected 67 bytes, the Sensor Pico sent 59), almost every packet failed. After matching the layout, every session had 0 errors:
+```
+[STATS] Packets: 197 total, 1 valid, 196 errors      (before the fix)
+[STATS] Packets: 818 total, 818 valid, 0 errors      (after the fix)
+[STATS] Packets: 2079 total, 2079 valid, 0 errors    (30 Oct, 14:07 session)
+[STATS] Packets: 1486 total, 1486 valid, 0 errors    (30 Oct, 14:14 session)
+```
+
+**Output:** `C7_uart_packets.txt`.
+
+## C8: dashboard session log (FR-15)
+
+**Test code:** `log()` in `dashboard/robot_dashboard.py` writes every log line to a new file per session in `dashboard/logs/`.
+
+**How to run:** connect the dashboard, drive, press E-STOP and Reset Safety, then disconnect.
+
+**Expected:** a new `dashboard_<date>_<time>.txt` with each command, rover status and connection change, each with a millisecond timestamp.
+
+**Result (27 Nov):** `dashboard_..._064356.txt` recorded the connection, every command (FORWARD, STOP, BACKWARD, ESTOP, RESET_SAFETY), the rover's replies and the disconnect, each with a millisecond timestamp.
+
+**Output:** `C8_dashboard_log.txt` (a copy of that session's file).
+
+## C9: stale data is not shown as live (FR-11)
+
+**Test code:** the watchdog in `dashboard/robot_dashboard.py`: `TOF_UART_STALE_MS = 500`, `ROBOT_LOST_S = 2.0`, checked every 250 ms.
+
+**How to run:** fake rover and dashboard connected. In the fake rover window, type `p` and Enter (telemetry pauses for 3 s).
+
+**Expected:** the ToF readings show "Telemetry stale" within 0.5 s, Robot shows Lost after 2 s and movement is blocked; everything returns to normal when telemetry resumes.
+
+**Result (27 Nov, fake rover):** the ToF panel showed "Telemetry stale" for left, front and right instead of distances, Robot showed Lost, and the log recorded:
+```
+[06:46:44] ⚠ Robot: Lost - no telemetry for 2.1s. Movement blocked.
+[06:46:45] Robot link restored - movement enabled
+```
+
+**Output:** `C9_stale_data.png` (screenshot during the pause) and `C9_dashboard_log.txt`.

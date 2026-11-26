@@ -1,0 +1,112 @@
+C2: Link loss stops the rover (FR-06, FR-08)
+Source: Robo Pico USB serial monitor, real rover. Link cut by laptop WiFi off, dashboard closed, or dashboard killed.
+Measured: t(LINK LOST) minus t(last laptop message), both from the rover's own clock.
+Requirement: stop within 1.5 s of the last laptop message (LINK_TIMEOUT_MS = 1500, heartbeat every 500 ms).
+
+Result: 13 link-lost stops, all between 1501 and 1510 ms. Every one logged MOTORS STOPPED.
+Not covered by this run: mission going to PAUSED (mission states were added later).
+
+==============================================================================
+Session 1: Thu 29 Oct 2026 (17:02 to 18:19), MQTT keep-alive 60 s
+==============================================================================
+[LINK] LOST at t=97559 ms (last laptop msg at t=96051 ms), MOTORS STOPPED
+[MQTT] Status code: 257
+[MQTT] Connection timeout!
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 60
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] Laptop link up
+
+==============================================================================
+Session 2: Thu 29 Oct 2026 (17:02 to 18:19), MQTT keep-alive 5 s
+==============================================================================
+[LINK] LOST at t=32203 ms (last laptop msg at t=30696 ms), MOTORS STOPPED
+[MQTT] Status code: 257
+[MQTT] Connection timeout!
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] Laptop link up
+[LINK] LOST at t=58818 ms (last laptop msg at t=57311 ms), MOTORS STOPPED
+[MQTT] Status code: 257
+[MQTT] Connection timeout!
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] Laptop link up
+
+==============================================================================
+Session 3: Fri 30 Oct 2026, 14:07 session, router, keep-alive 5 s
+==============================================================================
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] Laptop link up
+[LINK] LOST at t=120730 ms (last laptop msg at t=119222 ms), MOTORS STOPPED
+[LINK] Laptop link up
+[LINK] LOST at t=130964 ms (last laptop msg at t=129454 ms), MOTORS STOPPED
+[LINK] Laptop link up
+[LINK] LOST at t=141835 ms (last laptop msg at t=140325 ms), MOTORS STOPPED
+[LINK] Laptop link up
+[LINK] LOST at t=147094 ms (last laptop msg at t=145584 ms), MOTORS STOPPED
+[MQTT] Status code: 256
+[LINK] Laptop link up
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] LOST at t=258311 ms (last laptop msg at t=256808 ms), MOTORS STOPPED
+[MQTT] Status code: 257
+[MQTT] Connection timeout!
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+
+==============================================================================
+Session 4: Fri 30 Oct 2026, 14:14 session, router, keep-alive 5 s
+==============================================================================
+[MQTT] Keep-alive: 5
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 256
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] Laptop link up
+[LINK] LOST at t=87141 ms (last laptop msg at t=85638 ms), MOTORS STOPPED
+[LINK] Laptop link up
+[LINK] LOST at t=92399 ms (last laptop msg at t=90890 ms), MOTORS STOPPED
+[MQTT] Status code: 256
+[LINK] Laptop link up
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] LOST at t=145009 ms (last laptop msg at t=143500 ms), MOTORS STOPPED
+[LINK] Laptop link up
+[LINK] LOST at t=147413 ms (last laptop msg at t=145905 ms), MOTORS STOPPED
+[MQTT] Status code: 256
+[LINK] Laptop link up
+[MQTT] Connection down, trying to reconnect...
+[MQTT] Keep-alive: 5
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[LINK] LOST at t=182363 ms (last laptop msg at t=180862 ms), MOTORS STOPPED
+[LINK] Laptop link up
+
+==============================================================================
+Stop times (ms): 1508, 1507, 1507, 1508, 1510, 1510, 1510, 1503, 1503, 1509, 1509, 1508, 1501
+n = 13, min = 1501 ms, max = 1510 ms

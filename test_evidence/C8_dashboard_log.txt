@@ -1,0 +1,24 @@
+06:43:56.192  Dashboard ready. Enter broker IP and click Connect.
+06:43:56.260  Dashboard source: C:\Users\User\integrated-rover-ii\dashboard\robot_dashboard.py
+06:44:27.081  Connecting to MQTT broker at localhost:1883...
+06:44:27.091  Connected to MQTT broker
+06:44:27.100  Subscribed to robot/status, robot/telemetry, camera/marker, robot/camera, robot/map
+06:44:28.089  [06:44:28] → FORWARD
+06:44:30.778  [06:44:30] → STOP
+06:44:30.781  Front obstacle: W disabled; other keys remain available.
+06:44:30.784  [06:44:30] Robot stopped
+06:44:31.992  [06:44:31] → BACKWARD
+06:44:32.610  Front clear: W enabled. Press W again to drive forward.
+06:44:34.540  [06:44:34] → STOP
+06:44:34.547  [06:44:34] Robot stopped
+06:44:35.461  Dashboard monitor: DFS paused: Emergency stop
+06:44:35.464  [06:44:35] → ESTOP
+06:44:35.468  ⚠ E-STOP ACTIVATED at 06:44:35 - movement locked until Reset Safety
+06:44:35.488  Dashboard monitor: DFS paused: SAFETY_LOCKED
+06:44:35.493  Manual E-Stop active.
+06:44:37.836  Dashboard monitor: DFS paused: Safety reset requested
+06:44:37.842  [06:44:37] → RESET_SAFETY
+06:44:37.848  Dashboard monitor: DFS paused: SAFETY_READY
+06:44:37.853  Manual E-Stop released. Press a movement key to drive.
+06:44:39.957  Dashboard monitor: DFS paused: Dashboard disconnected
+06:44:39.964  Disconnected from MQTT broker
