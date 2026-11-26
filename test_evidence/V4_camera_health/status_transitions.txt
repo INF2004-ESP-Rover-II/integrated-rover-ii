@@ -1,0 +1,8 @@
+t=1.84s status 2 seq 0 age 509 N 0
+t=4.50s status 1 seq 1 age 178 N 0  (last status 2 at t=4.30s)
+t=11.48s status 0 seq 39 age 181 N 1  (last status 1 at t=11.29s)
+t=12.24s status 1 seq 43 age 201 N 0  (last status 0 at t=12.05s)
+t=12.62s status 0 seq 45 age 246 N 1  (last status 1 at t=12.43s)
+t=20.40s status 2 seq 83 age 776 N 0  (last status 0 at t=19.90s)
+t=24.82s status 3 seq 83 age 5196 N 0  (last status 2 at t=24.62s)
+t=32.62s status 0 seq 84 age 188 N 1  (last status 3 at t=32.44s)

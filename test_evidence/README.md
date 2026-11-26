@@ -12,7 +12,7 @@ Each test shows the code that does the test, how to run it, and the output. The 
 | M12 | FR-42 | Zi Ying | Not run | | | serial log to add |
 | P1 (dry run) | FR-27, FR-29 | Jes | Pass (host tests) | 2026-11-26 | `7e16df7` (feature/goto-on-pico) | `P1_goto_host_tests.txt` |
 | V3 | FR-33 | Jeremy | Pass | 2026-11-24 | `02ef2fa` (loopback build) | `V3_uart_loopback/` |
-| V4 | FR-36 | Jeremy | Not run | | | S3 serial log to add |
+| V4 | FR-36 | Jeremy | Pass | 2026-11-06 | `6b2bcbb` (ESP32-LogiCam-Test) | `V4_camera_health/` |
 | V5 | FR-32 | Jeremy | Not run | | | S3 serial log to add |
 
 ---
@@ -93,11 +93,27 @@ sent 98, read 98, mismatched 0, by status {'2': 11, '0': 35, '1': 52}
 
 ## V4: camera health status (FR-36)
 
-**How to run:** S3 on the bench with the serial monitor open, then unplug the webcam.
+**Test code:** `firmware/esp32_s3_vision/main/app_main.c`. `VISION_STALL_US` (500 ms) and `VISION_LOST_US` (5000 ms) are on lines 65–66, and the health check is on lines 566–569. The build that was tested (`6b2bcbb` in ESP32-LogiCam-Test) has the same values and the same check.
 
-**Expected:** status 1 (NO_MARKER) changes to 2 (STALLED) within about 0.5 s, then to 3 (CAMERA_LOST) after about 5 s.
+**How to run:** S3 on the bench with the loopback build, recording the serial log for 60 s. Unplug the webcam, wait more than 5 s, then plug it back in. Then list each status change from the `uart read` lines.
 
-**Evidence:** the S3 serial log. The rover version is in video 7.
+**Expected:** status 2 (STALLED) about 0.5 s after the last good frame, status 3 (CAMERA_LOST) after 5 s, and back to status 0 or 1 once the webcam is plugged back in.
+
+**Output** (`status_transitions.txt`, from `uart_failures_2026-11-06.log`):
+```
+t=12.62s status 0 seq 45 age 246 N 1  (last status 1 at t=12.43s)
+t=20.40s status 2 seq 83 age 776 N 0  (last status 0 at t=19.90s)
+t=24.82s status 3 seq 83 age 5196 N 0  (last status 2 at t=24.62s)
+t=32.62s status 0 seq 84 age 188 N 1  (last status 3 at t=32.44s)
+```
+
+- **STALLED:** 0.50 s after the last good frame (19.90 s to 20.40 s). `age_ms` reads 776 because it counts from the last image that was processed, not the last frame sent.
+- **CAMERA_LOST:** `age_ms` 5196, just past the 5 s limit. `seq` stays at 83 the whole time the webcam is out.
+- **Recovery:** the webcam was found again without a reset, and status 0 came back at seq 84.
+- **UART:** over the whole run, 296 of 297 frames were read back with 0 mismatched (the last frame was still sending when the recording ended).
+- The status 2 at 1.84 s is the boot, before the first webcam frame.
+
+The rover version is in video 7.
 
 ## V5: marker rejection (FR-32)
 
