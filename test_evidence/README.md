@@ -43,8 +43,9 @@ Front range, timeout and manual E-STOP tests passed
 ## M11 and M12: stale heading and command timeout (FR-41, FR-42)
 
 **How to run:** use the motor bench firmware on the Robo Pico, over USB serial.
-- **M11(a):** `h 0`, `ready 1`, `d 30 0`, then `h off`. The rover should stop within about 0.6 s and flag a stale heading.
-- **M12:** `m 20 0 0`, then stop sending commands. The rover should go to IDLE within about 0.3 to 0.5 s.
+- Log the serial output with timestamps: `python tools/bench_logger.py COM3 --log m11a.txt` (type the commands below into that window).
+- **M11(a):** `ready 1`, `h 0`, `d 30 0`, wait 2 s, then `h off`. The rover should stop within about 0.6 s and flag a stale heading (`faults=0x04`).
+- **M12:** `ready 1`, `m 20 0 0`, then `nr` (stops the bench refreshing the command, like a silent dashboard). The rover should go to IDLE within about 0.3 to 0.5 s (`faults=0x02`).
 
 **Evidence:** the serial log showing the state change and the fault flag. The host test output above also has `FR-42 command timeout -> IDLE` and `stale heading -> IDLE`. M11(b), manual driving with no heading, shows the rover moving, so it goes in video 2.
 
