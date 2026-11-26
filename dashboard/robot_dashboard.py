@@ -1067,6 +1067,8 @@ class RobotGUI:
         self.active_command = None
         self.auto_mode.set(False)
         if status == "SAFETY_READY":
+            self.estop_active = False
+            self.update_estop_ui()
             self.last_refused = None
             self.log("Manual E-Stop released. Press a movement key to drive.")
         elif status == "SAFETY_RESET_REFUSED":
@@ -1075,7 +1077,7 @@ class RobotGUI:
             self.log("Manual E-Stop active.")
 
     def trigger_estop(self):
-        """Trigger emergency stop with 3-second lockout"""
+        """Trigger emergency stop, movement stays locked until the operator presses Reset Safety (FR-07)"""
         self.navigator.stop("Emergency stop")
         # Immediately send STOP command
         self.send_command("ESTOP")
@@ -1098,26 +1100,12 @@ class RobotGUI:
         
         # Log event with timestamp
         timestamp = time.strftime("%H:%M:%S")
-        self.log(f"⚠ E-STOP ACTIVATED at {timestamp} - 3-second movement lockout enabled")
+        self.log(f"⚠ E-STOP ACTIVATED at {timestamp} - movement locked until Reset Safety")
     
     def update_estop_ui(self):
         """Update E-Stop status indicator"""
         if self.estop_active:
-            time_since_estop = time.time() - self.estop_time
-            remaining = max(0, 3.0 - time_since_estop)
-            if remaining > 0:
-                self.estop_status_label.config(
-                    text=f"LOCKED ({remaining:.1f}s)",
-                    fg='white',
-                    bg='#c0392b'
-                )
-                # Schedule next update
-                self.root.after(100, self.update_estop_ui)
-            else:
-                # Lockout expired
-                self.estop_active = False
-                self.send_command("RESET_SAFETY", quiet=True)
-                self.estop_status_label.config(text="✓ Ready", fg='#2ecc71', bg='#34495e')
+            self.estop_status_label.config(text="LOCKED", fg='white', bg='#c0392b')      
         else:
             self.estop_status_label.config(text="✓ Ready", fg='#2ecc71', bg='#34495e')
 
@@ -1200,19 +1188,11 @@ class RobotGUI:
         
         # Check E-Stop lockout for movement commands
         if self.estop_active:
-            time_since_estop = time.time() - self.estop_time
-            if time_since_estop < 3.0:
-                # Movement blocked during lockout
-                if ch in {'w', 'a', 's', 'd', 'q', 'e', 'z', 'c', 'r', 't', 'f', 'g', 'o', 'i', 'k'}:
-                    self.pressed_keys.add(ch)
-                    self.log(f"Movement blocked - E-Stop lockout ({3.0 - time_since_estop:.1f}s remaining)")
-                    return "break"
-            else:
-                # Lockout expired, clear E-Stop
-                self.estop_active = False
-                self.send_command("RESET_SAFETY", quiet=True)
-                self.update_estop_ui()
-                self.log("E-Stop lockout expired - movement enabled")
+            # Movement blocked until the operator presses Reset Safety (FR-07)
+            if ch in {'w', 'a', 's', 'd', 'q', 'e', 'z', 'c', 'r', 't', 'f', 'g', 'o', 'i', 'k'}:
+                self.pressed_keys.add(ch)
+                self.log("Movement blocked - E-STOP active. Press Reset Safety first.")
+                return "break"
 
         # Block movement commands if robot is not connected or telemetry not received
         if ch in KEYMAP and self.connected and self.robot_link != "live":
