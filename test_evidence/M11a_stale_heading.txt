@@ -1,0 +1,32 @@
+# M11(a) stale heading, motor bench on the Robo Pico, 26 Nov 2026
+# This file is the terminal output copied from the bench_logger.py window
+# (run started 19:57:40). The saved log file of this run was overwritten by
+# a later run, so the terminal copy is kept instead. The typed commands show
+# on their own lines. The USB read error printed after the last line
+# (the cable was unplugged after the test) is left out.
+# Result: after "h off" the move ended STOPPED and the state went to IDLE with
+# faults=0x04 (stale heading) 666 ms after "h off".
+
+C:\Users\limzi\Downloads>python bench_logger.py COM3 --log m11_stale_heading.txt
+# bench_logger started 2026-11-26 19:57:40, port COM3, log file m11_stale_heading.txt
+    129.2 ms  STATE IDLE faults=0x00  (130 ms after '')
+ready 1
+  15452.5 ms  SENT > ready 1
+  15545.2 ms  [bench] > ready 1
+  15545.5 ms  [bench] ready=1
+h 0
+  17947.5 ms  SENT > h 0
+  17992.2 ms  [bench] > h 0
+d 30 0
+  25816.7 ms  SENT > d 30 0
+  25883.2 ms  [bench] > d 30 0
+  25883.9 ms  STATE AUTO_DRIVE faults=0x00  (67 ms after 'd 30 0')
+h off
+  29192.2 ms  SENT > h off
+  29232.9 ms  [bench] > h off
+  29235.5 ms  [bench] heading publishing OFF
+  29857.9 ms  [bench] move 3 ended: STOPPED
+  29858.3 ms  STATE IDLE faults=0x04  (666 ms after 'h off')
+s
+  34826.9 ms  SENT > s
+  34891.3 ms  [bench] > s
