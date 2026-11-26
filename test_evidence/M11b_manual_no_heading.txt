@@ -1,0 +1,25 @@
+# bench_logger started 2026-11-26 19:59:59, port COM3, log file m11b_manual_no_heading.txt
+    176.2 ms  STATE IDLE faults=0x00  (177 ms after '')
+  14275.8 ms  SENT > ready 1
+  14372.2 ms  [bench] > ready 1
+  14372.7 ms  [bench] ready=1
+  16049.4 ms  SENT > h off
+  16079.3 ms  [bench] > h off
+  16140.8 ms  [bench] heading publishing OFF
+  22555.5 ms  SENT > m 15 0 0
+  22614.4 ms  [bench] > m 15 0 0
+  22739.5 ms  STATE MANUAL faults=0x00  (185 ms after 'm 15 0 0')
+  25658.6 ms  SENT > s
+  25704.6 ms  [bench] > s
+  25766.6 ms  STATE IDLE faults=0x00  (108 ms after 's')
+  91195.8 ms  SENT > s
+  91251.6 ms  [bench] > s
+ 145762.4 ms  SENT > s
+ 145779.9 ms  [bench] > s
+ 152599.4 ms  SENT > x
+ 152619.7 ms  [bench] > x
+ 158522.2 ms  SENT > h 0
+ 158596.3 ms  [bench] > h 0
+ 161932.7 ms  SENT > s
+ 161983.5 ms  [bench] > s
+# stopped 2026-11-26 20:03:16

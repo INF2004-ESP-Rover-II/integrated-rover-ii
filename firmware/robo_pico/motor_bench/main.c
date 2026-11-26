@@ -30,6 +30,8 @@
  *   kick PCT MS      start boost: PCT power for MS ms when a wheel starts
  *                    (default kick 90 150; 'kick 0 0' turns it off)
  *   zz MS            zigzag strafe: switch diagonal every MS ms (0 = off)
+ *   nr               stop refreshing the held move (tests the 300 ms command
+ *                    timeout, FR-42): the rover must stop by itself
  *   q                print status now
  *
  * The held command is refreshed every 100 ms, like the dashboard / Exploration
@@ -145,6 +147,7 @@ bench_task (void * arg)
     uint8_t    seq = 0, hseq = 0;
     uint32_t   held           = 0;  /* command refreshed every 100 ms */
     int        heading_tenths = -1; /* -1 = not publishing            */
+    bool       refresh_on     = true; /* 'nr' turns refreshing off       */
     TickType_t last_refresh = 0, last_hdg = 0, last_status = 0;
 
     printf("\n[bench] Motor Control bench ready. Type 'q' for status.\n");
@@ -261,6 +264,12 @@ bench_task (void * arg)
                     held = 0;
                     wheel_test(duty);
                 }
+                else if (!strcmp(line, "nr"))
+                {
+                    refresh_on = false;
+                    printf("[bench] refresh OFF: the move should stop in "
+                           "about 300 ms\n");
+                }
                 else if (!strcmp(line, "q"))
                 {
                     print_status(heading_tenths);
@@ -308,8 +317,9 @@ bench_task (void * arg)
 
                 if (w)
                 {
-                    held = w; /* refreshed until it ends; late refreshes are
-                                 ignored */
+                    held       = w; /* refreshed until it ends; late refreshes
+                                       are ignored */
+                    refresh_on = true;
                     if (!motor_task_send_cmd(w))
                     {
                         printf("[bench] queue full\n");
@@ -323,7 +333,7 @@ bench_task (void * arg)
         }
 
         TickType_t now = xTaskGetTickCount();
-        if (held &&
+        if (held && refresh_on &&
             now - last_refresh >= pdMS_TO_TICKS(MC_RECOMMENDED_REFRESH_MS))
         {
             motor_task_send_cmd(held); /* refresh, same word */

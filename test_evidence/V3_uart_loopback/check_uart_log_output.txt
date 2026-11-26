@@ -1,0 +1,4 @@
+$ python tools/check_uart_log.py loopback_clean.log
+sent 59, read 59, mismatched 0, by status {'2': 11, '1': 48}
+$ python tools/check_uart_log.py marker_clean.log
+sent 98, read 98, mismatched 0, by status {'2': 11, '0': 35, '1': 52}

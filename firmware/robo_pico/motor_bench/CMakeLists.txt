@@ -30,6 +30,14 @@ target_include_directories(motor_bench PRIVATE
 
 target_compile_options(motor_bench PRIVATE -Wall -Wextra)
 
+# Same Motion Control settings as the rover build (../CMakeLists.txt), so the
+# bench shows what the rover does: manual driving allowed while the heading is
+# missing, and 600 ms before a heading counts as stale.
+target_compile_definitions(motor_bench PRIVATE
+    MC_ALLOW_MANUAL_WITHOUT_HEADING=1
+    MC_HEADING_STALE_MS=600u
+)
+
 # Wheel PWM frequency, fixed per build (changing it at run time crashed the Pico).
 #   cmake ..                     -> 10 kHz (default)
 #   cmake -DMOTOR_PWM_HZ=1000 .. -> 1 kHz (more power at low speed on the L298N)

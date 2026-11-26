@@ -1,0 +1,555 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3810,len:0x1870
+load:0x403c9700,len:0x4
+load:0x403c9704,len:0xcec
+load:0x403cc700,len:0x2ec8
+entry 0x403c9918
+I (27) boot: ESP-IDF v5.2.7 2nd stage bootloader
+I (27) boot: compile time Nov 22 2026 19:03:52
+I (27) boot: Multicore bootloader
+I (30) boot: chip revision: v0.2
+I (34) boot: efuse block revision: v1.4
+I (38) boot.esp32s3: Boot SPI Speed : 80MHz
+I (43) boot.esp32s3: SPI Mode       : DIO
+I (48) boot.esp32s3: SPI Flash Size : 16MB
+I (53) boot: Enabling RNG early entropy source...
+I (58) boot: Partition Table:
+I (62) boot: ## Label            Usage          Type ST Offset   Length
+I (69) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (76) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (84) boot:  2 factory          factory app      00 00 00010000 00100000
+I (91) boot: End of partition table
+I (95) esp_image: segment 0: paddr=00010020 vaddr=3c0b0020 size=24fc0h (151488) map
+I (131) esp_image: segment 1: paddr=00034fe8 vaddr=3fc9ea00 size=053dch ( 21468) load
+I (135) esp_image: segment 2: paddr=0003a3cc vaddr=40374000 size=05c4ch ( 23628) load
+I (141) esp_image: segment 3: paddr=00040020 vaddr=42000020 size=a8b64h (691044) map
+I (267) esp_image: segment 4: paddr=000e8b8c vaddr=40379c4c size=14d4ch ( 85324) load
+I (296) boot: Loaded app from partition at offset 0x10000
+I (296) boot: Disabling RNG early entropy source...
+I (308) cpu_start: Multicore app
+I (309) octal_psram: vendor id    : 0x0d (AP)
+I (309) octal_psram: dev id       : 0x02 (generation 3)
+I (311) octal_psram: density      : 0x03 (64 Mbit)
+I (317) octal_psram: good-die     : 0x01 (Pass)
+I (322) octal_psram: Latency      : 0x01 (Fixed)
+I (327) octal_psram: VCC          : 0x01 (3V)
+I (332) octal_psram: SRF          : 0x01 (Fast Refresh)
+I (338) octal_psram: BurstType    : 0x01 (Hybrid Wrap)
+I (344) octal_psram: BurstLen     : 0x01 (32 Byte)
+I (350) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)
+I (356) octal_psram: DriveStrength: 0x00 (1/1)
+I (361) MSPI Timing: PSRAM timing tuning index: 5
+I (366) esp_psram: Found 8MB PSRAM device
+I (371) esp_psram: Speed: 80MHz
+I (827) esp_psram: SPI SRAM memory test OK
+I (836) cpu_start: Pro cpu start user code
+I (836) cpu_start: cpu freq: 240000000 Hz
+I (836) cpu_start: Application information:
+I (839) cpu_start: Project name:     web_cam
+I (844) cpu_start: App version:      02ef2fa
+I (849) cpu_start: Compile time:     Nov 22 2026 19:03:47
+I (855) cpu_start: ELF file SHA256:  9193c23ec...
+I (860) cpu_start: ESP-IDF:          v5.2.7
+I (865) cpu_start: Min chip rev:     v0.0
+I (870) cpu_start: Max chip rev:     v0.99 
+I (875) cpu_start: Chip rev:         v0.2
+I (880) heap_init: Initializing. RAM available for dynamic allocation:
+I (887) heap_init: At 3FCA7A98 len 00041C78 (263 KiB): RAM
+I (893) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (899) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (905) heap_init: At 600FE010 len 00001FD8 (7 KiB): RTCRAM
+I (912) esp_psram: Adding pool of 8192K of PSRAM memory to heap allocator
+I (920) spi_flash: detected chip: boya
+I (923) spi_flash: flash io: dio
+I (927) sleep: Configure to isolate all GPIO pins in sleep state
+I (934) sleep: Enable automatic switching of GPIO sleep configuration
+I (942) main_task: Started on CPU0
+I (952) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+I (952) main_task: Calling app_main()
+I (972) pp: pp rom version: e7ae62f
+I (972) net80211: net80211 rom version: e7ae62f
+I (982) wifi:wifi driver task: 3fcbae3c, prio:23, stack:6656, core=0
+I (982) wifi:wifi firmware version: ff41b26
+I (982) wifi:wifi certification version: v7.0
+I (982) wifi:config NVS flash: enabled
+I (992) wifi:config nano formating: disabled
+I (992) wifi:Init data frame dynamic rx buffer num: 32
+I (1002) wifi:Init static rx mgmt buffer num: 5
+I (1002) wifi:Init management short buffer num: 32
+I (1002) wifi:Init dynamic tx buffer num: 32
+I (1012) wifi:Init static tx FG buffer num: 2
+I (1012) wifi:Init static rx buffer size: 1600
+I (1022) wifi:Init static rx buffer num: 10
+I (1022) wifi:Init dynamic rx buffer num: 32
+I (1022) wifi_init: rx ba win: 6
+I (1032) wifi_init: tcpip mbox: 32
+I (1032) wifi_init: udp mbox: 6
+I (1042) wifi_init: tcp mbox: 6
+I (1042) wifi_init: tcp tx win: 5760
+I (1042) wifi_init: tcp rx win: 5760
+I (1052) wifi_init: tcp mss: 1440
+I (1052) wifi_init: WiFi IRAM OP enabled
+I (1062) wifi_init: WiFi RX IRAM OP enabled
+W (1062) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (1072) phy_init: phy_version 711,97bcf0a2,Aug 25 2025,19:04:10
+I (1142) wifi:mode : sta (e0:72:a1:d9:a5:28)
+I (1142) wifi:enable tsf
+I (1152) web_cam: Connecting to Wi-Fi SSID: RoverII
+I (1182) wifi:new:<9,0>, old:<1,0>, ap:<255,255>, sta:<9,0>, prof:1
+I (1182) wifi:state: init -> auth (b0)
+I (1182) wifi:state: auth -> assoc (0)
+I (1182) wifi:state: assoc -> init (2c0)
+I (1192) wifi:new:<9,0>, old:<9,0>, ap:<255,255>, sta:<9,0>, prof:1
+W (1192) web_cam: Wi-Fi disconnected (reason 203), retrying...
+W (3602) web_cam: Wi-Fi disconnected (reason 205), retrying...
+I (3642) wifi:new:<9,0>, old:<9,0>, ap:<255,255>, sta:<9,0>, prof:1
+I (3642) wifi:state: init -> auth (b0)
+I (3652) wifi:state: auth -> assoc (0)
+I (3652) wifi:state: assoc -> run (10)
+I (3672) wifi:connected with RoverII, aid = 19, channel 9, BW20, bssid = 04:42:1a:78:2e:90
+I (3672) wifi:security: WPA2-PSK, phy: bgn, rssi: -13, cipher(pairwise:0x3, group:0x3), pmf:0
+I (3682) wifi:pm start, type: 1
+
+I (3682) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
+I (3692) wifi:set rx beacon pti, rx_bcn_pti: 0, bcn_timeout: 25000, mt_pti: 0, mt_time: 10000
+I (3702) esp_netif_handlers: sta ip: 192.168.50.5, mask: 255.255.255.0, gw: 192.168.50.1
+I (3702) web_cam: Got IP: 192.168.50.5
+I (3712) wifi:<ba-add>idx:0 (ifx:0, 04:42:1a:78:2e:90), tid:6, ssn:1, winSize:64
+I (3712) web_cam: ======================================================
+I (3722) web_cam:  MJPEG stream will be at: http://192.168.50.5/stream
+I (3732) web_cam:  Snapshot will be at:     http://192.168.50.5/capture
+I (3742) web_cam: ======================================================
+I (3742) wifi:AP's beacon interval = 102400 us, DTIM period = 1
+I (3752) USB_STREAM: UVC Streaming Config Succeed, Version: 1.5.2
+I (3762) USB_STREAM: Pre-alloc ctrl urb succeed, size = 2048
+I (3762) USB_STREAM: USB stream task start
+I (3792) USB_STREAM: USB Streaming Start Succeed
+I (3792) web_cam: USB UVC streaming started - waiting for webcam frames...
+I (3792) main_task: Returned from app_main()
+I (3812) web_cam: bench: CPU 240 MHz, PSRAM 8388608 bytes
+I (4042) USB_STREAM: line 152 HCD_PORT_EVENT_CONNECTION
+I (4042) USB_STREAM: Action: ACTION_DEVICE_CONNECT
+I (4092) USB_STREAM: Resetting Port
+I (4152) USB_STREAM: Setting Port FIFO, 1
+I (4152) USB_STREAM: USB Speed: full-speed
+I (4152) USB_STREAM: ENUM Stage START, Succeed
+I (4162) USB_STREAM: ENUM Stage GET_SHORT_DEV_DESC, Succeed
+I (4192) USB_STREAM: Default pipe endpoint MPS update to 64
+I (4192) USB_STREAM: ENUM Stage CHECK_SHORT_DEV_DESC, Succeed
+I (4202) USB_STREAM: ENUM Stage SET_ADDR, Succeed
+I (4222) USB_STREAM: ENUM Stage CHECK_ADDR, Succeed
+I (4232) USB_STREAM: ENUM Stage GET_FULL_DEV_DESC, Succeed
+*** Device descriptor ***
+bcdUSB 2.00
+bDeviceClass 0xef
+bDeviceSubClass 0x2
+bDeviceProtocol 0x1
+bMaxPacketSize0 64
+idVendor 0x46d
+idProduct 0x81b
+bNumConfigurations 1
+I (4252) USB_STREAM: ENUM Stage CHECK_FULL_DEV_DESC, Succeed
+I (4272) USB_STREAM: ENUM Stage GET_SHORT_CONFIG_DESC, Succeed
+I (4282) USB_STREAM: ENUM Stage CHECK_SHORT_CONFIG_DESC, Succeed
+I (4292) USB_STREAM: ENUM Stage GET_FULL_CONFIG_DESC, Succeed
+I (4322) web_cam: uart sent: seq 0 status 2 age 509 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (4322) web_cam: uart read: seq 0 status 2 age 509 N 0 | 7 bytes | good 1 bad 0 gaps 0
+*** Configuration descriptor ***
+wTotalLength 1117
+bNumInterfaces 4
+bConfigurationValue 1
+*** Interface Association Descriptor: Video ***
+	*** Interface descriptor ***
+	bInterfaceNumber 0
+	bAlternateSetting 0
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x1
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x87	EP 7 IN
+		bmAttributes 0x3	INT
+		wMaxPacketSize 16
+		bInterval 16
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 0
+	bNumEndpoints 0
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+	*** Class-specific VS Interface Descriptor ***
+	bNumFormats 3
+	*** VS Format MJPEG Descriptor ***
+	bFormatIndex 0x2
+	bNumFrameDescriptors 12
+	bDefaultFrameIndex 1
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x1
+	wWidth 640
+	wHeigh 480
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x2
+	wWidth 160
+	wHeigh 120
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x3
+	wWidth 176
+	wHeigh 144
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x4
+	wWidth 320
+	wHeigh 176
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x5
+	wWidth 320
+	wHeigh 240
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x6
+	wWidth 352
+	wHeigh 288
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x7
+	wWidth 432
+	wHeigh 240
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x8
+	wWidth 544
+	wHeigh 288
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0x9
+	wWidth 640
+	wHeigh 360
+	FrameInterval[0] 333333
+	FrameInterval[1] 400000
+	FrameInterval[2] 500000
+	FrameInterval[3] 666666
+	FrameInterval[4] 1000000
+	FrameInterval[5] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0xa
+	wWidth 752
+	wHeigh 416
+	FrameInterval[0] 666666
+	FrameInterval[1] 1000000
+	FrameInterval[2] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0xb
+	wWidth 800
+	wHeigh 448
+	FrameInterval[0] 666666
+	FrameInterval[1] 1000000
+	FrameInterval[2] 2000000
+	*** VS MJPEG Frame Descriptor ***
+	bFrameIndex 0xc
+	wWidth 800
+	wHeigh 600
+	FrameInterval[0] 666666
+	FrameInterval[1] 1000000
+	FrameInterval[2] 2000000
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 1
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 192
+		bInterval 1
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 2
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 384
+		bInterval 1
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 3
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 512
+		bInterval 1
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 4
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 640
+		bInterval 1
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 5
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 800
+		bInterval 1
+	*** Interface descriptor ***
+	bInterfaceNumber 1
+	bAlternateSetting 6
+	bNumEndpoints 1
+	bInterfaceClass 0xe (Video)
+	bInterfaceSubClass 0x2
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x81	EP 1 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 944
+		bInterval 1
+*** Interface Association Descriptor: Audio ***
+	*** Interface descriptor ***
+	bInterfaceNumber 2
+	bAlternateSetting 0
+	bNumEndpoints 0
+	bInterfaceClass 0x1 (Audio)
+	bInterfaceSubClass 0x1
+	*** Audio control header descriptor ***
+	bcdADC 0x100
+	wTotalLength 38
+	bInCollection 1
+		Interface number[0] = 3
+	*** Audio control input terminal descriptor ***
+	bTerminalID 1
+	wTerminalType 0x201
+	bAssocTerminal 0
+	bNrChannels 1
+	wChannelConfig 0x0000
+	*** Audio control output terminal descriptor ***
+	bTerminalID 3
+	wTerminalType 0x101
+	bAssocTerminal 1
+	*** Audio control feature unit descriptor ***
+	bUnitID 5
+	bSourceID 1
+	bControlSize 1
+	bmaControls[ch0] 0x3
+	bmaControls[ch1] 0x0
+	*** Interface descriptor ***
+	bInterfaceNumber 3
+	bAlternateSetting 0
+	bNumEndpoints 0
+	bInterfaceClass 0x1 (Audio)
+	bInterfaceSubClass 0x2
+	*** Interface descriptor ***
+	bInterfaceNumber 3
+	bAlternateSetting 1
+	bNumEndpoints 1
+	bInterfaceClass 0x1 (Audio)
+	bInterfaceSubClass 0x2
+	*** Audio stream general descriptor ***
+	bTerminalLink 3
+	bDelay 1
+	wFormatTag 1
+	*** Audio control header descriptor ***
+	bFormatType 1
+	bNrChannels 1
+	bSubframeSize 2
+	bBitResolution 16
+	bSamFreqType 1
+	tSamFreq[0] 16000
+		*** Endpoint descriptor ***
+		bEndpointAddress 0x86	EP 6 IN
+		bmAttributes 0x5	ISOC
+		wMaxPacketSize 68
+		bInterval 1
+I (4942) USB_STREAM: Actual VS Interface(MPS <= 512) found, interface = 1, alt = 3
+I (4952) USB_STREAM: 	Endpoint(ISOC) Addr = 0x81, MPS = 512
+I (4962) USB_STREAM: Actual MJPEG format index, format index = 2, contains 12 frames
+I (4962) USB_STREAM: Actual Frame: 7, width*height: 640*480, frame index = 1
+I (4972) USB_STREAM: ENUM Stage CHECK_FULL_CONFIG_DESC, Succeed
+I (4982) web_cam: uart sent: seq 0 status 2 age 1167 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (4982) web_cam: uart read: seq 0 status 2 age 1167 N 0 | 7 bytes | good 2 bad 0 gaps 0
+I (4992) USB_STREAM: ENUM Stage SET_CONFIG, Succeed
+I (5012) USB_STREAM: Probe Format(2), Frame(1) 640*480, interval(666666)
+I (5012) USB_STREAM: Probe payload size = 512
+bFormatIndex: 2
+bFrameIndex: 1
+dwFrameInterval: 666666
+dwMaxPayloadTransferSize: 944
+bInterfaceNumber: 0
+I (5052) USB_STREAM: dwMaxPayloadTransferSize set = 512, probed = 944
+I (5052) USB_STREAM: Sample processing task start
+I (5052) USB_STREAM: Set Device Interface = 1, Alt = 3
+I (5182) web_cam: uart sent: seq 0 status 2 age 1369 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (5182) web_cam: uart read: seq 0 status 2 age 1369 N 0 | 7 bytes | good 3 bad 0 gaps 0
+I (5392) web_cam: uart sent: seq 0 status 2 age 1579 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (5392) web_cam: uart read: seq 0 status 2 age 1579 N 0 | 7 bytes | good 4 bad 0 gaps 0
+I (5602) web_cam: uart sent: seq 0 status 2 age 1789 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (5602) web_cam: uart read: seq 0 status 2 age 1789 N 0 | 7 bytes | good 5 bad 0 gaps 0
+I (5812) web_cam: uart sent: seq 0 status 2 age 1999 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (5812) web_cam: uart read: seq 0 status 2 age 1999 N 0 | 7 bytes | good 6 bad 0 gaps 0
+I (6012) web_cam: uart sent: seq 0 status 2 age 2199 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (6012) web_cam: uart read: seq 0 status 2 age 2199 N 0 | 7 bytes | good 7 bad 0 gaps 0
+I (6212) web_cam: uart sent: seq 0 status 2 age 2399 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (6212) web_cam: uart read: seq 0 status 2 age 2399 N 0 | 7 bytes | good 8 bad 0 gaps 0
+I (6412) web_cam: uart sent: seq 0 status 2 age 2599 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (6412) web_cam: uart read: seq 0 status 2 age 2599 N 0 | 7 bytes | good 9 bad 0 gaps 0
+I (6622) web_cam: uart sent: seq 0 status 2 age 2809 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (6622) web_cam: uart read: seq 0 status 2 age 2809 N 0 | 7 bytes | good 10 bad 0 gaps 0
+I (6822) web_cam: uart sent: seq 0 status 2 age 3009 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (6822) web_cam: uart read: seq 0 status 2 age 3009 N 0 | 7 bytes | good 11 bad 0 gaps 0
+I (7072) web_cam: uart sent: seq 1 status 1 age 206 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (7072) web_cam: uart read: seq 1 status 1 age 206 N 0 | 7 bytes | good 12 bad 0 gaps 0
+I (7282) web_cam: uart sent: seq 2 status 1 age 213 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (7282) web_cam: uart read: seq 2 status 1 age 213 N 0 | 7 bytes | good 13 bad 0 gaps 0
+I (7492) web_cam: uart sent: seq 3 status 1 age 220 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (7492) web_cam: uart read: seq 3 status 1 age 220 N 0 | 7 bytes | good 14 bad 0 gaps 0
+I (7702) web_cam: uart sent: seq 4 status 1 age 230 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (7702) web_cam: uart read: seq 4 status 1 age 230 N 0 | 7 bytes | good 15 bad 0 gaps 0
+I (8072) web_cam: uart sent: seq 5 status 1 age 399 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (8072) web_cam: uart read: seq 5 status 1 age 399 N 0 | 7 bytes | good 16 bad 0 gaps 0
+I (8282) web_cam: uart sent: seq 6 status 1 age 201 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (8282) web_cam: uart read: seq 6 status 1 age 201 N 0 | 7 bytes | good 17 bad 0 gaps 0
+I (8492) web_cam: uart sent: seq 7 status 1 age 216 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (8492) web_cam: uart read: seq 7 status 1 age 216 N 0 | 7 bytes | good 18 bad 0 gaps 0
+I (8702) web_cam: uart sent: seq 8 status 1 age 223 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (8702) web_cam: uart read: seq 8 status 1 age 223 N 0 | 7 bytes | good 19 bad 0 gaps 0
+I (8772) wifi:<ba-add>idx:1 (ifx:0, 04:42:1a:78:2e:90), tid:0, ssn:1, winSize:64
+I (9532) web_cam: uart sent: seq 9 status 1 age 857 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (9532) web_cam: uart read: seq 9 status 1 age 857 N 0 | 7 bytes | good 20 bad 0 gaps 0
+I (9742) web_cam: uart sent: seq 10 status 1 age 252 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (9742) web_cam: uart read: seq 10 status 1 age 252 N 0 | 7 bytes | good 21 bad 0 gaps 0
+I (9952) web_cam: uart sent: seq 11 status 1 age 267 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (9952) web_cam: uart read: seq 11 status 1 age 267 N 0 | 7 bytes | good 22 bad 0 gaps 0
+I (10152) web_cam: uart sent: seq 12 status 1 age 203 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (10162) web_cam: uart read: seq 12 status 1 age 203 N 0 | 7 bytes | good 23 bad 0 gaps 0
+I (10372) web_cam: uart sent: seq 13 status 1 age 214 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (10372) web_cam: uart read: seq 13 status 1 age 214 N 0 | 7 bytes | good 24 bad 0 gaps 0
+I (10582) web_cam: uart sent: seq 14 status 1 age 222 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (10582) web_cam: uart read: seq 14 status 1 age 222 N 0 | 7 bytes | good 25 bad 0 gaps 0
+I (10792) web_cam: uart sent: seq 15 status 1 age 233 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (10792) web_cam: uart read: seq 15 status 1 age 233 N 0 | 7 bytes | good 26 bad 0 gaps 0
+I (11002) web_cam: uart sent: seq 16 status 1 age 235 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (11002) web_cam: uart read: seq 16 status 1 age 235 N 0 | 7 bytes | good 27 bad 0 gaps 0
+I (11212) web_cam: uart sent: seq 17 status 1 age 244 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (11212) web_cam: uart read: seq 17 status 1 age 244 N 0 | 7 bytes | good 28 bad 0 gaps 0
+I (11422) web_cam: uart sent: seq 18 status 1 age 253 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (11422) web_cam: uart read: seq 18 status 1 age 253 N 0 | 7 bytes | good 29 bad 0 gaps 0
+I (11632) web_cam: uart sent: seq 19 status 1 age 199 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (11632) web_cam: uart read: seq 19 status 1 age 199 N 0 | 7 bytes | good 30 bad 0 gaps 0
+I (11842) web_cam: uart sent: seq 20 status 1 age 200 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (11842) web_cam: uart read: seq 20 status 1 age 200 N 0 | 7 bytes | good 31 bad 0 gaps 0
+I (12052) web_cam: uart sent: seq 21 status 1 age 215 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (12052) web_cam: uart read: seq 21 status 1 age 215 N 0 | 7 bytes | good 32 bad 0 gaps 0
+I (12262) web_cam: uart sent: seq 22 status 1 age 225 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (12262) web_cam: uart read: seq 22 status 1 age 225 N 0 | 7 bytes | good 33 bad 0 gaps 0
+I (13202) web_cam: uart sent: seq 23 status 1 age 969 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (13212) web_cam: uart read: seq 23 status 1 age 969 N 0 | 7 bytes | good 34 bad 0 gaps 0
+I (13412) web_cam: uart sent: seq 24 status 1 age 232 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (13412) web_cam: uart read: seq 24 status 1 age 232 N 0 | 7 bytes | good 35 bad 0 gaps 0
+I (13622) web_cam: uart sent: seq 25 status 1 age 241 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (13622) web_cam: uart read: seq 25 status 1 age 241 N 0 | 7 bytes | good 36 bad 0 gaps 0
+I (14162) web_cam: uart sent: seq 26 status 1 age 587 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (14162) web_cam: uart read: seq 26 status 1 age 587 N 0 | 7 bytes | good 37 bad 0 gaps 0
+I (14712) web_cam: uart sent: seq 27 status 1 age 595 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (14712) web_cam: uart read: seq 27 status 1 age 595 N 0 | 7 bytes | good 38 bad 0 gaps 0
+I (14922) web_cam: uart sent: seq 28 status 1 age 264 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (14922) web_cam: uart read: seq 28 status 1 age 264 N 0 | 7 bytes | good 39 bad 0 gaps 0
+I (15132) web_cam: uart sent: seq 29 status 1 age 205 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (15132) web_cam: uart read: seq 29 status 1 age 205 N 0 | 7 bytes | good 40 bad 0 gaps 0
+I (15342) web_cam: uart sent: seq 30 status 1 age 214 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (15342) web_cam: bench: decode avg 43 min 43 max 45 ms | detect avg 224 min 148 max 888 ms | pose 5 us | copy 1 ms | 2.6 fps processed, camera 10.8 fps | marker in 0/30 frames, last ID -1 | range 0 mm, forward 0 mm, bearing +0.0 deg, side 0.0 px, shape 0.00, quality 1 | jpeg 16316 bytes, dht=0 | errors 0, too big 0, lock missed 0
+I (15342) web_cam: uart read: seq 30 status 1 age 214 N 0 | 7 bytes | good 41 bad 0 gaps 0
+I (16222) web_cam: uart sent: seq 31 status 1 age 897 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (16222) web_cam: uart read: seq 31 status 1 age 897 N 0 | 7 bytes | good 42 bad 0 gaps 0
+I (16432) web_cam: uart sent: seq 32 status 1 age 230 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (16432) web_cam: uart read: seq 32 status 1 age 230 N 0 | 7 bytes | good 43 bad 0 gaps 0
+I (16642) web_cam: uart sent: seq 33 status 1 age 244 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (16642) web_cam: uart read: seq 33 status 1 age 244 N 0 | 7 bytes | good 44 bad 0 gaps 0
+I (16842) web_cam: uart sent: seq 34 status 1 age 241 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (16852) web_cam: uart read: seq 34 status 1 age 241 N 0 | 7 bytes | good 45 bad 0 gaps 0
+I (17052) web_cam: uart sent: seq 35 status 1 age 244 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (17052) web_cam: uart read: seq 35 status 1 age 244 N 0 | 7 bytes | good 46 bad 0 gaps 0
+I (17252) web_cam: uart sent: seq 36 status 1 age 251 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (17252) web_cam: uart read: seq 36 status 1 age 251 N 0 | 7 bytes | good 47 bad 0 gaps 0
+I (17462) web_cam: uart sent: seq 37 status 1 age 254 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (17462) web_cam: uart read: seq 37 status 1 age 254 N 0 | 7 bytes | good 48 bad 0 gaps 0
+I (17672) web_cam: uart sent: seq 38 status 1 age 264 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (17672) web_cam: uart read: seq 38 status 1 age 264 N 0 | 7 bytes | good 49 bad 0 gaps 0
+I (18212) web_cam: uart sent: seq 39 status 1 age 531 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (18212) web_cam: uart read: seq 39 status 1 age 531 N 0 | 7 bytes | good 50 bad 0 gaps 0
+I (18422) web_cam: uart sent: seq 40 status 1 age 205 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (18422) web_cam: uart read: seq 40 status 1 age 205 N 0 | 7 bytes | good 51 bad 0 gaps 0
+I (18632) web_cam: uart sent: seq 41 status 1 age 215 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (18632) web_cam: uart read: seq 41 status 1 age 215 N 0 | 7 bytes | good 52 bad 0 gaps 0
+I (18842) web_cam: uart sent: seq 42 status 1 age 224 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (18842) web_cam: uart read: seq 42 status 1 age 224 N 0 | 7 bytes | good 53 bad 0 gaps 0
+I (19042) web_cam: uart sent: seq 43 status 1 age 229 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (19052) web_cam: uart read: seq 43 status 1 age 229 N 0 | 7 bytes | good 54 bad 0 gaps 0
+I (19242) web_cam: uart sent: seq 44 status 1 age 229 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (19252) web_cam: uart read: seq 44 status 1 age 229 N 0 | 7 bytes | good 55 bad 0 gaps 0
+I (19462) web_cam: uart sent: seq 45 status 1 age 242 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (19462) web_cam: uart read: seq 45 status 1 age 242 N 0 | 7 bytes | good 56 bad 0 gaps 0
+I (19672) web_cam: uart sent: seq 46 status 1 age 244 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (19672) web_cam: uart read: seq 46 status 1 age 244 N 0 | 7 bytes | good 57 bad 0 gaps 0
+I (19882) web_cam: uart sent: seq 47 status 1 age 253 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (19882) web_cam: uart read: seq 47 status 1 age 253 N 0 | 7 bytes | good 58 bad 0 gaps 0
+I (20082) web_cam: uart sent: seq 48 status 1 age 198 N 0, first ID -1 range 0 bearing +0.00 quality -1
+I (20092) web_cam: uart read: seq 48 status 1 age 198 N 0 | 7 bytes | good 59 bad 0 gaps 0

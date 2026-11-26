@@ -1,0 +1,14 @@
+# bench_logger started 2026-11-26 20:03:31, port COM3, log file m12_timeout.t'xt
+    124.1 ms  STATE IDLE faults=0x00  (125 ms after '')
+   2533.0 ms  SENT > ready 1
+   2621.9 ms  [bench] > ready 1
+   2622.5 ms  [bench] ready=1
+   8710.3 ms  SENT > m 20 0 0
+   8769.8 ms  [bench] > m 20 0 0
+   8831.6 ms  STATE MANUAL faults=0x00  (121 ms after 'm 20 0 0')
+  11481.0 ms  SENT > nr
+  11507.3 ms  [bench] > nr
+  11507.6 ms  [bench] refresh OFF: the move should stop in about 300 ms
+  11822.3 ms  [bench] move 6 ended: STOPPED
+  11948.1 ms  STATE IDLE faults=0x02  (467 ms after 'nr')
+# stopped 2026-11-26 20:04:25

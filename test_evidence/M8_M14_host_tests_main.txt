@@ -1,0 +1,34 @@
+cc -std=c11 -Wall -Wextra -Wconversion -Wno-sign-conversion -O1 -g -I../include -o test_motor_control test_motor_control.c ../src/motor_control.c -lm
+./test_motor_control
+packing (Change Requirement 1)
+  motor command: old text 26 bytes -> packed 4 bytes
+  heading: old float 4 bytes -> 12-bit field (2 bytes with 4-bit seq)
+  sizeof(mc_t) private state = 60 bytes
+heading error wrap + kinematics
+ZERO GYRO -> IDLE, FR-40 manual only in READY
+FR-40 source rules
+FR-42 ramp up, normal stop ramps down to IDLE
+FR-42 command timeout -> IDLE, refresh keeps it alive
+e-stop -> SAFE STOP latched, operator reset -> IDLE
+operator stop -> IDLE, PWM 0 at once
+stale heading -> IDLE; 10-bit wrap can't make old heading look fresh
+FR-41 rotate to heading (simulated rover, heading at 20 Hz)
+    350 ->    20 deg: done in  440 ms, final error +2.0 deg (local brake)
+      0 ->    90 deg: done in  940 ms, final error +2.0 deg (local brake)
+     90 ->     0 deg: done in  940 ms, final error -2.0 deg (local brake)
+     10 ->   190 deg: done in 1680 ms, final error -2.4 deg (local brake)
+    180 ->   179 deg: done in   20 ms, final error -1.0 deg (local brake)
+FR-41 heading hold against a weak wheel (yaw disturbance)
+  worst error 2.0 deg, last second 0.4 deg (8 deg/s disturbance)
+  without heading hold the same rover would drift ~32 deg in 4 s
+direction byte for Collision Detection
+start boost: full kick when a wheel starts, then the requested speed
+FR-39 parallel park ends by itself
+zigzag strafe: diagonals in turn, 2 wheels at full, no forward drift on average
+per-wheel trim: separate forward / backward values
+
+96 passed, 0 failed
+cc -std=c11 -Wall -Wextra -Wconversion -Wno-sign-conversion -O1 -g -DMC_ALLOW_MANUAL_WITHOUT_HEADING=1 -Istubs -I../include -o test_motor_front_stop test_motor_front_stop.c ../src/motor_driver.c ../src/motor_manual.c ../src/motor_auto.c ../src/motor_heading.c ../src/motor_safety.c ../src/motor_arm_claw.c ../src/motor_control.c ../src/safety_interlock.c -lm
+./test_motor_front_stop
+[MOTOR] Motion Control ready (20 ms update, active brake)
+Front range, timeout and manual E-STOP tests passed
