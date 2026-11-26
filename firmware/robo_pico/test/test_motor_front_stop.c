@@ -53,11 +53,11 @@ int main(void) {
   assert(motor_set_direction(DIRECTION_FORWARD, 50) == MOTOR_OK);
   tick(NULL);
 
-  const uint16_t ranges[] = {0, 1, 149, 150, 151, 199, 200, 1000, 1023, 65535};
+  const uint16_t ranges[] = {0, 1, 149, 150, 199, 200, 299, 300, 301, 399, 400, 401, 1000, 1023, 65535};
   for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i) {
     for (int fault = 0; fault <= 1; ++fault) {
       bool detected = front_obstacle_detected(ranges[i], fault != 0);
-      bool expected = !fault && ranges[i] > 0 && ranges[i] < 150;
+      bool expected = !fault && ranges[i] > 0 && ranges[i] < 400;
       assert(detected == expected);
       motor_safety_receive(detected, clock_ms);
       assert(!motor_safety_is_latched());
@@ -152,6 +152,20 @@ int main(void) {
                        true); // Invalid readings cannot refresh the reference.
   assert(motor_zero_heading() == MOTOR_ERR_NO_HEADING);
   assert(motor_heading_epoch() == epoch);
+  // A scan reverse must stop on its short lease even if main never services it.
+  motor_heading_update(0, true);
+  assert(motor_auto_drive_leased(-15, 150) == MOTOR_OK);
+  for (unsigned i = 0; i < 7; ++i) {
+    clock_ms += 20;
+    tick(NULL);
+    assert(motor_auto_status() == MOTOR_AUTO_RUNNING);
+  }
+  clock_ms += 20; // First 20 ms motor tick past the 150 ms lease.
+  motor_heading_update(0, true); // Isolate lease expiry from stale heading.
+  tick(NULL);
+  assert(motor_auto_status() == MOTOR_AUTO_STOPPED);
+  assert(motor_motion_state() == MS_IDLE);
+  for (unsigned i = 0; i < MC_WHEELS; ++i) assert(output.wheel[i] == 0);
   puts("Front range, timeout and manual E-STOP tests passed");
   return 0;
 }

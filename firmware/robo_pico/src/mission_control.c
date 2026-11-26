@@ -261,7 +261,8 @@ mission_search_phase (mission_t * p_mission, leg_phase_t phase, uint32_t now)
         (phase == LEG_APPROACHING && from == LEG_SEARCHING_REFERENCE) ||
         (phase == LEG_OBSTACLE_VERIFYING &&
          (from == LEG_APPROACHING || from == LEG_SEARCHING_REFERENCE ||
-          from == LEG_HOLDING || from == LEG_BRAKING || from == LEG_VERIFYING));
+          from == LEG_HOLDING || from == LEG_BRAKING || from == LEG_VERIFYING ||
+          from == LEG_WAITING_CAMERA));
 
     if (!b_allowed)
     {
@@ -288,8 +289,8 @@ mission_start_dfs (mission_t * p_mission, uint32_t now_ms)
     return true;
 }
 
-bool
-mission_finish_dfs (mission_t * p_mission, uint32_t now_ms)
+static bool
+finish_mapping (mission_t * p_mission, mission_reason_t reason, uint32_t now_ms)
 {
     if (!p_mission->dfs_active || p_mission->test_mode ||
         p_mission->state != MISSION_EXPLORING)
@@ -298,9 +299,20 @@ mission_finish_dfs (mission_t * p_mission, uint32_t now_ms)
     }
     mission_clear_leg(p_mission, now_ms);
     p_mission->dfs_active = false;
-    transition(p_mission, MISSION_COMPLETE, MISSION_REASON_DFS_COMPLETE, false,
-               now_ms);
+    transition(p_mission, MISSION_COMPLETE, reason, false, now_ms);
     return true;
+}
+
+bool
+mission_finish_dfs (mission_t * p_mission, uint32_t now_ms)
+{
+    return finish_mapping(p_mission, MISSION_REASON_DFS_COMPLETE, now_ms);
+}
+
+bool
+mission_finish_node_limit (mission_t * p_mission, uint32_t now_ms)
+{
+    return finish_mapping(p_mission, MISSION_REASON_NODE_LIMIT_REACHED, now_ms);
 }
 
 void
@@ -487,6 +499,8 @@ mission_reason_name (mission_reason_t reason)
         return "TARGET_ARRIVED";
     case MISSION_REASON_DFS_COMPLETE:
         return "DFS_COMPLETE";
+    case MISSION_REASON_NODE_LIMIT_REACHED:
+        return "NODE_LIMIT_REACHED";
     default:
         return "UNKNOWN";
     }

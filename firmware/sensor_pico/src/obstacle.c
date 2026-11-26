@@ -6,8 +6,8 @@
 #include "sensor_config.h"
 #include <string.h>
 
-#if OBSTACLE_URGENT_MM == 0 || OBSTACLE_URGENT_MM >= OBSTACLE_BLOCKED_MM
-#error "Require 0 < OBSTACLE_URGENT_MM < OBSTACLE_BLOCKED_MM"
+#if OBSTACLE_URGENT_MM == 0 || OBSTACLE_URGENT_MM > OBSTACLE_BLOCKED_MM
+#error "Require 0 < OBSTACLE_URGENT_MM <= OBSTACLE_BLOCKED_MM"
 #endif
 #if OBSTACLE_BLOCKED_MM + OBSTACLE_HYSTERESIS_MM > TOF_MAX_DISTANCE_MM
 #error "Obstacle thresholds exceed the supported ToF range"
@@ -112,11 +112,13 @@ obstacle_update (obstacle_state_t * p_state, const tof_readings_t * p_readings,
             p_state->blocked_mask &= (uint32_t) ((uint8_t) ~(uint32_t) (bit));
         }
 
-        if (distance <= OBSTACLE_URGENT_MM)
+        const uint16_t urgent_mm =
+            sensor == TOF_FRONT ? OBSTACLE_URGENT_MM : OBSTACLE_SIDE_URGENT_MM;
+        if (distance <= urgent_mm)
         {
             p_state->urgent_mask |= (uint32_t) (bit);
         }
-        else if (distance >= OBSTACLE_URGENT_MM + OBSTACLE_HYSTERESIS_MM)
+        else if (distance >= urgent_mm + OBSTACLE_HYSTERESIS_MM)
         {
             p_state->urgent_mask &= (uint32_t) ((uint8_t) ~(uint32_t) (bit));
         }

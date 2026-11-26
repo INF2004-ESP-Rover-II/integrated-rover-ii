@@ -310,8 +310,31 @@ static void test_locked_reference_remains_visible_for_alignment_without_changing
     assert(mission.leg.arrival_reference_node==9 && mission.leg.next_target_node==2);
 }
 
+
+static void test_stopped_acquisition_confirms_off_centre_candidates_without_weakening_routes(void)
+{
+    setup();image.frame.count=1;image.frame.markers[0]=marker(4,650,-3500);
+    arm();confirm();assert(selector.state!=TARGET_LOCKED);
+    setup();image.frame.count=1;image.frame.markers[0]=marker(4,650,-3500);
+    selector.b_acquiring=true;arm();assert(selector.b_acquiring);
+    assert(target_selector_has_acquisition_candidate(&selector,&map,&image.frame));
+    frame();frame();assert(selector.state!=TARGET_LOCKED);frame();
+    assert(selector.state==TARGET_LOCKED && mission.leg.next_target_node==4);
+    frame();assert(selector.available && selector.bearing_cdeg==-3500);
+    setup();selector.b_acquiring=true;
+    selector.route=(target_route_t){.enabled=true,.expected_id=2,.x=0,.y=1,.direction=LEG_NORTH};
+    image.frame.count=1;image.frame.markers[0]=marker(4,650,-3500);
+    arm();confirm();assert(selector.state!=TARGET_LOCKED && !mission.leg.next_target_node);
+    assert(!target_selector_has_acquisition_candidate(&selector,&map,&image.frame));
+    image.frame.markers[0]=marker(2,650,-4500);confirm();
+    assert(selector.state==TARGET_LOCKED && mission.leg.next_target_node==2);
+    setup();selector.b_acquiring=true;image.frame.count=1;image.frame.markers[0]=marker(4,650,-4501);
+    arm();confirm();assert(selector.state!=TARGET_LOCKED);
+}
+
 int main(void)
 {
+    test_stopped_acquisition_confirms_off_centre_candidates_without_weakening_routes();
     test_wider_window_only_tracks_the_locked_moving_target();
     test_locked_reference_remains_visible_for_alignment_without_changing_selection_limits();
     test_automatic_two_and_nine();

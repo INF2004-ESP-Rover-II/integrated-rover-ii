@@ -44,7 +44,7 @@
     250 /* within 25 deg of target: rotate slowly                              \
          */
 #define MC_ROT_FAST_PCT                                                        \
-    60                     /* rotate-on-spot effort, far from target           \
+    60                    /* rotate-on-spot effort, far from target           \
                               (floor calibration 30 Oct) */
 #define MC_ROT_SLOW_PCT 40 /* rotate-on-spot effort, near target */
 
@@ -80,7 +80,7 @@
 #define MC_DASH_STRAIGHT_PCT 30  /* W / S      forward, backward */
 #define MC_DASH_STRAFE_PCT   100 /* Q / E      strafe left, right (zigzag) */
 #define MC_DASH_DIAGONAL_PCT 60  /* R T F G    diagonals (bench: m 30 30 0) */
-#define MC_DASH_ROTATE_PCT   60  /* A / D      rotate on the spot */
+#define MC_DASH_ROTATE_PCT   70  /* A / D      rotate on the spot */
 
 /* ---------------- Start boost ----------------
  * Motors need more power to START turning than to keep turning (static

@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define FRONT_STOP_DISTANCE_MM 150u
+#define FRONT_STOP_DISTANCE_MM 400u
 
 static inline bool
 front_obstacle_detected (uint16_t distance_mm, bool b_fault)

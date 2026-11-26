@@ -35,6 +35,7 @@
 // stop.
 #include "../../common/obstacle_threshold.h"
 #define OBSTACLE_URGENT_MM FRONT_STOP_DISTANCE_MM
+#define OBSTACLE_SIDE_URGENT_MM 150u
 #define OBSTACLE_BLOCKED_MM 400u
 #define OBSTACLE_HYSTERESIS_MM 50u
 #define OBSTACLE_STALE_MS 300u

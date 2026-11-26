@@ -37,15 +37,16 @@ DFS_REFUSAL_MESSAGES.update({
     'DFS_INPUT_UNAVAILABLE': 'DFS paused: fresh sensor, heading and link data are required.',
     'DFS_TURN_REFUSED': 'Motion Control refused the next DFS turn.',
     'DFS_TURN_FAILED': 'The DFS turn stopped or timed out before reaching its heading.',
-    'DFS_TURN_TIMEOUT': 'The DFS turn did not reach its heading within 5 seconds, including its retry.',
+    'DFS_TURN_TIMEOUT': 'The DFS turn did not reach its heading within 60 seconds, including retries.',
     'DFS_TURN_STOPPED': 'Motion Control stopped the DFS turn before reaching its heading.',
     'DFS_TURN_REJECTED': 'Motion Control rejected the DFS turn.',
     'DFS_TURN_LEASE_EXPIRED': 'The DFS turn lease expired; motion was stopped.',
     'DFS_ARRIVAL_MISMATCH': 'DFS arrival did not match the planned stack/parent node.',
     'DFS_STACK_MISMATCH': 'DFS stack/map consistency check failed.',
     'DFS_POSITION_UNKNOWN': 'DFS requires a confirmed current node before choosing an exit.',
-    'INVALID_OPENING_THRESHOLD': 'Enter an opening threshold from 151 to 1000 mm.',
-    'STOP_DFS_BEFORE_CONFIG_CHANGE': 'Stop DFS before changing the opening threshold.',
+    'INVALID_OPENING_THRESHOLD': 'Enter an opening threshold from 401 to 1000 mm.',
+    'INVALID_NODE_LIMIT': 'Enter a target node count from 1 to 64, or 0 for all nodes.',
+    'STOP_DFS_BEFORE_CONFIG_CHANGE': 'Stop DFS before changing the opening threshold or target node count.',
     'REFERENCE_BASELINE_UNAVAILABLE': 'Target is out of view and no synchronized reference baseline is available.',
     'REFERENCE_NOT_ALIGNED': 'The locked reference is outside the forward alignment limit.',
     'REFERENCE_RANGE_INCONSISTENT': 'Reference range changed inconsistently. Recheck the marker observations.',
@@ -84,7 +85,7 @@ DFS_REFUSAL_MESSAGES.update({
     'SEARCH_FRONT_UNAVAILABLE': 'Slow search paused: front ToF has no usable clearance reading.',
     'SEARCH_FRONT_NOT_CLEAR': 'The measured front distance is below the 600 mm initial search clearance.',
     'SEARCH_MOTOR_REFUSED': 'Motion Control refused the slow reference search.',
-    'REFERENCE_SEARCH_LIMIT': 'The slow search reached its 10-second driving limit. Arrival remains unconfirmed.',
+    'REFERENCE_SEARCH_LIMIT': 'The slow search reached its 20-second driving limit. Arrival remains unconfirmed.',
     'OBSTACLE_ARRIVAL_NOT_CONFIRMED': 'The front stop did not remain confirmed by fresh ToF samples. Arrival remains unconfirmed.'})
 
 
@@ -114,6 +115,8 @@ def parse_dfs_reply(payload):
         return DfsReply(True, False, 'Node reached. RoboPico will check exits and continue DFS.')
     if code == 'COMPLETE':
         return DfsReply(False, False, 'DFS complete: all reachable mapped exits have been resolved and explored.')
+    if code == 'NODE_LIMIT_REACHED':
+        return DfsReply(False, False, 'Mapping complete: target node count reached; unexplored exits may remain.')
     message = {'NEAR_TARGET_UNCONFIRMED': 'Approach stopped near the target. Arrival is not confirmed.',
                'DRIVE_TIME_LIMIT': 'Approach stopped after 3 seconds of driving. Arrival is not confirmed.',
                'CANCELLED': 'Onboard approach cancelled.'}.get(code, DFS_REFUSAL_MESSAGES.get(code, 'Onboard approach stopped: ' + code))
@@ -181,7 +184,7 @@ class DfsTrackingReport:
         if self.source == 'REFERENCE':
             text += ' | reference arrival range: %d mm' % self.reference_arrival_mm
         if self.phase == 'SEARCHING_REFERENCE':
-            text += ' | last target range: %d mm | slow search: %.1f/10 s' % (self.last_target_range_mm, self.search_driving_ms / 1000)
+            text += ' | last target range: %d mm | slow search: %.1f/20 s' % (self.last_target_range_mm, self.search_driving_ms / 1000)
         if self.input_reason != 'NONE' or self.phase == 'HOLDING':
             text += ' | input: %s | UART %d ms / image %d ms / accepted %d ms | recovery %d/2' % (
                 self.input_reason, self.camera_packet_age_ms, self.camera_image_age_ms,
@@ -236,11 +239,15 @@ class DfsStateReport:
     direction: str
     expected_node: int
     detail: str
+    confirmed_nodes: object = None
+    node_limit: int = 0
 
     @property
     def display_text(self):
-        return 'DFS: %s | node: %s | stack depth: %d | direction: %s | expected marker: %s | %s' % (
-            self.stage, self.current_node or '--', self.depth, self.direction, self.expected_node or '--', self.detail)
+        progress = '' if self.confirmed_nodes is None else ' | confirmed nodes: %d/%s' % (
+            self.confirmed_nodes, self.node_limit or 'all')
+        return ('DFS: %s | node: %s | stack depth: %d | direction: %s | expected marker: %s | %s' % (
+            self.stage, self.current_node or '--', self.depth, self.direction, self.expected_node or '--', self.detail)) + progress
 
 
 def parse_dfs_state(payload):
@@ -249,7 +256,8 @@ def parse_dfs_state(payload):
     except (TypeError, ValueError) as error:
         raise ValueError('Invalid DFS state JSON') from error
     fields = tuple(DfsStateReport.__dataclass_fields__)
-    if not isinstance(value, dict) or not set(fields) <= value.keys() or type(value['active']) is not bool:
+    required = set(fields) - {'confirmed_nodes', 'node_limit'}
+    if not isinstance(value, dict) or not required <= value.keys() or type(value['active']) is not bool:
         raise ValueError('Incomplete DFS state')
     if not isinstance(value['stage'], str) or value['stage'] not in {'IDLE','AT_NODE','TURNING','SCANNING','WAIT_TARGET','TRAVELLING','COMPLETE','STOPPED','WAITING_INPUT'}:
         raise ValueError('Invalid DFS stage')
@@ -260,7 +268,10 @@ def parse_dfs_state(payload):
         raise ValueError('Invalid DFS direction')
     if not isinstance(value['detail'], str) or not 1 <= len(value['detail']) <= 64 or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_' for c in value['detail']):
         raise ValueError('Invalid DFS detail')
-    return DfsStateReport(**{key:value[key] for key in fields})
+    for key in ('confirmed_nodes','node_limit'):
+        if key in value and (type(value[key]) is not int or not 0<=value[key]<=64):
+            raise ValueError('Invalid DFS node count')
+    return DfsStateReport(**{key:value[key] for key in fields if key in value})
 
 
 @dataclass(frozen=True)

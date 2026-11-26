@@ -133,6 +133,14 @@ int main(void)
     for (unsigned i = 0; i < 6; ++i)
         assert(strcmp(mission_state_name((mission_state_t)i), states[i]) == 0);
     assert(strcmp(mission_result_name(MISSION_REJECTED_SAFETY), "SAFETY_LOCKED") == 0);
+    mission_init(&mission,100);
+    assert(!mission_finish_node_limit(&mission,101));
+    assert(mission_start_dfs(&mission,102));
+    assert(mission_finish_node_limit(&mission,103));
+    assert(mission.state==MISSION_COMPLETE && mission.reason==MISSION_REASON_NODE_LIMIT_REACHED);
+    assert(!mission.dfs_active && !mission_motion_enabled(&mission));
+    assert(!strcmp(mission_reason_name(mission.reason),"NODE_LIMIT_REACHED"));
+    assert(!mission_finish_node_limit(&mission,104));
     puts("Mission control tests passed");
     return 0;
 }

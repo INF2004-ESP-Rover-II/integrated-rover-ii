@@ -37,7 +37,8 @@ typedef enum
     MISSION_REASON_DRIVE_TIMEOUT,
     MISSION_REASON_MOTOR_STOPPED,
     MISSION_REASON_TARGET_ARRIVED,
-    MISSION_REASON_DFS_COMPLETE
+    MISSION_REASON_DFS_COMPLETE,
+    MISSION_REASON_NODE_LIMIT_REACHED
 } mission_reason_t;
 
 typedef enum
@@ -95,6 +96,8 @@ bool mission_recovery_phase (mission_t * p_mission, leg_phase_t phase,
 bool mission_start_dfs (mission_t * p_mission, uint32_t now_ms);
 
 bool mission_finish_dfs (mission_t * p_mission, uint32_t now_ms);
+
+bool mission_finish_node_limit (mission_t * p_mission, uint32_t now_ms);
 
 // Diagnostic transitions only; READY/COMPLETE do not validate a real DFS
 // mission. Exact events: READY, START, PAUSE, COMPLETE, FAULT, RESET.

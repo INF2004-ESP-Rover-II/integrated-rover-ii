@@ -117,12 +117,15 @@ static void test_start_and_drive_preserve_locked_leg(void)
     inputs.sensor_received_ms = now;
     onboard_drive_tick(&drive, &mission, &map, &selection, &inputs, now);
     assert(renews == 1 && drive.active);
-    // Safety stop does not mark an obstacle as an arrival.
+    // An urgent flag stops and holds; only fresh close ranges prove arrival.
     inputs.front_urgent = true; tick(20);
-    assert(!drive.active && mission.state == MISSION_PAUSED && mission.reason == MISSION_REASON_FRONT_STOP);
-    assert(map.current_node == 0 && map.count == 1 && !mission.leg.next_target_node);
+    assert(drive.active && mission.state == MISSION_EXPLORING && !mission_motion_enabled(&mission));
+    assert(mission.leg.phase == LEG_OBSTACLE_VERIFYING && !drive.verification_frames);
+    assert(map.current_node == 0 && map.count == 1 && mission.leg.next_target_node == 2);
     assert(stops == 1);
-    tick(100); assert(stops == 1); // no repeated output/restart after cancellation
+    tick(400); assert(stops == 1 && drive.active && !map.current_node && !drive.verification_frames);
+    mission_pause(&mission,MISSION_REASON_OPERATOR_STOP,now);tick(100);
+    assert(!drive.active && !map.current_node);
     assert_start_refused("CURRENT_NODE_UNKNOWN");
 }
 
@@ -871,6 +874,46 @@ static void test_front_motor_stop_confirms_terminal_target_without_camera_refere
     printf("OBSTACLE_TRACKING_JSON:%s\n",json);
 }
 
+static void test_search_entry_and_camera_resume_use_front_stop_threshold(void)
+{
+    const uint16_t ranges[]={0,400,401,450,550,599,600,1023};
+    for(unsigned i=0;i<sizeof(ranges)/sizeof(ranges[0]);++i) {
+        start_without_reference();inputs.front_mm=ranges[i];
+        uint32_t leg=mission.leg.leg_id;
+        raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+        assert(drive.active && drive.search_active && mission.leg.phase==LEG_SEARCHING_REFERENCE);
+        assert(status==MOTOR_AUTO_RUNNING && last_speed==ONBOARD_DRIVE_SEARCH_PCT);
+        assert(mission.leg.leg_id==leg && mission.leg.next_target_node==2 && !mission.leg.arrival_reference_node);
+        assert(map.count==1 && !map.current_node && !rover_map_find_id(&map,2));
+    }
+    start_without_reference();mission.dfs_active=true;
+    inputs.front_mm=800;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    uint32_t leg=mission.leg.leg_id, started=drive.started_ms;
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.camera_waiting && !mission_motion_enabled(&mission));
+    uint32_t used=drive.search_driving_ms;
+    inputs.front_mm=550;raw_frame(1000,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.camera_waiting && drive.search_driving_ms==used);
+    raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(drive.camera_waiting && drive.camera_wait_frames==1 && !mission_motion_enabled(&mission));
+    raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(drive.active && drive.search_active && !drive.camera_waiting && mission.dfs_active);
+    assert(mission.leg.phase==LEG_SEARCHING_REFERENCE && status==MOTOR_AUTO_RUNNING);
+    assert(drive.search_driving_ms==used && drive.started_ms==started && mission.leg.leg_id==leg);
+    assert(map.count==1 && !map.current_node && !rover_map_find_id(&map,2));
+    // The 400 mm motor guard still brakes; only two fresh close samples commit arrival.
+    inputs.front_mm=399;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(mission.leg.phase==LEG_OBSTACLE_VERIFYING && !mission_motion_enabled(&mission));
+    assert(drive.active && !drive.verification_frames && !map.current_node);
+    raw_frame(300,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.verification_frames==1 && !map.current_node);
+    onboard_drive_tick(&drive,&mission,&map,&selection,&inputs,now);
+    assert(drive.verification_frames==1 && !map.current_node);
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(!drive.active && mission.dfs_active && mission.state==MISSION_EXPLORING);
+    assert(map.current_node==2 && rover_map_find_id(&map,2)->visited);
+}
+
 static void test_search_clearance_fault_cancel_and_budgets_do_not_fake_arrival(void)
 {
     start_without_reference();inputs.front_mm=0;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
@@ -881,10 +924,10 @@ static void test_search_clearance_fault_cancel_and_budgets_do_not_fake_arrival(v
     start_without_reference();inputs.front_mm=0;inputs.front_fault=true;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     assert(!drive.active && !strcmp(drive.result,"FRONT_SENSOR_FAULT") && map.current_node==0);
     start_without_reference();inputs.front_mm=599;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
-    assert(!drive.active && !strcmp(drive.result,"SEARCH_FRONT_NOT_CLEAR"));
+    assert(drive.active && drive.search_active && mission.leg.phase==LEG_SEARCHING_REFERENCE && !map.current_node);
     start_without_reference();inputs.front_mm=600;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     assert(drive.search_active);
-    inputs.front_mm=300;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);assert(drive.search_active);
+    inputs.front_mm=400;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);assert(drive.search_active);
     inputs.front_mm=100;inputs.front_fault=true;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     assert(!drive.active && map.current_node==0 && !strcmp(drive.result,"FRONT_SENSOR_FAULT"));
     start_without_reference();raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
@@ -895,7 +938,7 @@ static void test_search_clearance_fault_cancel_and_budgets_do_not_fake_arrival(v
     assert(!onboard_drive_note_front_stop(&drive,&mission));
     raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);assert(!drive.active && map.current_node==0);
     start_without_reference();
-    for(unsigned i=0;i<110 && drive.active;++i) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    for(unsigned i=0;i<210 && drive.active;++i) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     assert(!drive.active && !strcmp(drive.result,"REFERENCE_SEARCH_LIMIT") && map.current_node==0);
 }
 
@@ -921,7 +964,7 @@ static void test_unconfirmed_front_pulse_and_manual_estop_never_commit_arrival(v
     start_without_reference();raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     inputs.front_mm=100;assert(onboard_drive_note_front_stop(&drive,&mission));
     raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
-    inputs.front_mm=300;raw_frame(300,VISION_STATUS_NO_MARKER,0,0,0);
+    inputs.front_mm=400;raw_frame(300,VISION_STATUS_NO_MARKER,0,0,0);
     assert(!drive.verification_frames && map.current_node==0);
     raw_frame(ONBOARD_DRIVE_VERIFY_TIMEOUT_MS,VISION_STATUS_NO_MARKER,0,0,0);
     assert(drive.active && mission.leg.phase==LEG_OBSTACLE_VERIFYING && map.current_node==0);
@@ -935,7 +978,7 @@ static void test_unconfirmed_front_pulse_and_manual_estop_never_commit_arrival(v
 static void test_no_front_return_still_has_time_sensor_and_obstacle_guards(void)
 {
     start_without_reference();inputs.front_mm=0;
-    for(unsigned i=0;i<110 && drive.active;++i) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    for(unsigned i=0;i<210 && drive.active;++i) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
     assert(!drive.active && !strcmp(drive.result,"REFERENCE_SEARCH_LIMIT"));
     assert(map.count==1 && map.current_node==0 && !rover_map_find_id(&map,2));
     start_without_reference();inputs.front_mm=0;raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
@@ -1787,8 +1830,144 @@ static void test_reference_outside_threshold_is_aligned_even_with_target_visible
     assert(!strcmp(drive.result,"REFERENCE_ALIGNED") && !map.current_node);
 }
 
+
+static void test_search_driving_budget_is_twenty_seconds(void)
+{
+    start_without_reference();raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    for(unsigned i=0;i<101;++i) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(drive.active && drive.search_driving_ms>10000 && mission.state==MISSION_EXPLORING);
+    drive.search_driving_ms=19999;
+    raw_frame(0,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(drive.active && drive.search_driving_ms==19999 && !map.current_node);
+    raw_frame(1,VISION_STATUS_NO_MARKER,0,0,0);
+    assert(!drive.active && !strcmp(drive.result,"REFERENCE_SEARCH_LIMIT"));
+    assert(mission.state==MISSION_PAUSED && map.count==1 && !map.current_node);
+}
+
+
+static void test_front_stop_during_camera_wait_verifies_without_camera_and_retains_dfs(void)
+{
+    for(unsigned mode=0;mode<2;++mode) {
+        start_without_reference();mission.dfs_active=true;
+        if(mode) raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(drive.active && drive.camera_waiting && mission.leg.phase==LEG_WAITING_CAMERA);
+        uint32_t leg=mission.leg.leg_id,revision=map.revision;unsigned before=starts;
+        inputs.front_mm=250;inputs.front_urgent=true;motor_emergency_stop();
+        assert(onboard_drive_note_front_stop(&drive,&mission));
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(drive.active && !drive.camera_waiting && mission.leg.phase==LEG_OBSTACLE_VERIFYING);
+        assert(mission.state==MISSION_EXPLORING && mission.dfs_active && mission.leg.leg_id==leg);
+        assert(!mission_motion_enabled(&mission) && status==MOTOR_AUTO_STOPPED && starts==before);
+        assert(map.current_node==0 && map.revision==revision && !drive.verification_frames);
+        raw_frame(300,VISION_STATUS_STALLED,0,0,0);
+        assert(drive.verification_frames==1 && !map.current_node);
+        for(unsigned i=0;i<10;++i) onboard_drive_tick(&drive,&mission,&map,&selection,&inputs,now);
+        assert(drive.verification_frames==1 && drive.active);
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(!drive.active && map.current_node==2 && rover_map_find_id(&map,2)->visited);
+        assert(!strcmp(drive.result,"ARRIVED") && mission.state==MISSION_EXPLORING && mission.dfs_active);
+        assert(mission.leg.phase==LEG_COMPLETE && starts==before);
+        assert(rover_map_find_id(&map,2)->exits[MAP_NORTH]==MAP_EXIT_BLOCKED);
+    }
+}
+
+
+static void enter_front_verification_from_camera_wait(void)
+{
+    start_without_reference();mission.dfs_active=true;
+    raw_frame(100,VISION_STATUS_NO_MARKER,0,0,0);
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.camera_waiting && mission.leg.phase==LEG_WAITING_CAMERA);
+    inputs.front_mm=250;inputs.front_urgent=true;motor_emergency_stop();
+    assert(onboard_drive_note_front_stop(&drive,&mission));
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.active && mission.leg.phase==LEG_OBSTACLE_VERIFYING && !drive.camera_waiting);
+}
+static void test_camera_wait_obstacle_needs_two_fresh_close_samples_and_never_restarts(void)
+{
+    enter_front_verification_from_camera_wait();unsigned before=starts;
+    raw_frame(300,VISION_STATUS_STALLED,0,0,0);assert(drive.verification_frames==1);
+    inputs.front_mm=400; // Hysteresis may keep urgent true, but this is not a close range.
+    raw_frame(100,VISION_STATUS_OK,1,2,500);
+    assert(drive.active && !drive.verification_frames && !drive.obstacle_frames && !map.current_node);
+    inputs.front_mm=0;inputs.front_urgent=false;
+    for(unsigned i=0;i<10;++i) raw_frame(100,VISION_STATUS_OK,1,2,500);
+    assert(drive.active && mission.leg.phase==LEG_OBSTACLE_VERIFYING && !mission_motion_enabled(&mission));
+    assert(!drive.verification_frames && starts==before && map.count==1 && !map.current_node);
+    inputs.front_mm=399;inputs.front_urgent=true;
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);assert(drive.verification_frames==1);
+    uint32_t sensor_time=inputs.sensor_received_ms;
+    now+=100;onboard_drive_tick(&drive,&mission,&map,&selection,&inputs,now);
+    assert(inputs.sensor_received_ms==sensor_time && drive.verification_frames==1 && drive.active);
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(!drive.active && map.current_node==2 && starts==before && mission.dfs_active);
+}
+static void test_obstacle_confirmation_restarts_after_input_recovery(void)
+{
+    for(unsigned cause=0;cause<3;++cause) {
+        enter_front_verification_from_camera_wait();uint32_t leg=mission.leg.leg_id;
+        raw_frame(300,VISION_STATUS_STALLED,0,0,0);assert(drive.verification_frames==1);
+        if(cause==0) inputs.sensor_valid=false;
+        if(cause==1) inputs.link_ok=false;
+        if(cause==2) inputs.imu_ok=false;
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        raw_frame(60000,VISION_STATUS_STALLED,0,0,0);
+        assert(drive.active && drive.input_waiting && !map.current_node && map.count==1);
+        inputs.sensor_valid=inputs.link_ok=inputs.imu_ok=true;
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(drive.active && !drive.input_waiting && !drive.camera_waiting);
+        assert(mission.leg.phase==LEG_OBSTACLE_VERIFYING && mission.leg.leg_id==leg);
+        assert(!drive.obstacle_frames && !drive.verification_frames && !map.current_node);
+        raw_frame(300,VISION_STATUS_STALLED,0,0,0);assert(drive.verification_frames==1);
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(!drive.active && map.current_node==2 && mission.state==MISSION_EXPLORING);
+    }
+}
+static void test_obstacle_camera_wait_preserves_estop_operator_fault_and_map_checks(void)
+{
+    for(unsigned cause=0;cause<4;++cause) {
+        enter_front_verification_from_camera_wait();
+        raw_frame(300,VISION_STATUS_STALLED,0,0,0);assert(drive.verification_frames==1);
+        if(cause==0) inputs.safety_latched=true;
+        if(cause==1) mission_pause(&mission,MISSION_REASON_OPERATOR_STOP,now);
+        if(cause==2) inputs.front_fault=true;
+        if(cause==3) assert(rover_map_add(&map,8,1,0,false)==MAP_OK);
+        raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+        assert(!drive.active && !map.current_node && !rover_map_find_id(&map,2));
+        assert(status==MOTOR_AUTO_STOPPED && mission.state==MISSION_PAUSED);
+    }
+    // A camera wait during predeparture alignment cannot imply target arrival.
+    setup();selection.reference_available=false;selection.bearing_cdeg=1200;
+    assert(!strcmp(start(),"STARTED") && drive.b_departure_pending);
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.camera_waiting && drive.camera_resume_phase==LEG_ALIGNING);
+    assert(!onboard_drive_note_front_stop(&drive,&mission) && map.current_node==7);
+}
+
+
+static void test_pending_front_pulse_is_not_hidden_by_stale_camera_wait(void)
+{
+    start_without_reference();mission.dfs_active=true;
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);assert(drive.camera_waiting);
+    inputs.front_mm=250;assert(onboard_drive_note_front_stop(&drive,&mission));
+    // A later clear UART reading can arrive before the main loop handles the stop.
+    inputs.front_mm=400;inputs.front_urgent=false;
+    raw_frame(100,VISION_STATUS_STALLED,0,0,0);
+    assert(drive.active && !drive.camera_waiting && mission.leg.phase==LEG_OBSTACLE_VERIFYING);
+    raw_frame(300,VISION_STATUS_STALLED,0,0,0);
+    assert(!drive.verification_frames && !map.current_node && !mission_motion_enabled(&mission));
+    assert(mission.state==MISSION_EXPLORING && map.count==1);
+}
+
 int main(void)
 {
+    test_pending_front_pulse_is_not_hidden_by_stale_camera_wait();
+    test_camera_wait_obstacle_needs_two_fresh_close_samples_and_never_restarts();
+    test_obstacle_confirmation_restarts_after_input_recovery();
+    test_obstacle_camera_wait_preserves_estop_operator_fault_and_map_checks();
+    test_front_stop_during_camera_wait_verifies_without_camera_and_retains_dfs();
+    test_search_driving_budget_is_twenty_seconds();
     test_camera_health_outage_keeps_leg_and_resumes_only_after_fresh_observations();
     test_stalled_health_packet_during_arrival_verification_does_not_cancel_dfs();
     test_camera_health_recovery_does_not_bypass_marker_identity_or_operator_stop();
@@ -1854,6 +2033,7 @@ int main(void)
     test_reference_frame_wait_retains_leg_and_respects_cancellation();
     test_slow_empty_camera_search_late_reference_600_mm_arrival();
     test_front_motor_stop_confirms_terminal_target_without_camera_reference();
+    test_search_entry_and_camera_resume_use_front_stop_threshold();
     test_search_clearance_fault_cancel_and_budgets_do_not_fake_arrival();
     test_search_camera_gap_brakes_and_recovers_on_new_empty_images();
     test_unconfirmed_front_pulse_and_manual_estop_never_commit_arrival();

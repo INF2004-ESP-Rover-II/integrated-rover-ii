@@ -13,11 +13,13 @@
 #define TARGET_CAMERA_MAX_AGE_MS 1500u
 #define TARGET_UART_MAX_AGE_MS 300u
 #define TARGET_MAX_BEARING_CDEG 1000
-// Only an already locked target gets the wider tracking window.
+// Ordinary locked-target tracking window.
 #define TARGET_TRACKING_MAX_BEARING_CDEG 3000
 // Wider visibility for an already locked recovery landmark; driving still
 // requires alignment within TARGET_MAX_BEARING_CDEG.
 #define TARGET_RECOVERY_MAX_BEARING_CDEG 4500
+// A stopped scan sighting can be confirmed off-centre before alignment.
+#define TARGET_ACQUISITION_MAX_BEARING_CDEG TARGET_RECOVERY_MAX_BEARING_CDEG
 #define TARGET_REFERENCE_MAX_DELTA_CDEG 500
 #define TARGET_REFERENCE_MIN_GAP_MM 100u
 #define TARGET_CONFIRM_FRAMES 3u
@@ -60,6 +62,7 @@ typedef struct
     bool                     available;
     bool                     reference_available;
     bool                     allow_late_reference;
+    bool                     b_acquiring;
     uint16_t                 range_mm;
     uint16_t                 reference_range_mm;
     int16_t                  bearing_cdeg;
@@ -70,6 +73,13 @@ void target_selector_init (target_selector_t * p_selector);
 
 void target_selector_set_route (target_selector_t * p_selector,
                                 target_route_t      route);
+
+// Wider candidate window while stopped after a scan sighting. Map/route
+// compatibility and distinct-image confirmation still apply.
+bool
+target_selector_has_acquisition_candidate (const target_selector_t * p_selector,
+                                           const rover_map_t *       p_map,
+                                           const camera_frame_t *    p_frame);
 
 // Automatically arms at a stopped confirmed node. No dashboard selection,
 // hardware calls, map writes, dynamic allocation, waits or arrival commits.

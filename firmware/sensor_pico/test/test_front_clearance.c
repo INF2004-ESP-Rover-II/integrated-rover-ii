@@ -15,7 +15,7 @@ void tof_distance_set(uint32_t *bits, tof_sensor_t sensor, uint16_t distance) {
 int main(void) {
   obstacle_state_t state;
   obstacle_init(&state, 0);
-  const uint16_t ranges[] = {149, 150, 151, 1023, 1, 0, 200};
+  const uint16_t ranges[] = {299, 300, 301, 399, 400, 401, 1023, 1, 0, 200};
   for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i) {
     tof_readings_t sample = {0};
     sample.fresh_mask = 2;
@@ -23,8 +23,8 @@ int main(void) {
     sample.timestamp_ms[TOF_FRONT] = i + 1;
     tof_distance_set(&sample.distance_bits, TOF_FRONT, ranges[i]);
     obstacle_update(&state, &sample, 2, i + 1);
-    assert(state.stop_required == (ranges[i] > 0 && ranges[i] < 150));
-    if (ranges[i] == 151) {
+    assert(state.stop_required == (ranges[i] > 0 && ranges[i] < 400));
+    if (ranges[i] == 401) {
       assert(state.urgent_mask & 2); // Diagnostic hysteresis may remain.
       assert(!state.stop_required);  // Forward permission must already clear.
     }

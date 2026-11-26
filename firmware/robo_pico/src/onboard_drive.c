@@ -417,8 +417,11 @@ onboard_drive_start_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         p_context->return_value = "TARGET_NOT_VISIBLE_AT_START";
         return true;
     }
-    if (p_selection->bearing_cdeg < -TARGET_TRACKING_MAX_BEARING_CDEG ||
-        p_selection->bearing_cdeg > TARGET_TRACKING_MAX_BEARING_CDEG)
+    int max_bearing = p_selection->b_acquiring
+                          ? TARGET_ACQUISITION_MAX_BEARING_CDEG
+                          : TARGET_TRACKING_MAX_BEARING_CDEG;
+    if (p_selection->bearing_cdeg < -max_bearing ||
+        p_selection->bearing_cdeg > max_bearing)
     {
         p_context->return_value = "TARGET_NOT_ALIGNED";
         return true;
@@ -1393,10 +1396,24 @@ bool
 onboard_drive_note_front_stop (onboard_drive_t * p_drive,
                                const mission_t * p_mission)
 {
+    leg_phase_t phase = p_mission->leg.phase;
+    if (phase == LEG_WAITING_CAMERA && p_drive->camera_waiting)
+    {
+        phase = p_drive->camera_resume_phase;
+    }
+    if (phase == LEG_WAITING_INPUT && p_drive->input_waiting)
+    {
+        phase = p_drive->input_resume_phase;
+    }
+    bool b_arrival_phase =
+        phase == LEG_APPROACHING || phase == LEG_SEARCHING_REFERENCE ||
+        phase == LEG_HOLDING || phase == LEG_BRAKING ||
+        phase == LEG_VERIFYING || phase == LEG_OBSTACLE_VERIFYING;
     if (!p_drive->active || p_mission->test_mode ||
         p_mission->state != MISSION_EXPLORING || !p_mission->leg.configured ||
         !p_mission->leg.target_cell_valid || !p_mission->leg.next_target_node ||
-        !p_drive->last_target_range_mm ||
+        !p_drive->last_target_range_mm || p_drive->b_departure_pending ||
+        p_drive->aligning || !b_arrival_phase ||
         p_drive->leg_id != p_mission->leg.leg_id ||
         p_mission->leg.phase == LEG_BACKING_UP ||
         p_mission->leg.phase == LEG_REACQUIRING)
@@ -1502,19 +1519,12 @@ search_camera_problem (const onboard_drive_inputs_t * p_inputs)
 
 static bool
 start_search (onboard_drive_t * p_drive, mission_t * p_mission,
-              target_selector_t *            p_selection,
-              const onboard_drive_inputs_t * p_inputs, uint32_t now)
+              target_selector_t * p_selection, uint32_t now)
 {
-    // A responding, fault-free sensor can report no usable return (0).
-    // Permit the bounded slow search without turning that unknown distance
-    // into a clear exit or arrival fact. motion_problem still rejects faults
-    // and stale packets; a positive close range still brakes independently.
-    if (p_inputs->front_mm && p_inputs->front_mm != 1023u &&
-        p_inputs->front_mm < ONBOARD_DRIVE_SEARCH_CLEAR_MM)
-    {
-        recovery_failure(p_drive, p_mission, "SEARCH_FRONT_NOT_CLEAR", now);
-        return false;
-    }
+    // Entry and camera/alignment resumes use the same front obstacle guard.
+    // The caller checks motion_problem and handles obstacle arrival before
+    // search. No-return (0) permits bounded search, never a clear-exit or
+    // arrival fact. A separate clearance gate must not cancel the journey.
     if (motor_auto_drive_leased(ONBOARD_DRIVE_SEARCH_PCT,
                                 ONBOARD_DRIVE_LEASE_MS) != MOTOR_OK)
     {
@@ -2528,7 +2538,9 @@ onboard_drive_tick_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
                            onboard_drive_tick_context_t * p_context)
 {
 
-    if (p_drive->input_waiting && !p_context->p_problem)
+    if (p_drive->input_waiting &&
+        (!p_context->p_problem ||
+         strcmp(p_context->p_problem, "FRONT_BLOCKED") == 0))
     {
         if ((uint32_t) (now - p_drive->input_wait_started_ms) <
                 ONBOARD_DRIVE_SETTLE_MS ||
@@ -2550,6 +2562,20 @@ onboard_drive_tick_inputs (onboard_drive_t * p_drive, mission_t * p_mission,
         p_drive->alignment_stopped_ms = now;
         p_drive->input_waiting        = false;
         mission_recovery_phase(p_mission, p_drive->input_resume_phase, now);
+        if (p_mission->leg.phase == LEG_OBSTACLE_VERIFYING)
+        {
+            p_drive->braked_ms           = now;
+            p_drive->verification_frames = p_drive->obstacle_frames = 0;
+            p_drive->last_obstacle_ms = p_inputs->sensor_received_ms;
+            return false; // Resume stationary ToF verification, not camera
+                          // recovery.
+        }
+        if (p_drive->front_arrival_pending ||
+            (p_context->p_problem &&
+             strcmp(p_context->p_problem, "FRONT_BLOCKED") == 0))
+        {
+            return false; // Fresh inputs returned with a front stop to verify.
+        }
         bool b_ignored = false;
         wait_for_camera(p_drive, p_mission, p_selection, p_inputs,
                         "INPUT_RECOVERY", now, &b_ignored);
@@ -2603,6 +2629,7 @@ onboard_drive_tick_motion (onboard_drive_t * p_drive, mission_t * p_mission,
     p_context->p_age_problem = camera_wait_problem(p_selection, p_inputs, now);
     if (!p_context->p_problem &&
         p_mission->leg.phase != LEG_OBSTACLE_VERIFYING &&
+        !p_drive->front_arrival_pending &&
         (p_context->p_age_problem || p_drive->camera_waiting))
     {
         if (wait_for_camera(p_drive, p_mission, p_selection, p_inputs,
@@ -2703,15 +2730,26 @@ onboard_drive_tick_tracking (onboard_drive_t * p_drive, mission_t * p_mission,
         strcmp(p_context->p_problem, "FRONT_BLOCKED") == 0;
 
     if ((!p_context->p_problem || p_context->b_front_stop) &&
-        (p_drive->front_arrival_pending ||
-         (front_obstacle_detected(p_inputs->front_mm, p_inputs->front_fault) &&
-          onboard_drive_note_front_stop(p_drive, p_mission))))
+        (p_drive->front_arrival_pending || p_inputs->front_urgent ||
+         front_obstacle_detected(p_inputs->front_mm, p_inputs->front_fault)) &&
+        onboard_drive_note_front_stop(p_drive, p_mission))
     {
         p_drive->front_arrival_pending = false;
         if (p_mission->leg.phase != LEG_OBSTACLE_VERIFYING)
         {
             motor_emergency_stop();
-            mission_search_phase(p_mission, LEG_OBSTACLE_VERIFYING, now);
+            if (!mission_search_phase(p_mission, LEG_OBSTACLE_VERIFYING, now))
+            {
+                recovery_failure(p_drive, p_mission,
+                                 "OBSTACLE_VERIFY_STATE_INVALID", now);
+                return true;
+            }
+            // A real front stop supersedes the camera wait. Do not let its
+            // saved approach/search phase restart motion during verification.
+            p_drive->camera_waiting      = false;
+            p_drive->camera_wait_frames  = 0;
+            p_drive->camera_resume_phase = LEG_OBSTACLE_VERIFYING;
+            p_drive->correcting          = false;
             p_drive->using_obstacle      = true;
             p_drive->using_reference     = false;
             p_drive->search_active       = false;
@@ -2772,7 +2810,7 @@ onboard_drive_tick_reference (onboard_drive_t * p_drive, mission_t * p_mission,
           p_mission->leg.phase == LEG_SEARCHING_REFERENCE)) &&
         p_drive->search_active && !p_selection->reference_available)
     {
-        if (!start_search(p_drive, p_mission, p_selection, p_inputs, now))
+        if (!start_search(p_drive, p_mission, p_selection, now))
         {
             return true;
         }
@@ -2797,7 +2835,7 @@ onboard_drive_tick_arrival (onboard_drive_t * p_drive, mission_t * p_mission,
          p_mission->leg.phase == LEG_HOLDING) &&
         !search_camera_problem(p_inputs))
     {
-        if (!start_search(p_drive, p_mission, p_selection, p_inputs, now))
+        if (!start_search(p_drive, p_mission, p_selection, now))
         {
             return true;
         }

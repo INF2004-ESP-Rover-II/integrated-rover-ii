@@ -62,6 +62,15 @@ static void proximity_thresholds_and_hysteresis(void) {
     assert(state.urgent_mask == 4 && !state.stop_required);
     sample(&state, 150, 1000, 150, 103);
     assert(state.urgent_mask == 5 && !state.stop_required);
+    sample(&state, 200, 1000, 200, 104);
+    assert(state.urgent_mask == 0 && !state.stop_required); // Side threshold stays 150 mm.
+    sample(&state, 1000, 399, 1000, 105);
+    assert(state.stop_required && (state.urgent_mask & front));
+    sample(&state, 1000, 400, 1000, 106);
+    assert(!state.stop_required);
+    sample(&state, 1000, 401, 1000, 107);
+    assert(!state.stop_required);
+    sample(&state, 1000, 1000, 1000, 108);
     sample(&state, 1000, OBSTACLE_BLOCKED_MM, 1000, 110);
     assert(state.blocked_mask == front && !state.stop_required);
     sample(&state, 1000, OBSTACLE_BLOCKED_MM + 1u, 1000, 120);

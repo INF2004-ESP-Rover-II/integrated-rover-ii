@@ -82,7 +82,8 @@ class FakeGUI:
         self.dfs_tracking_report = None
         self.dfs_planner_report = None
         self.dfs_planner_text = Variable()
-        self.dfs_threshold = Variable('500')
+        self.dfs_threshold = Variable('700')
+        self.dfs_node_limit = Variable('0')
         self.last_dfs_reply = None
         self.target_selection_report = None
         self.target_selection_status = Variable()
@@ -288,11 +289,46 @@ class MissionDisplayTests(unittest.TestCase):
         app=FakeGUI();sent=[]
         app.send_command=lambda command:sent.append(command) or True
         app.dfs_threshold.set('700');app.auto_mode.set(True);app.toggle_auto_mode()
-        self.assertEqual(sent,['START_DFS:700'])
-        for invalid in ('150','1001','x'):
+        self.assertEqual(sent,['START_DFS:700:0'])
+        for invalid in ('150','300','400','1001','x'):
             app.dfs_threshold.set(invalid);app.auto_mode.set(True);app.toggle_auto_mode()
-        self.assertEqual(sent,['START_DFS:700'])
-        self.assertIn('151 to 1000',app.dfs_feedback.get())
+        self.assertEqual(sent,['START_DFS:700:0'])
+        self.assertIn('401 to 1000',app.dfs_feedback.get())
+
+    def test_target_node_count_is_sent_to_pico_and_validated(self):
+        app=FakeGUI();sent=[];app.send_command=lambda command:sent.append(command) or True
+        for count in ('0','1','4','64'):
+            app.dfs_node_limit.set(count);app.auto_mode.set(True);app.toggle_auto_mode()
+            self.assertEqual(sent[-1], 'START_DFS:700:'+count)
+        before=list(sent)
+        for count in ('','-1','65','1.5','x'):
+            app.dfs_node_limit.set(count);app.auto_mode.set(True);app.toggle_auto_mode()
+        self.assertEqual(sent,before)
+        self.assertIn('1 to 64',app.dfs_feedback.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+
+    def test_node_limit_completion_is_distinct_from_full_dfs_exhaustion(self):
+        app=FakeGUI();app.update_mission_display(report('EXPLORING','START_DFS'))
+        app.handle_mqtt_message('robot/status','DFS_EVENT:NODE_LIMIT_REACHED')
+        self.assertFalse(app.auto_mode.get())
+        self.assertFalse(app.last_dfs_reply.error)
+        self.assertIn('target node count reached',app.dfs_feedback.get())
+        app.update_mission_display(report('COMPLETE','NODE_LIMIT_REACHED'))
+        self.assertFalse(app.auto_mode.get())
+        self.assertIn('unexplored exits may remain',app.dfs_feedback.get())
+        self.assertIsNone(app.onboard_map.snapshot)
+        app.update_mission_display(report('COMPLETE','DFS_COMPLETE'))
+        self.assertIn('all reachable',app.dfs_feedback.get())
+
+    def test_dfs_progress_keeps_legacy_reports_compatible(self):
+        state={'active':True,'stage':'SCANNING','current_node':2,'depth':2,
+               'direction':'NORTH','expected_node':0,'detail':'SCANNING_FINAL_NODE'}
+        self.assertIsNone(parse_dfs_state(state).confirmed_nodes)
+        self.assertIn('confirmed nodes: 2/4',parse_dfs_state({**state,'confirmed_nodes':2,'node_limit':4}).display_text)
+        self.assertIn('confirmed nodes: 2/all',parse_dfs_state({**state,'confirmed_nodes':2,'node_limit':0}).display_text)
+        for key in ('confirmed_nodes','node_limit'):
+            for invalid in (True,-1,65,'4'):
+                with self.assertRaises(ValueError):parse_dfs_state({**state,key:invalid})
 
     def test_tracking_decisions_log_counts_and_ages_without_logging_every_repeat(self):
         app = FakeGUI()
@@ -439,7 +475,7 @@ class MissionDisplayTests(unittest.TestCase):
             'search_driving_ms': 3500, 'reference_arrival_mm': 600, 'verification_goal': 3}
         app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps(tracking))
         self.assertIn('496 mm', app.dfs_tracking_text.get())
-        self.assertIn('3.5/10 s', app.dfs_tracking_text.get())
+        self.assertIn('3.5/20 s', app.dfs_tracking_text.get())
         app.update_mission_display({**report('EXPLORING', 'START_DFS'), 'leg': {**leg, 'phase': 'OBSTACLE_VERIFYING'}})
         app.handle_mqtt_message('robot/status', 'DFS_TRACKING:' + json.dumps({**tracking,
             'phase': 'OBSTACLE_VERIFYING', 'source': 'OBSTACLE', 'remaining_mm': 0,
@@ -467,7 +503,7 @@ class MissionDisplayTests(unittest.TestCase):
         app.send_command = lambda command: sent.append(command) or True
         app.auto_mode.set(True)
         app.toggle_auto_mode()
-        self.assertEqual(sent, ['START_DFS:500'])
+        self.assertEqual(sent, ['START_DFS:700:0'])
         self.assertFalse(app.auto_mode.get())
         self.assertIsNone(app.onboard_map.snapshot)
         app.handle_mqtt_message('robot/status', 'DFS_REFUSED:START_NODE_NOT_SET')
@@ -476,7 +512,7 @@ class MissionDisplayTests(unittest.TestCase):
         self.assertFalse(app.auto_mode.get())
         self.assertEqual(app.robot_status.get(), 'STOPPED')
         self.assertEqual(app.status_events, [])
-        self.assertEqual(sent, ['START_DFS:500'])
+        self.assertEqual(sent, ['START_DFS:700:0'])
 
     def test_dfs_acknowledgements_stop_and_input_refusals_only_render(self):
         app = FakeGUI()

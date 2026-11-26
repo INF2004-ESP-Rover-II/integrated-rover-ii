@@ -12,6 +12,7 @@
 #include "lwip/timeouts.h"
 #include "mission_control.h"
 #include "motor_driver.h"
+#include "motor_hw.h"
 #include "mqtt_publish_policy.h"
 #include "onboard_dfs.h"
 #include "onboard_drive.h"
@@ -531,7 +532,8 @@ service_onboard_dfs (uint32_t now)
         {
             char event[96];
             snprintf(event, sizeof(event), "DFS_EVENT:%s",
-                     g_onboard_dfs.stage == DFS_FINISHED
+                     g_onboard_dfs.stage == DFS_FINISHED &&
+                             strcmp(g_onboard_dfs.detail, "DFS_EXHAUSTED") == 0
                          ? "COMPLETE"
                          : g_onboard_dfs.detail);
             mqtt_publish_status(event);
@@ -695,24 +697,14 @@ handle_mission_command (const char * p_command)
     if (strcmp(p_command, "START_DFS") == 0 ||
         strncmp(p_command, "START_DFS:", 10) == 0)
     {
-        if (p_command[9] == ':')
+        const char * p_config_error =
+            onboard_dfs_configure(&g_onboard_dfs, p_command + 9);
+        if (p_config_error)
         {
-            char *   p_end   = NULL;
-            uint32_t opening = strtoul(p_command + 10, &p_end, 10);
-            if (p_command[10] < '0' || p_command[10] > '9' || *p_end ||
-                opening <= FRONT_STOP_DISTANCE_MM || opening > 1000u)
-            {
-                mqtt_publish_status("DFS_REFUSED:INVALID_OPENING_THRESHOLD");
-                return true;
-            }
-            if (g_onboard_dfs.active &&
-                opening != g_onboard_dfs.open_distance_mm)
-            {
-                mqtt_publish_status(
-                    "DFS_REFUSED:STOP_DFS_BEFORE_CONFIG_CHANGE");
-                return true;
-            }
-            g_onboard_dfs.open_distance_mm = (uint16_t) opening;
+            char reply[96];
+            snprintf(reply, sizeof(reply), "DFS_REFUSED:%s", p_config_error);
+            mqtt_publish_status(reply);
+            return true;
         }
         service_target_selection(); // Validate the latest camera packet before
                                     // authorising motion.
@@ -1352,6 +1344,8 @@ publish_sensor_data (void)
 int
 main (void)
 {
+    // Hold motor pins low before USB delays or any network failure can occur.
+    motor_hw_safe_boot();
     stdio_init_all();
     sleep_ms(2000);
     mission_init(&g_mission, to_ms_since_boot(get_absolute_time()));

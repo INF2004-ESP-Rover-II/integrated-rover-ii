@@ -170,7 +170,8 @@ class RobotGUI:
         self.auto_mode = tk.BooleanVar(value=False)
         self.dfs_target = tk.StringVar(value="36")
         # Set this from measured maze geometry before starting a mission.
-        self.dfs_threshold = tk.StringVar(value="500")
+        self.dfs_threshold = tk.StringVar(value="700")
+        self.dfs_node_limit = tk.StringVar(value="0")
         self.dfs_status = tk.StringVar(value="Set the starting node under the rover before starting DFS")
         self.dfs_feedback = tk.StringVar(value='')
         self.start_node_id = tk.StringVar(value="")
@@ -366,7 +367,8 @@ class RobotGUI:
                   bg='#2980b9', fg='white').pack(side='left', padx=6)
         tk.Button(dfs_frame, textvariable=self.map_reset_button_text, command=self.reinitialise_map,
                   bg='#c0392b', fg='white').pack(side='left', padx=6)
-        tk.Label(dfs_frame, text="Finish: all reachable exits explored", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Label(dfs_frame, text="Target nodes (0 = all):", fg='white', bg='#34495e').pack(side='left', padx=6)
+        tk.Entry(dfs_frame, textvariable=self.dfs_node_limit, width=4).pack(side='left')
         tk.Label(dfs_frame, text="Open exit ≥ (mm):", fg='white', bg='#34495e').pack(side='left', padx=6)
         tk.Entry(dfs_frame, textvariable=self.dfs_threshold, width=6).pack(side='left')
         start_status = tk.Label(dfs_frame, textvariable=self.start_node_status, fg='yellow', bg='#34495e',
@@ -588,9 +590,9 @@ class RobotGUI:
             self.tof_state_labels[direction].config(text=state, fg=color)
 
         stop = obstacle.get('stop_required')
-        threshold = obstacle.get('forward_threshold_mm', 150)
+        threshold = obstacle.get('forward_threshold_mm', 400)
         if type(threshold) is not int or not 1 <= threshold <= 1000:
-            threshold = 150
+            threshold = 400
         front = distances.get('front')
         front_seen = type(front) is int and 0 < front and not (faults is not None and faults & 2)
         limit = threshold + FRONT_CLEAR_MARGIN_MM if self.front_blocked else threshold
@@ -761,13 +763,21 @@ class RobotGUI:
         if requested:
             try:
                 opening=int(self.dfs_threshold.get().strip())
-                if not 151<=opening<=1000:
-                    raise ValueError('Opening threshold must be 151..1000 mm')
+                if not 401<=opening<=1000:
+                    raise ValueError('Opening threshold must be 401..1000 mm')
             except (TypeError,ValueError):
-                self.dfs_feedback.set('Enter an opening threshold from 151 to 1000 mm.')
+                self.dfs_feedback.set('Enter an opening threshold from 401 to 1000 mm.')
                 self.dfs_feedback_label.config(fg='#e74c3c')
                 return
-            command='START_DFS:%d' % opening
+            try:
+                node_limit=int(self.dfs_node_limit.get().strip())
+                if not 0<=node_limit<=64:
+                    raise ValueError('Target node count must be 0..64')
+            except (TypeError,ValueError):
+                self.dfs_feedback.set('Enter a target node count from 1 to 64, or 0 for all nodes.')
+                self.dfs_feedback_label.config(fg='#e74c3c')
+                return
+            command='START_DFS:%d:%d' % (opening,node_limit)
         else:
             command='STOP_DFS'
         self.dfs_feedback.set('Waiting for RoboPico to start DFS...' if requested else 'Waiting for RoboPico to stop DFS...')
@@ -1288,6 +1298,9 @@ class RobotGUI:
             self.dfs_feedback_label.config(fg='#2ecc71')
         elif report.state == 'COMPLETE' and report.reason == 'DFS_COMPLETE':
             self.dfs_feedback.set('DFS complete: all reachable mapped exits have been explored.')
+            self.dfs_feedback_label.config(fg='#2ecc71')
+        elif report.state == 'COMPLETE' and report.reason == 'NODE_LIMIT_REACHED':
+            self.dfs_feedback.set('Mapping complete: target node count reached; unexplored exits may remain.')
             self.dfs_feedback_label.config(fg='#2ecc71')
         elif report.state == 'COMPLETE' and report.reason == 'TARGET_ARRIVED':
             self.dfs_feedback.set('RoboPico confirmed arrival at the locked target.')

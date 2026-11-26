@@ -45,12 +45,12 @@ image_fresh (const camera_observation_t * p_observation, uint32_t now)
 }
 
 static bool
-marker_usable (const camera_marker_t * p_marker)
+marker_usable (const camera_marker_t * p_marker, int max_bearing)
 {
     return p_marker->id && p_marker->quality == 0 && p_marker->range_mm &&
            p_marker->range_mm != UINT16_MAX &&
-           p_marker->bearing_cdeg >= -TARGET_MAX_BEARING_CDEG &&
-           p_marker->bearing_cdeg <= TARGET_MAX_BEARING_CDEG;
+           p_marker->bearing_cdeg >= -max_bearing &&
+           p_marker->bearing_cdeg <= max_bearing;
 }
 
 static leg_direction_t
@@ -139,14 +139,14 @@ reference_compatible (const rover_map_t * p_map, uint8_t departure,
 
 static const camera_marker_t *
 nearest_target (const camera_frame_t * p_frame, const rover_map_t * p_map,
-                const target_route_t * p_route)
+                const target_route_t * p_route, int max_bearing)
 {
     const camera_marker_t * p_best = NULL;
     bool                    b_tied = false;
     for (uint8_t index = 0; index < p_frame->count; ++index)
     {
         const camera_marker_t * p_marker = &p_frame->markers[index];
-        if (!marker_usable(p_marker) ||
+        if (!marker_usable(p_marker, max_bearing) ||
             !target_compatible(p_map, p_route, p_marker->id))
         {
             continue;
@@ -163,6 +163,19 @@ nearest_target (const camera_frame_t * p_frame, const rover_map_t * p_map,
         }
     }
     return b_tied ? NULL : p_best;
+}
+
+bool
+target_selector_has_acquisition_candidate (const target_selector_t * p_selector,
+                                           const rover_map_t *       p_map,
+                                           const camera_frame_t *    p_frame)
+{
+    return p_selector && p_map &&
+           rover_map_find_id(p_map, p_map->current_node) && p_frame &&
+           p_frame->status == VISION_STATUS_OK &&
+           p_frame->count <= VISION_MAX_MARKERS &&
+           nearest_target(p_frame, p_map, &p_selector->route,
+                          TARGET_ACQUISITION_MAX_BEARING_CDEG) != NULL;
 }
 
 static const camera_marker_t *
@@ -205,8 +218,8 @@ nearest_reference (const camera_frame_t * p_frame, const rover_map_t * p_map,
                         ? (int) p_marker->bearing_cdeg - p_target->bearing_cdeg
                         : 0;
 
-        if (!marker_usable(p_marker) || p_marker->id == target_id ||
-            p_marker->id == departure ||
+        if (!marker_usable(p_marker, TARGET_MAX_BEARING_CDEG) ||
+            p_marker->id == target_id || p_marker->id == departure ||
             (!p_target && !b_late && !rover_map_find_id(p_map, p_marker->id)) ||
             (p_target &&
              (uint32_t) p_marker->range_mm <
@@ -273,13 +286,15 @@ arm (target_selector_t * p_selection, mission_t * p_mission,
      const rover_map_t * p_map, const camera_observation_t * p_observation,
      uint32_t now)
 {
-    uint32_t       leg_id = p_mission->leg.leg_id + 1u;
-    target_route_t route  = p_selection->route;
+    uint32_t       leg_id      = p_mission->leg.leg_id + 1u;
+    target_route_t route       = p_selection->route;
+    bool           b_acquiring = p_selection->b_acquiring;
 
     *p_selection = (target_selector_t) {
         .state                  = TARGET_WAITING,
         .detail                 = "AUTOMATIC_WAITING_FOR_IMAGES",
         .route                  = route,
+        .b_acquiring            = b_acquiring,
         .leg_id                 = leg_id,
         .started_ms             = now,
         .map_revision           = p_map->revision,
@@ -490,7 +505,9 @@ target_selector_tick_camera (target_selector_t * p_selection,
     p_selection->sample_age_ms      = p_observation->frame.age_ms;
 
     int tracking_bearing = p_mission->leg.phase == LEG_ALIGNING ||
-                                   p_mission->leg.phase == LEG_REACQUIRING
+                                   p_mission->leg.phase == LEG_REACQUIRING ||
+                                   (p_selection->b_acquiring &&
+                                    p_mission->leg.phase == LEG_CONFIGURED)
                                ? TARGET_RECOVERY_MAX_BEARING_CDEG
                                : TARGET_TRACKING_MAX_BEARING_CDEG;
     p_context->p_target =
@@ -498,7 +515,10 @@ target_selector_tick_camera (target_selector_t * p_selection,
             ? find_tracking_marker(&p_observation->frame,
                                    p_mission->leg.next_target_node,
                                    tracking_bearing)
-            : nearest_target(&p_observation->frame, p_map, &p_selection->route);
+            : nearest_target(&p_observation->frame, p_map, &p_selection->route,
+                             p_selection->b_acquiring
+                                 ? TARGET_ACQUISITION_MAX_BEARING_CDEG
+                                 : TARGET_MAX_BEARING_CDEG);
 
     return false;
 }

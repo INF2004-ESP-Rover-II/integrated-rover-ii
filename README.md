@@ -77,6 +77,30 @@ To try the dashboard without a rover, run `python dashboard/fake_rover.py` again
 
 ## Finding the next DFS target
 
+Set **Target nodes (0 = all)** on the dashboard before starting DFS. Values
+1–64 finish mapping after that many unique confirmed (green) nodes are in the
+onboard map, including the start node and any previously confirmed nodes.
+Revisits and blue camera estimates do not add to the count. Zero keeps full DFS
+exploration; reaching actual DFS exhaustion can also finish before a larger
+requested limit is reached.
+
+At the limit, RoboPico stays at the last confirmed node, finishes a settled exit
+scan and stops with mission `COMPLETE`, reason/detail `NODE_LIMIT_REACHED`.
+Still-unknown directions each get a bounded scan attempt; unavailable readings
+remain unknown. It does not start another journey or backtrack to the origin.
+Open unexplored exits and blue estimates are retained, so this completion means
+the requested mapping limit was reached, not that the whole maze was exhausted.
+Normal exhaustion still reports `DFS_COMPLETE` / `DFS_EXHAUSTED`.
+
+The dashboard sends `START_DFS:<opening_mm>:<node_limit>` (for example,
+`START_DFS:700:4`) and displays the confirmed count from RoboPico's `DFS_STATE`.
+Legacy `START_DFS` and `START_DFS:<opening_mm>` retain the previous settings;
+explicitly send a zero limit to return to unlimited exploration. Invalid
+settings are rejected atomically; stop DFS before changing them. Re-initialising
+the onboard DFS context clears the limit; the next dashboard Start sends its
+current form settings again. The dashboard never marks arrivals or finishes DFS
+locally from the count.
+
 At a confirmed node, RoboPico keeps its chosen exit and waits for an eligible
 camera marker. After five seconds without a locked target, it scans 10 degrees
 left, centre, 10 degrees right, centre, repeating around that exit. Each stop
@@ -84,14 +108,129 @@ settles for 300 ms, then allows two seconds for target confirmation. Only fresh
 images captured after stopping can confirm a target; moving-image candidates
 are discarded. Selection, map compatibility and arrival checks still apply.
 
+After a full unsuccessful left/centre/right/centre pass, it can reverse for
+150 ms at a 15% motor command, stop, settle and confirm new camera images before
+starting another pass. Reverse is allowed only with fresh camera health, fresh
+sensor/heading/link inputs and no eligible locked target. Camera outages stop
+motion and wait. Accepted reverse command durations total at most one second
+per confirmed-node visit; the budget survives retries and outages. At the cap,
+scanning continues in place (`SEARCHING_TARGET_REVERSE_LIMIT`). The reverse
+uses an independent short motor lease and does not renew it. Existing motor
+calibration and startup boost still apply to the 15% command.
+
 Missing markers no longer trigger `DFS_TARGET_NOT_VISIBLE` or pause exploration.
 `DFS_STATE` reports `WAIT_TARGET` with scan/wait details on the dashboard. Camera
 outages stop scanning until fresh observations return. Sensor, heading, link and
 lease waits retain DFS; operator Stop and E-stop remain effective. Each scan turn
 still stops and retries after three seconds, with a five-second turn limit;
-reaching that limit stops that scan attempt and continues searching. Searching
-does not change the confirmed node, mark a node visited, or drive forward before
-a target is locked. Forward-first exit priority remains unchanged.
+reaching that limit stops that scan attempt and continues searching. Ordinary DFS
+heading turns have a 60-second total limit and retain the same three-second
+stop/retry cycle. Searching does not mark a node visited or drive forward before
+a target is locked. The confirmed node is retained as the map anchor during the
+bounded positioning adjustment; no odometry-based arrival is inferred. Forward-first exit priority remains unchanged.
+
+Reference-search driving now has a 20-second budget. The current controller
+still charges subsequent tracked approach to that same budget; the separately
+agreed search-only/overall journey timer redesign remains pending.
+
+### Stop a target scan when a marker appears
+
+During next-target recovery, any fresh good-quality marker sighting immediately
+stops the preset turn or reverse, including off-centre sightings. A moving
+image is only a stop hint. After settling, new stopped images must confirm an
+eligible target. While a compatible candidate remains visible, confirmation
+is not interrupted by the next timed scan step.
+
+This stopped acquisition allows candidates within 45 degrees of camera centre,
+then uses the existing alignment controller to get within 10 degrees before
+forward departure. Negative bearings turn left; positive bearings turn right.
+Three distinct target-confirmation images and the existing fresh alignment
+checks remain required. Map/exit compatibility, marker quality and arrival
+checks still apply; sighting a marker never marks it explored.
+
+An incompatible, ambiguous, lost or unusable sighting gets a bounded stationary
+recheck, then scanning resumes. Camera outages freeze the accumulated recheck and
+scan-dwell progress instead of restarting it. Motion stays stopped throughout
+the outage; fresh observations resume the remaining wait. Overlapping sensor or
+link waits are excluded once. Interrupted movement still requires a new settled
+pose and post-stop images. This lets unsuccessful checks progress to the existing
+bounded scan reverse without reversing on stale camera data.
+A continuously visible rejected marker does not
+repeatedly restart the same stop; a new sighting or newly eligible candidate can
+interrupt scanning again. Stale camera data stops motion and waits as before.
+Relevant DFS details: `MARKER_SEEN_STOPPING_SCAN`, `CONFIRMING_VISIBLE_MARKER`,
+`CHECKING_VISIBLE_MARKER` and `MARKER_UNUSABLE_RESUMING_SCAN`.
+
+## Recovering unresolved DFS exits
+
+If next-leg validation reports `GRID_DIRECTION_NOT_ALIGNED`, DFS now stops,
+retains the chosen exit and destination identity, and turns to that exit's grid
+bearing (`RECOVERING_GRID_HEADING`). It keeps the confirmed current node, map,
+stack/backtracking state and accumulated scan-reverse budget. After the turn it
+settles and requires fresh target confirmation before departure; cached images
+or another marker cannot replace the selected destination. Motor/input waits
+retain the correction. Existing turn retries, the 60-second turn limit and
+Stop/E-stop checks remain. The 15-degree grid validation is unchanged.
+
+After arrival, exits that remain unknown no longer pause DFS with
+`DFS_EXITS_UNRESOLVED`. RoboPico repeats its settled ToF measurements and cycles
+retry headings through the grid directions, letting different sensors inspect
+an uncertain side. The dashboard reports `RESCANNING_UNRESOLVED_EXITS` during
+these retries. Each measurement window still requires two fresh, consecutive
+matching classifications; unavailable, faulted or inconsistent readings remain
+unknown. Existing confirmed nodes, traversed edges and the DFS stack are kept.
+
+When readings resolve, the normal planner continues exploring, backtracks, or
+finishes only if the entire map is resolved. Unvisited camera estimates still
+prevent completion. Sensor/link/heading waits retain recovery; Stop/E-stop and
+existing turn/motor checks remain effective. Forward-first priority is unchanged.
+
+## Front stop while waiting for the camera
+
+During a configured journey that has already departed, a front stop now
+supersedes `WAITING_CAMERA` and enters stationary obstacle-arrival verification.
+The controller clears the saved camera-resume state so camera recovery cannot
+restart forward motion while it verifies the obstacle. A pending stop event is
+handled even if the current range has already cleared by the next main-loop tick.
+
+After 300 ms settling, two distinct fresh ToF samples below the 400 mm front
+threshold confirm arrival. Stale/cached ranges, zero/unavailable readings, a
+single transient pulse or an urgent flag without close measurements do not mark
+the target explored. Camera observations are not required for this ToF arrival
+path. On success RoboPico updates the current node/map and resumes DFS exit
+scanning and planning. Restored sensor/link/heading inputs restart confirmation;
+operator Stop/E-stop, faults, map changes and existing journey limits still apply.
+Predeparture alignment and reverse recovery cannot claim obstacle arrival.
+
+## Motor outputs during startup
+
+RoboPico sets all wheel, arm and claw motor control pins low as its first
+operation in `main`, before USB startup delays and Wi-Fi connection attempts.
+They remain low while networking starts, including when Wi-Fi connection fails.
+Normal motor/PWM initialisation follows later; startup does not request motion.
+
+## Front obstacle stopping distance
+
+DFS exit classification defaults to 700 mm in both firmware and dashboard:
+valid ranges below 700 mm are blocked; 700 mm or farther are open. The dashboard
+can configure this separately when starting DFS. Zero/faulted returns remain
+unknown. This classification applies to settled node scans, not motor stopping.
+
+The shared front stopping threshold is 400 mm: valid readings below 400 mm
+stop forward movement. Flash both RoboPico and Sensor Pico builds to keep their
+obstacle handling consistent. Side urgency remains 150 mm; map exit thresholds
+are separate. The dashboard uses the threshold reported by the rover, with a
+400 mm fallback.
+
+Starting or resuming reference search no longer requires 600 mm front clearance.
+A healthy reading of 400 mm or farther permits slow search, including after a
+camera wait or alignment correction. No usable return still permits bounded
+search when the sensor is healthy. Existing camera, sensor, heading, motor and
+journey-budget checks remain. Below 400 mm the front guard stops forward motion;
+an eligible departed journey must settle and receive two fresh close samples
+before confirming obstacle arrival. Removing the clearance gate does not mark
+the target visited or reset the accumulated search time. The 600 mm visual
+reference-arrival range is unchanged.
 
 ## Tests
 

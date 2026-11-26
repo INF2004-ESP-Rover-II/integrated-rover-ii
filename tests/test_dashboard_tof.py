@@ -87,6 +87,22 @@ class ToFDisplayTests(unittest.TestCase):
     def setUp(self):
         self.app = FakeGUI()
 
+    def test_front_stop_uses_400_mm_fallback_and_reported_threshold(self):
+        for distance in (299, 300, 301, 399, 400, 401):
+            self.app.update_tof_readings(snapshot(front=distance, stop=False))
+            self.assertEqual(self.app.front_obstacle_snapshot, distance < 400)
+        packet = snapshot(front=200, stop=False)
+        packet['forward_threshold_mm'] = 150
+        self.app.update_tof_readings(packet)
+        self.assertFalse(self.app.front_obstacle_snapshot)  # Honour installed firmware.
+        packet['forward_threshold_mm'] = None
+        self.app.update_tof_readings(packet)
+        self.assertTrue(self.app.front_obstacle_snapshot)
+        self.app.front_blocked = True
+        for distance in (449, 450):
+            self.app.update_tof_readings(snapshot(front=distance, stop=False))
+            self.assertEqual(self.app.front_obstacle_snapshot, distance < 450)
+
     def test_real_front_obstacle_and_direction_order(self):
         self.app.update_tof_readings(snapshot())
         self.assertEqual(self.app.tof_labels["left"].values["text"], "740 mm")

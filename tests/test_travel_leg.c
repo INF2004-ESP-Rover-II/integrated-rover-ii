@@ -54,6 +54,12 @@ int main(void)
     assert(!mission_camera_wait_phase(&alignment_mission,LEG_COMPLETE,8));
     assert(mission_camera_wait_phase(&alignment_mission,LEG_APPROACHING,9));
     assert(mission_motion_enabled(&alignment_mission));
+    assert(mission_camera_wait_phase(&alignment_mission,LEG_WAITING_CAMERA,10));
+    assert(mission_search_phase(&alignment_mission,LEG_OBSTACLE_VERIFYING,11));
+    assert(!mission_motion_enabled(&alignment_mission));
+    assert(alignment_mission.leg.next_target_node==12 && alignment_mission.leg.leg_id==42);
+    alignment_mission.leg.phase=LEG_BACKING_UP;
+    assert(!mission_search_phase(&alignment_mission,LEG_OBSTACLE_VERIFYING,12));
     mission_t mission;
     rover_map_t map;
     mission_init(&mission, 10);
