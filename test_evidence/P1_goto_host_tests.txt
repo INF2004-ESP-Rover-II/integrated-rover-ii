@@ -1,0 +1,45 @@
+8:.PHONY: check check_wifi route goto dry dfs barrc
+9:check: test_motor_control test_motor_front_stop check_wifi route goto dry dfs
+27:goto: test_goto_ctrl
+29:dry: test_goto_dry
+34:	python3 ../tools/barrc_check.py ../src/route_planner.c ../src/goto_ctrl.c ../src/goto_dry.c \
+[WIFI] Initialized
+[WIFI] Connecting asynchronously to 'test-network'...
+[MQTT] ERROR: WiFi not connected
+[WIFI] Link state=3 (0=down 1=joining 2=waiting-IP 3=ready; negative=failure)
+[WIFI] Connected! IP: 192.0.2.10
+[MQTT] Initialized (broker: 192.0.2.10:1883)
+[MQTT] Limits: TX ring=16384 bytes; requests=16; telemetry pending limit=1
+[MQTT] ===== MQTT CONNECTION DEBUG =====
+[MQTT] Client ID: test-client
+[MQTT] Broker IP: 192.0.2.10
+[MQTT] Broker Port: 1883
+[MQTT] Keep-alive: 5
+[MQTT] Client pointer: 0x102970018
+[MQTT] Calling mqtt_client_connect()...
+[MQTT] ===== CONNECTION CALLBACK FIRED =====
+[MQTT] Status code: 0
+[MQTT] Connected to broker successfully!
+[MQTT] mqtt_client_connect() returned: 0
+[MQTT] Connection initiated successfully
+[MQTT] First telemetry send completed (TCP acknowledged)
+[MQTT] First telemetry queued: 29 bytes on robot/map
+[WIFI] Link state=0 (0=down 1=joining 2=waiting-IP 3=ready; negative=failure)
+PASS: joining/DHCP readiness -> MQTT connection -> robot/map; link loss detected
+cc -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wcast-qual -Wstrict-prototypes -O1 -g -I../include -Ifixtures -I. -o test_route_planner test_route_planner.c test_support.c ../src/route_planner.c fixtures/planner_fixture.c ../src/rover_map.c
+./test_route_planner
+random: 3439 queries routed, 14561 not routed or trivial, all equal to brute force
+random: 2361 queries routed, 9639 not routed or trivial, all equal to brute force
+test_route_planner: 124353 checks OK
+cc -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wcast-qual -Wstrict-prototypes -O1 -g -I../include -Ifixtures -I. -o test_goto_ctrl test_goto_ctrl.c test_support.c ../src/goto_ctrl.c ../src/route_planner.c fixtures/planner_fixture.c ../src/rover_map.c
+./test_goto_ctrl
+test_goto_ctrl: 91 checks OK
+cc -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wcast-qual -Wstrict-prototypes -O1 -g -I../include -Ifixtures -I. -o test_goto_dry test_goto_dry.c test_support.c ../src/goto_dry.c ../src/goto_ctrl.c ../src/route_planner.c fixtures/planner_fixture.c ../src/rover_map.c
+./test_goto_dry
+test_goto_dry: 13 checks OK
+cc -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wcast-qual -Wstrict-prototypes -O1 -g -I../include -I. -o test_dfs_backtrack test_dfs_backtrack.c test_support.c ../src/route_planner.c ../src/rover_map.c
+./test_dfs_backtrack
+current layout       returns=4 shortcuts=1 back-hops stack=8 planner=6 | total hops stack-run=53 planner-run=51
+S layout             returns=11 shortcuts=1 back-hops stack=20 planner=16 | total hops stack-run=85 planner-run=81
+loop and dead ends   returns=9 shortcuts=0 back-hops stack=20 planner=20 | total hops stack-run=75 planner-run=75
+test_dfs_backtrack: 2809 checks OK
